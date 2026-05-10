@@ -172,7 +172,7 @@ func TestSubscriberIndex_GVKsByOwner(t *testing.T) {
 func TestSubscriberIndex_Concurrent(t *testing.T) {
 	idx := watcher.NewSubscriberIndex()
 	var wg sync.WaitGroup
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()

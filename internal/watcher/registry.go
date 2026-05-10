@@ -12,6 +12,7 @@ package watcher
 
 import (
 	"fmt"
+	"slices"
 	"sync"
 
 	"github.com/isometry/echelon-operator/internal/metrics"
@@ -159,12 +160,7 @@ func (r *Registry) GVKsByOwner(owner OwnerKey) []schema.GroupVersionKind {
 }
 
 func (r *Registry) hasSubscriberLocked(gvk schema.GroupVersionKind, owner OwnerKey) bool {
-	for _, k := range r.index.GVKsByOwner(owner) {
-		if k == gvk {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(r.index.GVKsByOwner(owner), gvk)
 }
 
 func (r *Registry) unsubscribeLocked(gvk schema.GroupVersionKind, owner OwnerKey) {

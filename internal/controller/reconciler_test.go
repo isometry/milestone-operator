@@ -396,7 +396,7 @@ func TestReconcile_CapsNotReadyMembers(t *testing.T) {
 	freg := newFakeRegistry()
 	// 60 explicitly not-ready members; cap is 50.
 	var members []*unstructured.Unstructured
-	for i := 0; i < 60; i++ {
+	for i := range 60 {
 		u := &unstructured.Unstructured{}
 		u.SetAPIVersion("kustomize.toolkit.fluxcd.io/v1")
 		u.SetKind("Kustomization")

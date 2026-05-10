@@ -23,8 +23,8 @@ import (
 	"github.com/isometry/echelon-operator/internal/discovery"
 	"github.com/isometry/echelon-operator/internal/watcher"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apiextv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	clientdiscovery "k8s.io/client-go/discovery"
@@ -181,7 +181,7 @@ func TestEnvtest_HappyPath_AllCurrent(t *testing.T) {
 
 	// First reconcile adds the finalizer; second reconcile starts the informer.
 	// Informers need a moment to sync; we then loop until Ready=True or timeout.
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		_, err := fix.reconciler.ReconcileObject(context.Background(), refresh(t, ech))
 		if err != nil {
 			t.Fatalf("reconcile %d: %v", i, err)
@@ -204,7 +204,7 @@ func TestEnvtest_EmptySet_NotReadyPolicy(t *testing.T) {
 		{Group: "test.as-code.io", Kind: "Widget", EmptySetPolicy: apiv1.EmptySetNotReady},
 	})
 
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		_, _ = fix.reconciler.ReconcileObject(context.Background(), refresh(t, ech))
 	}
 	time.Sleep(informerWarmup)
@@ -280,7 +280,7 @@ func TestEnvtest_SubscriptionDiff_RemovesInformer(t *testing.T) {
 	ech := createEchelon(t, fix.namespace, "diff", []apiv1.TargetSpec{
 		{Group: "test.as-code.io", Kind: "Widget", EmptySetPolicy: apiv1.EmptySetUnknown},
 	})
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		_, _ = fix.reconciler.ReconcileObject(context.Background(), refresh(t, ech))
 	}
 	if got := fix.registry.GVKCount(); got != 1 {
@@ -292,7 +292,7 @@ func TestEnvtest_SubscriptionDiff_RemovesInformer(t *testing.T) {
 	if err := envtestClient.Delete(context.Background(), refresh(t, ech)); err != nil {
 		t.Fatalf("delete echelon: %v", err)
 	}
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		curr := &apiv1.Echelon{}
 		if err := envtestClient.Get(context.Background(), client.ObjectKeyFromObject(ech), curr); err != nil {
 			break // gone
