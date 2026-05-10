@@ -45,19 +45,19 @@ func newDisc() discovery.Resolver {
 	fd := &fakeDisc{
 		groups: &metav1.APIGroupList{Groups: []metav1.APIGroup{
 			{
-				Name:             "kustomize.toolkit.fluxcd.io",
-				Versions:         []metav1.GroupVersionForDiscovery{{GroupVersion: "kustomize.toolkit.fluxcd.io/v1", Version: "v1"}},
-				PreferredVersion: metav1.GroupVersionForDiscovery{GroupVersion: "kustomize.toolkit.fluxcd.io/v1", Version: "v1"},
+				Name:             groupKustomize,
+				Versions:         []metav1.GroupVersionForDiscovery{{GroupVersion: gvKustomizeV1, Version: "v1"}},
+				PreferredVersion: metav1.GroupVersionForDiscovery{GroupVersion: gvKustomizeV1, Version: "v1"},
 			},
 			{
-				Name:             "rbac.authorization.k8s.io",
-				Versions:         []metav1.GroupVersionForDiscovery{{GroupVersion: "rbac.authorization.k8s.io/v1", Version: "v1"}},
-				PreferredVersion: metav1.GroupVersionForDiscovery{GroupVersion: "rbac.authorization.k8s.io/v1", Version: "v1"},
+				Name:             groupRBAC,
+				Versions:         []metav1.GroupVersionForDiscovery{{GroupVersion: gvRBACv1, Version: "v1"}},
+				PreferredVersion: metav1.GroupVersionForDiscovery{GroupVersion: gvRBACv1, Version: "v1"},
 			},
 		}},
 		resources: map[string]*metav1.APIResourceList{
-			"kustomize.toolkit.fluxcd.io/v1": {APIResources: []metav1.APIResource{{Name: "kustomizations", Kind: "Kustomization", Namespaced: true}}},
-			"rbac.authorization.k8s.io/v1":   {APIResources: []metav1.APIResource{{Name: "clusterroles", Kind: "ClusterRole", Namespaced: false}}},
+			gvKustomizeV1: {APIResources: []metav1.APIResource{{Name: "kustomizations", Kind: kindKustomization, Namespaced: true}}},
+			gvRBACv1:      {APIResources: []metav1.APIResource{{Name: "clusterroles", Kind: "ClusterRole", Namespaced: false}}},
 		},
 	}
 	return discovery.NewResolver(fd, time.Hour)
@@ -65,9 +65,9 @@ func newDisc() discovery.Resolver {
 
 func TestEchelonAdapter_Targets_NamespaceMatcherIsOwnNamespace(t *testing.T) {
 	ech := &apiv1.Echelon{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "flux-system", Name: "wave-0"},
+		ObjectMeta: metav1.ObjectMeta{Namespace: nsFluxSystem, Name: "wave-0"},
 		Spec: apiv1.EchelonSpec{Targets: []apiv1.TargetSpec{
-			{Group: "kustomize.toolkit.fluxcd.io", Kind: "Kustomization", EmptySetPolicy: apiv1.EmptySetUnknown},
+			{Group: groupKustomize, Kind: kindKustomization, EmptySetPolicy: apiv1.EmptySetUnknown},
 		}},
 	}
 	a := controller.NewEchelonAdapter(ech)
@@ -79,13 +79,13 @@ func TestEchelonAdapter_Targets_NamespaceMatcherIsOwnNamespace(t *testing.T) {
 		t.Fatalf("targets len = %d, want 1", len(targets))
 	}
 	tgt := targets[0]
-	if tgt.GVK.Kind != "Kustomization" || tgt.GVK.Version != "v1" {
+	if tgt.GVK.Kind != kindKustomization || tgt.GVK.Version != "v1" {
 		t.Errorf("GVK = %v", tgt.GVK)
 	}
 	if tgt.NamespaceMatcher == nil {
 		t.Fatalf("NamespaceMatcher should be non-nil for Echelon")
 	}
-	if !tgt.NamespaceMatcher("flux-system") {
+	if !tgt.NamespaceMatcher(nsFluxSystem) {
 		t.Errorf("matcher should accept own namespace")
 	}
 	if tgt.NamespaceMatcher("other") {
@@ -95,9 +95,9 @@ func TestEchelonAdapter_Targets_NamespaceMatcherIsOwnNamespace(t *testing.T) {
 
 func TestEchelonAdapter_Targets_DiscoveryFailureReportsTargetError(t *testing.T) {
 	ech := &apiv1.Echelon{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "flux-system", Name: "x"},
+		ObjectMeta: metav1.ObjectMeta{Namespace: nsFluxSystem, Name: "x"},
 		Spec: apiv1.EchelonSpec{Targets: []apiv1.TargetSpec{
-			{Group: "missing.io", Kind: "Late"},
+			{Group: "missing.io", Kind: kindLate},
 		}},
 	}
 	a := controller.NewEchelonAdapter(ech)
@@ -112,10 +112,10 @@ func TestEchelonAdapter_Targets_DiscoveryFailureReportsTargetError(t *testing.T)
 
 func TestClusterEchelonAdapter_Targets_NamespaceListMatcher(t *testing.T) {
 	ce := &apiv1.ClusterEchelon{
-		ObjectMeta: metav1.ObjectMeta{Name: "platform"},
+		ObjectMeta: metav1.ObjectMeta{Name: namePlatform},
 		Spec: apiv1.ClusterEchelonSpec{Targets: []apiv1.ClusterTargetSpec{{
-			TargetSpec: apiv1.TargetSpec{Group: "kustomize.toolkit.fluxcd.io", Kind: "Kustomization"},
-			Namespaces: []string{"flux-system", "team-a"},
+			TargetSpec: apiv1.TargetSpec{Group: groupKustomize, Kind: kindKustomization},
+			Namespaces: []string{nsFluxSystem, "team-a"},
 		}}},
 	}
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).Build()
@@ -129,7 +129,7 @@ func TestClusterEchelonAdapter_Targets_NamespaceListMatcher(t *testing.T) {
 		t.Fatalf("targets len = %d, want 1", len(targets))
 	}
 	m := targets[0].NamespaceMatcher
-	if !m("flux-system") || !m("team-a") {
+	if !m(nsFluxSystem) || !m("team-a") {
 		t.Errorf("matcher should accept listed namespaces")
 	}
 	if m("team-b") {
@@ -138,13 +138,13 @@ func TestClusterEchelonAdapter_Targets_NamespaceListMatcher(t *testing.T) {
 }
 
 func TestClusterEchelonAdapter_Targets_NamespaceSelectorListsNamespaces(t *testing.T) {
-	ns1 := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-a", Labels: map[string]string{"tier": "platform"}}}
-	ns2 := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-b", Labels: map[string]string{"tier": "data"}}}
+	ns1 := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-a", Labels: map[string]string{labelTier: namePlatform}}}
+	ns2 := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-b", Labels: map[string]string{labelTier: "data"}}}
 	ce := &apiv1.ClusterEchelon{
-		ObjectMeta: metav1.ObjectMeta{Name: "platform"},
+		ObjectMeta: metav1.ObjectMeta{Name: namePlatform},
 		Spec: apiv1.ClusterEchelonSpec{Targets: []apiv1.ClusterTargetSpec{{
-			TargetSpec:        apiv1.TargetSpec{Group: "kustomize.toolkit.fluxcd.io", Kind: "Kustomization"},
-			NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"tier": "platform"}},
+			TargetSpec:        apiv1.TargetSpec{Group: groupKustomize, Kind: kindKustomization},
+			NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{labelTier: namePlatform}},
 		}}},
 	}
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(ns1, ns2).Build()
@@ -166,8 +166,8 @@ func TestClusterEchelonAdapter_Targets_ClusterScopedKindWithNamespaces_IsScopeMi
 	ce := &apiv1.ClusterEchelon{
 		ObjectMeta: metav1.ObjectMeta{Name: "x"},
 		Spec: apiv1.ClusterEchelonSpec{Targets: []apiv1.ClusterTargetSpec{{
-			TargetSpec: apiv1.TargetSpec{Group: "rbac.authorization.k8s.io", Kind: "ClusterRole"},
-			Namespaces: []string{"flux-system"},
+			TargetSpec: apiv1.TargetSpec{Group: groupRBAC, Kind: "ClusterRole"},
+			Namespaces: []string{nsFluxSystem},
 		}}},
 	}
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).Build()
@@ -185,7 +185,7 @@ func TestClusterEchelonAdapter_Targets_NoNamespaceFilter_AllNamespaces(t *testin
 	ce := &apiv1.ClusterEchelon{
 		ObjectMeta: metav1.ObjectMeta{Name: "global"},
 		Spec: apiv1.ClusterEchelonSpec{Targets: []apiv1.ClusterTargetSpec{{
-			TargetSpec: apiv1.TargetSpec{Group: "kustomize.toolkit.fluxcd.io", Kind: "Kustomization"},
+			TargetSpec: apiv1.TargetSpec{Group: groupKustomize, Kind: kindKustomization},
 		}}},
 	}
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).Build()
@@ -200,9 +200,9 @@ func TestClusterEchelonAdapter_Targets_NoNamespaceFilter_AllNamespaces(t *testin
 
 func TestEchelonAdapter_PassesScopeFromDiscovery(t *testing.T) {
 	ech := &apiv1.Echelon{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "flux-system", Name: "x"},
+		ObjectMeta: metav1.ObjectMeta{Namespace: nsFluxSystem, Name: "x"},
 		Spec: apiv1.EchelonSpec{Targets: []apiv1.TargetSpec{
-			{Group: "kustomize.toolkit.fluxcd.io", Kind: "Kustomization"},
+			{Group: groupKustomize, Kind: kindKustomization},
 		}},
 	}
 	targets, _ := controller.NewEchelonAdapter(ech).Targets(t.Context(), newDisc())
@@ -223,13 +223,13 @@ func TestEchelonAdapter_NilResolverIsTargetError(t *testing.T) {
 // Sanity: Group/Kind round-trip on the GVK.
 func TestEchelonAdapter_GVK(t *testing.T) {
 	ech := &apiv1.Echelon{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "flux-system", Name: "x"},
+		ObjectMeta: metav1.ObjectMeta{Namespace: nsFluxSystem, Name: "x"},
 		Spec: apiv1.EchelonSpec{Targets: []apiv1.TargetSpec{
-			{Group: "kustomize.toolkit.fluxcd.io", Kind: "Kustomization"},
+			{Group: groupKustomize, Kind: kindKustomization},
 		}},
 	}
 	targets, _ := controller.NewEchelonAdapter(ech).Targets(t.Context(), newDisc())
-	wantGVK := schema.GroupVersionKind{Group: "kustomize.toolkit.fluxcd.io", Version: "v1", Kind: "Kustomization"}
+	wantGVK := schema.GroupVersionKind{Group: groupKustomize, Version: "v1", Kind: kindKustomization}
 	if targets[0].GVK != wantGVK {
 		t.Errorf("GVK = %v, want %v", targets[0].GVK, wantGVK)
 	}

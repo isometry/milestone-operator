@@ -35,8 +35,8 @@ func TestInformers_Gauge(t *testing.T) {
 	if err := metrics.Register(reg); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	metrics.Informers.WithLabelValues("kustomize.toolkit.fluxcd.io", "v1", "Kustomization").Set(2)
-	got := testutil.ToFloat64(metrics.Informers.WithLabelValues("kustomize.toolkit.fluxcd.io", "v1", "Kustomization"))
+	metrics.Informers.WithLabelValues(groupKustomize, "v1", kindKustomization).Set(2)
+	got := testutil.ToFloat64(metrics.Informers.WithLabelValues(groupKustomize, "v1", kindKustomization))
 	if got != 2 {
 		t.Errorf("Informers gauge = %v, want 2", got)
 	}
@@ -47,9 +47,9 @@ func TestInformerEvents_Counter(t *testing.T) {
 	if err := metrics.Register(reg); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	metrics.InformerEvents.WithLabelValues("kustomize.toolkit.fluxcd.io", "v1", "Kustomization", "add").Inc()
-	metrics.InformerEvents.WithLabelValues("kustomize.toolkit.fluxcd.io", "v1", "Kustomization", "add").Inc()
-	got := testutil.ToFloat64(metrics.InformerEvents.WithLabelValues("kustomize.toolkit.fluxcd.io", "v1", "Kustomization", "add"))
+	metrics.InformerEvents.WithLabelValues(groupKustomize, "v1", kindKustomization, "add").Inc()
+	metrics.InformerEvents.WithLabelValues(groupKustomize, "v1", kindKustomization, "add").Inc()
+	got := testutil.ToFloat64(metrics.InformerEvents.WithLabelValues(groupKustomize, "v1", kindKustomization, "add"))
 	if got != 2 {
 		t.Errorf("InformerEvents counter = %v, want 2", got)
 	}
@@ -60,7 +60,7 @@ func TestObserveStage_RecordsDuration(t *testing.T) {
 	if err := metrics.Register(reg); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	done := metrics.ObserveStage("Echelon", "discovery")
+	done := metrics.ObserveStage(kindEchelon, "discovery")
 	time.Sleep(2 * time.Millisecond)
 	done()
 	// We can't easily assert exact duration, but we can confirm the histogram
@@ -86,10 +86,10 @@ func TestRegister_AllMetricFamiliesPresent(t *testing.T) {
 	metrics.EventDispatchDuration.WithLabelValues("g", "v", "K").Observe(0)
 	metrics.DiscoveryResolveTotal.WithLabelValues("hit").Inc()
 	metrics.DiscoveryCacheSize.Set(0)
-	metrics.ReconcileStageDuration.WithLabelValues("Echelon", "discovery").Observe(0)
-	metrics.StatusPatchTotal.WithLabelValues("Echelon", "changed").Inc()
-	metrics.TargetResolveErrors.WithLabelValues("Echelon", "GVKNotEstablished").Inc()
-	metrics.CRDEstablishedEvents.WithLabelValues("kustomize.toolkit.fluxcd.io", "Kustomization").Inc()
+	metrics.ReconcileStageDuration.WithLabelValues(kindEchelon, "discovery").Observe(0)
+	metrics.StatusPatchTotal.WithLabelValues(kindEchelon, "changed").Inc()
+	metrics.TargetResolveErrors.WithLabelValues(kindEchelon, "GVKNotEstablished").Inc()
+	metrics.CRDEstablishedEvents.WithLabelValues(groupKustomize, kindKustomization).Inc()
 	metrics.OwnersWoken.WithLabelValues("crd_established").Inc()
 
 	families, err := reg.Gather()

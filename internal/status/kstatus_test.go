@@ -26,15 +26,15 @@ func newDeploymentReady(replicas, ready int64) *unstructured.Unstructured {
 	u.SetName("d1")
 	u.SetGeneration(1)
 	_ = unstructured.SetNestedField(u.Object, replicas, "spec", "replicas")
-	_ = unstructured.SetNestedField(u.Object, int64(1), "status", "observedGeneration")
-	_ = unstructured.SetNestedField(u.Object, ready, "status", "updatedReplicas")
-	_ = unstructured.SetNestedField(u.Object, ready, "status", "readyReplicas")
-	_ = unstructured.SetNestedField(u.Object, ready, "status", "availableReplicas")
-	_ = unstructured.SetNestedField(u.Object, ready, "status", "replicas")
+	_ = unstructured.SetNestedField(u.Object, int64(1), keyStatus, "observedGeneration")
+	_ = unstructured.SetNestedField(u.Object, ready, keyStatus, "updatedReplicas")
+	_ = unstructured.SetNestedField(u.Object, ready, keyStatus, "readyReplicas")
+	_ = unstructured.SetNestedField(u.Object, ready, keyStatus, "availableReplicas")
+	_ = unstructured.SetNestedField(u.Object, ready, keyStatus, "replicas")
 	_ = unstructured.SetNestedSlice(u.Object, []any{
-		map[string]any{"type": "Available", "status": "True"},
-		map[string]any{"type": "Progressing", "status": "True", "reason": "NewReplicaSetAvailable"},
-	}, "status", "conditions")
+		map[string]any{keyType: "Available", keyStatus: statusTrue},
+		map[string]any{keyType: "Progressing", keyStatus: statusTrue, keyReason: "NewReplicaSetAvailable"},
+	}, keyStatus, "conditions")
 	return u
 }
 
@@ -77,10 +77,10 @@ func TestCompute_CustomResourceReadyTrue(t *testing.T) {
 	u.SetNamespace("flux-system")
 	u.SetName("k1")
 	u.SetGeneration(2)
-	_ = unstructured.SetNestedField(u.Object, int64(2), "status", "observedGeneration")
+	_ = unstructured.SetNestedField(u.Object, int64(2), keyStatus, "observedGeneration")
 	_ = unstructured.SetNestedSlice(u.Object, []any{
-		map[string]any{"type": "Ready", "status": "True", "reason": "ReconciliationSucceeded"},
-	}, "status", "conditions")
+		map[string]any{keyType: "Ready", keyStatus: statusTrue, keyReason: "ReconciliationSucceeded"},
+	}, keyStatus, "conditions")
 	got := status.Compute(u)
 	if got.Status != "Current" {
 		t.Errorf("Status = %q, want Current", got.Status)
@@ -94,10 +94,10 @@ func TestCompute_CustomResourceReadyFalse(t *testing.T) {
 	u.SetNamespace("flux-system")
 	u.SetName("k1")
 	u.SetGeneration(2)
-	_ = unstructured.SetNestedField(u.Object, int64(2), "status", "observedGeneration")
+	_ = unstructured.SetNestedField(u.Object, int64(2), keyStatus, "observedGeneration")
 	_ = unstructured.SetNestedSlice(u.Object, []any{
-		map[string]any{"type": "Ready", "status": "False", "reason": "BuildFailed", "message": "kustomize build failed"},
-	}, "status", "conditions")
+		map[string]any{keyType: "Ready", keyStatus: "False", keyReason: "BuildFailed", "message": "kustomize build failed"},
+	}, keyStatus, "conditions")
 	got := status.Compute(u)
 	// kstatus reports a False Ready as InProgress (still working towards readiness).
 	if got.Status != "InProgress" {

@@ -119,7 +119,7 @@ type fakeAdapter struct {
 
 func (a *fakeAdapter) Object() client.Object { return a.obj }
 func (a *fakeAdapter) OwnerKey() watcher.OwnerKey {
-	return watcher.OwnerKey{Kind: "Echelon", Namespace: a.obj.GetNamespace(), Name: a.obj.GetName()}
+	return watcher.OwnerKey{Kind: kindEchelon, Namespace: a.obj.GetNamespace(), Name: a.obj.GetName()}
 }
 func (a *fakeAdapter) Targets(_ context.Context, _ discovery.Resolver) ([]controller.NormalizedTarget, []controller.TargetError) {
 	return a.targets, a.errs
@@ -147,8 +147,8 @@ func newScheme(t *testing.T) *runtime.Scheme {
 
 func newEchelon(name string) *apiv1.Echelon {
 	return &apiv1.Echelon{
-		ObjectMeta: metav1.ObjectMeta{Namespace: "flux-system", Name: name, Generation: 1},
-		Spec:       apiv1.EchelonSpec{Targets: []apiv1.TargetSpec{{Kind: "Kustomization", Group: "kustomize.toolkit.fluxcd.io"}}},
+		ObjectMeta: metav1.ObjectMeta{Namespace: nsFluxSystem, Name: name, Generation: 1},
+		Spec:       apiv1.EchelonSpec{Targets: []apiv1.TargetSpec{{Kind: kindKustomization, Group: groupKustomize}}},
 	}
 }
 
@@ -159,19 +159,19 @@ func mustSelector(t *testing.T) labels.Selector {
 
 func currentMember(name string) *unstructured.Unstructured {
 	u := &unstructured.Unstructured{}
-	u.SetAPIVersion("kustomize.toolkit.fluxcd.io/v1")
-	u.SetKind("Kustomization")
-	u.SetNamespace("flux-system")
+	u.SetAPIVersion(gvKustomizeV1)
+	u.SetKind(kindKustomization)
+	u.SetNamespace(nsFluxSystem)
 	u.SetName(name)
 	u.SetGeneration(1)
-	_ = unstructured.SetNestedField(u.Object, int64(1), "status", "observedGeneration")
+	_ = unstructured.SetNestedField(u.Object, int64(1), schemaPropStatus, "observedGeneration")
 	_ = unstructured.SetNestedSlice(u.Object, []any{
-		map[string]any{"type": "Ready", "status": "True", "reason": "ReconciliationSucceeded"},
-	}, "status", "conditions")
+		map[string]any{keyType: apiv1.ConditionReady, schemaPropStatus: "True", keyReason: "ReconciliationSucceeded"},
+	}, schemaPropStatus, "conditions")
 	return u
 }
 
-var kustomizationGVK = schema.GroupVersionKind{Group: "kustomize.toolkit.fluxcd.io", Version: "v1", Kind: "Kustomization"}
+var kustomizationGVK = schema.GroupVersionKind{Group: groupKustomize, Version: "v1", Kind: kindKustomization}
 
 func newFixture(t *testing.T, ech *apiv1.Echelon, fa *fakeAdapter, freg *fakeRegistry) *controller.Reconciler {
 	t.Helper()
@@ -181,7 +181,7 @@ func newFixture(t *testing.T, ech *apiv1.Echelon, fa *fakeAdapter, freg *fakeReg
 		Registry:   freg,
 		Resolver:   nil, // unused: fakeAdapter pre-resolves targets
 		NewAdapter: func(_ client.Object) controller.OwnerAdapter { return fa },
-		Controller: "Echelon",
+		Controller: kindEchelon,
 		Now:        func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) },
 	}
 }
@@ -260,8 +260,8 @@ func TestReconcile_Deletion_RunsFinalizer(t *testing.T) {
 	now := metav1.Now()
 	ech.DeletionTimestamp = &now
 	freg := newFakeRegistry()
-	freg.subscribed[watcher.OwnerKey{Kind: "Echelon", Namespace: "flux-system", Name: "e1"}] = map[schema.GroupVersionKind]watcher.Subscriber{
-		kustomizationGVK: {Owner: watcher.OwnerKey{Kind: "Echelon", Namespace: "flux-system", Name: "e1"}},
+	freg.subscribed[watcher.OwnerKey{Kind: kindEchelon, Namespace: nsFluxSystem, Name: "e1"}] = map[schema.GroupVersionKind]watcher.Subscriber{
+		kustomizationGVK: {Owner: watcher.OwnerKey{Kind: kindEchelon, Namespace: nsFluxSystem, Name: "e1"}},
 	}
 	fa := &fakeAdapter{obj: ech}
 	r := newFixture(t, ech, fa, freg)
@@ -283,7 +283,7 @@ func TestReconcile_SubscriptionDiff_RemovesStale(t *testing.T) {
 	ech := newEchelon("e1")
 	ech.Finalizers = []string{apiv1.Finalizer}
 	freg := newFakeRegistry()
-	owner := watcher.OwnerKey{Kind: "Echelon", Namespace: "flux-system", Name: "e1"}
+	owner := watcher.OwnerKey{Kind: kindEchelon, Namespace: nsFluxSystem, Name: "e1"}
 	helmGVK := schema.GroupVersionKind{Group: "helm.toolkit.fluxcd.io", Version: "v2", Kind: "HelmRelease"}
 	// Pre-subscribe owner to two GVKs; spec only carries Kustomization.
 	freg.subscribed[owner] = map[schema.GroupVersionKind]watcher.Subscriber{
@@ -319,7 +319,7 @@ func TestReconcile_TargetResolveError_SetsStalled(t *testing.T) {
 	fa := &fakeAdapter{
 		obj: ech,
 		errs: []controller.TargetError{{
-			Index: 0, Group: "missing.io", Version: "v1", Kind: "Late",
+			Index: 0, Group: "missing.io", Version: "v1", Kind: kindLate,
 			Reason: apiv1.ReasonGVKNotEstablished,
 			Err:    errors.New("not established"),
 		}},
@@ -394,15 +394,15 @@ func TestReconcile_CapsNotReadyMembers(t *testing.T) {
 	members := make([]*unstructured.Unstructured, 0, 60)
 	for i := range 60 {
 		u := &unstructured.Unstructured{}
-		u.SetAPIVersion("kustomize.toolkit.fluxcd.io/v1")
-		u.SetKind("Kustomization")
-		u.SetNamespace("flux-system")
+		u.SetAPIVersion(gvKustomizeV1)
+		u.SetKind(kindKustomization)
+		u.SetNamespace(nsFluxSystem)
 		u.SetName(intToStr(i))
 		u.SetGeneration(2)
-		_ = unstructured.SetNestedField(u.Object, int64(2), "status", "observedGeneration")
+		_ = unstructured.SetNestedField(u.Object, int64(2), schemaPropStatus, "observedGeneration")
 		_ = unstructured.SetNestedSlice(u.Object, []any{
-			map[string]any{"type": "Ready", "status": "False", "reason": "Reconciling"},
-		}, "status", "conditions")
+			map[string]any{keyType: apiv1.ConditionReady, schemaPropStatus: "False", keyReason: "Reconciling"},
+		}, schemaPropStatus, "conditions")
 		members = append(members, u)
 	}
 	freg.listResponses[kustomizationGVK] = members
@@ -433,10 +433,10 @@ func TestReconcile_NotFoundFromGet_NoOp(t *testing.T) {
 		Client:     cl,
 		Registry:   newFakeRegistry(),
 		NewAdapter: func(_ client.Object) controller.OwnerAdapter { return nil },
-		Controller: "Echelon",
+		Controller: kindEchelon,
 	}
 	rf := r.AsReconcileFunc(func() client.Object { return &apiv1.Echelon{} })
-	res, err := rf(t.Context(), reconcileRequest("flux-system", "missing"))
+	res, err := rf(t.Context(), reconcileRequest(nsFluxSystem, "missing"))
 	if err != nil {
 		t.Errorf("expected nil error, got %v", err)
 	}
@@ -486,7 +486,7 @@ func TestReconcile_MultipleEchelons_IndependentStatus(t *testing.T) {
 			}
 			return fa2
 		},
-		Controller: "Echelon",
+		Controller: kindEchelon,
 		Now:        func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) },
 	}
 
@@ -505,8 +505,8 @@ func TestReconcile_MultipleEchelons_IndependentStatus(t *testing.T) {
 	}
 
 	// Each owner should have subscribed to its own GVK only.
-	owner1 := watcher.OwnerKey{Kind: "Echelon", Namespace: "flux-system", Name: "e1"}
-	owner2 := watcher.OwnerKey{Kind: "Echelon", Namespace: "flux-system", Name: "e2"}
+	owner1 := watcher.OwnerKey{Kind: kindEchelon, Namespace: nsFluxSystem, Name: "e1"}
+	owner2 := watcher.OwnerKey{Kind: kindEchelon, Namespace: nsFluxSystem, Name: "e2"}
 	if got := freg.GVKsByOwner(owner1); len(got) != 1 || got[0] != kustomizationGVK {
 		t.Errorf("e1 subscriptions = %v, want [Kustomization]", got)
 	}

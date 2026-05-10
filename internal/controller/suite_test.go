@@ -43,11 +43,11 @@ var (
 	widgetCRD = &apiextv1.CustomResourceDefinition{
 		ObjectMeta: metav1.ObjectMeta{Name: "widgets.test.as-code.io"},
 		Spec: apiextv1.CustomResourceDefinitionSpec{
-			Group: "test.as-code.io",
+			Group: groupTestAsCode,
 			Names: apiextv1.CustomResourceDefinitionNames{
 				Plural:   "widgets",
 				Singular: "widget",
-				Kind:     "Widget",
+				Kind:     kindWidget,
 				ListKind: "WidgetList",
 			},
 			Scope: apiextv1.NamespaceScoped,
@@ -56,10 +56,10 @@ var (
 				Subresources: &apiextv1.CustomResourceSubresources{Status: &apiextv1.CustomResourceSubresourceStatus{}},
 				Schema: &apiextv1.CustomResourceValidation{
 					OpenAPIV3Schema: &apiextv1.JSONSchemaProps{
-						Type: "object",
+						Type: schemaTypeObject,
 						Properties: map[string]apiextv1.JSONSchemaProps{
-							"spec":   {Type: "object", XPreserveUnknownFields: ptrBool(true)},
-							"status": {Type: "object", XPreserveUnknownFields: ptrBool(true)},
+							"spec":           {Type: schemaTypeObject, XPreserveUnknownFields: ptrBool(true)},
+							schemaPropStatus: {Type: schemaTypeObject, XPreserveUnknownFields: ptrBool(true)},
 						},
 					},
 				},
@@ -67,7 +67,7 @@ var (
 		},
 	}
 
-	widgetGVK = schema.GroupVersionKind{Group: "test.as-code.io", Version: "v1", Kind: "Widget"}
+	widgetGVK = schema.GroupVersionKind{Group: groupTestAsCode, Version: "v1", Kind: kindWidget}
 )
 
 func ptrBool(b bool) *bool { return &b }
@@ -190,10 +190,10 @@ func newWidget(ns, name string, ready string) *unstructured.Unstructured {
 	u.SetName(name)
 	u.SetGeneration(1)
 	if ready != "" {
-		_ = unstructured.SetNestedField(u.Object, int64(1), "status", "observedGeneration")
+		_ = unstructured.SetNestedField(u.Object, int64(1), schemaPropStatus, "observedGeneration")
 		_ = unstructured.SetNestedSlice(u.Object, []any{
-			map[string]any{"type": "Ready", "status": ready, "reason": "Test"},
-		}, "status", "conditions")
+			map[string]any{keyType: apiv1.ConditionReady, schemaPropStatus: ready, keyReason: "Test"},
+		}, schemaPropStatus, "conditions")
 	}
 	return u
 }

@@ -100,7 +100,7 @@ func newReadyEchelon(ns, name string) apiv1.Echelon {
 					{Type: apiv1.ConditionStalled, Status: metav1.ConditionFalse},
 				},
 				Targets: []apiv1.TargetRollup{
-					{Group: "kustomize.toolkit.fluxcd.io", Version: "v1", Kind: "Kustomization",
+					{Group: groupKustomize, Version: "v1", Kind: kindKustomization,
 						Ready: metav1.ConditionTrue, Reason: apiv1.ReasonAllMembersReady,
 						Summary: apiv1.Summary{Total: 5, Current: 5}},
 				},
@@ -110,7 +110,7 @@ func newReadyEchelon(ns, name string) apiv1.Echelon {
 }
 
 func TestStateCollector_EmitsConditionAndGenerationGauges(t *testing.T) {
-	lister := &fakeLister{echelons: []apiv1.Echelon{newReadyEchelon("flux-system", "wave-0")}}
+	lister := &fakeLister{echelons: []apiv1.Echelon{newReadyEchelon(nsFluxSystem, "wave-0")}}
 	reg := prometheus.NewRegistry()
 	col := metrics.NewStateCollector(t.Context(), lister)
 	if err := reg.Register(col); err != nil {
@@ -139,20 +139,20 @@ func TestStateCollector_EmitsConditionAndGenerationGauges(t *testing.T) {
 }
 
 func TestStateCollector_StatusConditionGauge(t *testing.T) {
-	lister := &fakeLister{echelons: []apiv1.Echelon{newReadyEchelon("flux-system", "wave-0")}}
+	lister := &fakeLister{echelons: []apiv1.Echelon{newReadyEchelon(nsFluxSystem, "wave-0")}}
 	col := metrics.NewStateCollector(t.Context(), lister)
 
 	v := valueAt(t, col, "echelon_status_condition", map[string]string{
-		"owner_kind": "Echelon", "namespace": "flux-system", "name": "wave-0",
-		"type": "Ready", "status": "True",
+		keyOwnerKind: kindEchelon, keyNamespace: nsFluxSystem, keyName: nameWave0,
+		keyType: apiv1.ConditionReady, keyStatus: "True",
 	})
 	if v != 1 {
 		t.Errorf("Ready=True gauge = %v, want 1", v)
 	}
 	// The 0-status sibling should be 0.
 	v = valueAt(t, col, "echelon_status_condition", map[string]string{
-		"owner_kind": "Echelon", "namespace": "flux-system", "name": "wave-0",
-		"type": "Ready", "status": "False",
+		keyOwnerKind: kindEchelon, keyNamespace: nsFluxSystem, keyName: nameWave0,
+		keyType: apiv1.ConditionReady, keyStatus: "False",
 	})
 	if v != 0 {
 		t.Errorf("Ready=False gauge = %v, want 0", v)
@@ -171,13 +171,13 @@ func TestStateCollector_TargetReadyEncodes(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			ech := newReadyEchelon("flux-system", "x")
+			ech := newReadyEchelon(nsFluxSystem, "x")
 			ech.Status.Targets[0].Ready = tc.ready
 			lister := &fakeLister{echelons: []apiv1.Echelon{ech}}
 			col := metrics.NewStateCollector(t.Context(), lister)
 			v := valueAt(t, col, "echelon_target_ready", map[string]string{
-				"owner_kind": "Echelon", "namespace": "flux-system", "name": "x",
-				"target_group": "kustomize.toolkit.fluxcd.io", "target_kind": "Kustomization",
+				keyOwnerKind: kindEchelon, keyNamespace: nsFluxSystem, keyName: "x",
+				keyTargetGroup: groupKustomize, keyTargetKind: kindKustomization,
 			})
 			if v != tc.expect {
 				t.Errorf("encoded = %v, want %v", v, tc.expect)
@@ -200,8 +200,8 @@ func TestStateCollector_ClusterEchelonHasEmptyNamespaceLabel(t *testing.T) {
 	}
 	col := metrics.NewStateCollector(t.Context(), &fakeLister{clusterEchelons: []apiv1.ClusterEchelon{ce}})
 	v := valueAt(t, col, "echelon_status_condition", map[string]string{
-		"owner_kind": "ClusterEchelon", "namespace": "", "name": "platform-wave",
-		"type": "Ready", "status": "Unknown",
+		keyOwnerKind: "ClusterEchelon", keyNamespace: "", keyName: "platform-wave",
+		keyType: apiv1.ConditionReady, keyStatus: "Unknown",
 	})
 	if v != 1 {
 		t.Errorf("Ready=Unknown gauge = %v, want 1", v)
@@ -209,7 +209,7 @@ func TestStateCollector_ClusterEchelonHasEmptyNamespaceLabel(t *testing.T) {
 }
 
 func TestStateCollector_TargetMembersPerStatusBucket(t *testing.T) {
-	ech := newReadyEchelon("flux-system", "wave-0")
+	ech := newReadyEchelon(nsFluxSystem, "wave-0")
 	ech.Status.Targets[0].Summary = apiv1.Summary{Total: 4, Current: 1, InProgress: 2, Failed: 1}
 	col := metrics.NewStateCollector(t.Context(), &fakeLister{echelons: []apiv1.Echelon{ech}})
 
@@ -221,9 +221,9 @@ func TestStateCollector_TargetMembersPerStatusBucket(t *testing.T) {
 	}
 	for status, want := range cases {
 		got := valueAt(t, col, "echelon_target_members", map[string]string{
-			"owner_kind": "Echelon", "namespace": "flux-system", "name": "wave-0",
-			"target_group": "kustomize.toolkit.fluxcd.io", "target_kind": "Kustomization",
-			"status": status,
+			keyOwnerKind: kindEchelon, keyNamespace: nsFluxSystem, keyName: nameWave0,
+			keyTargetGroup: groupKustomize, keyTargetKind: kindKustomization,
+			keyStatus: status,
 		})
 		if got != want {
 			t.Errorf("status=%q gauge = %v, want %v", status, got, want)
@@ -237,15 +237,15 @@ func TestStateCollector_TargetMembersPerStatusBucket(t *testing.T) {
 // emission a deleted-then-recreated owner would clobber the live one's gauge.
 func TestStateCollector_MultipleEchelons_SeparateSeries(t *testing.T) {
 	lister := &fakeLister{echelons: []apiv1.Echelon{
-		newReadyEchelon("flux-system", "wave-0"),
+		newReadyEchelon(nsFluxSystem, "wave-0"),
 		newReadyEchelon("team-a", "wave-0"),
 	}}
 	col := metrics.NewStateCollector(t.Context(), lister)
 
 	for _, ns := range []string{"flux-system", "team-a"} {
 		v := valueAt(t, col, "echelon_status_condition", map[string]string{
-			"owner_kind": "Echelon", "namespace": ns, "name": "wave-0",
-			"type": "Ready", "status": "True",
+			"owner_kind": kindEchelon, "namespace": ns, keyName: "wave-0",
+			keyType: apiv1.ConditionReady, keyStatus: "True",
 		})
 		if v != 1 {
 			t.Errorf("namespace=%q Ready=True gauge = %v, want 1", ns, v)

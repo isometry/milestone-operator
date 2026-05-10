@@ -57,40 +57,40 @@ func newFluxFake() *fakeDiscoverer {
 	return &fakeDiscoverer{
 		groups: &metav1.APIGroupList{Groups: []metav1.APIGroup{
 			{
-				Name: "kustomize.toolkit.fluxcd.io",
+				Name: groupKustomize,
 				Versions: []metav1.GroupVersionForDiscovery{
-					{GroupVersion: "kustomize.toolkit.fluxcd.io/v1", Version: "v1"},
-					{GroupVersion: "kustomize.toolkit.fluxcd.io/v1beta2", Version: "v1beta2"},
+					{GroupVersion: gvKustomizeV1, Version: "v1"},
+					{GroupVersion: gvKustomizeV1beta2, Version: "v1beta2"},
 				},
 				PreferredVersion: metav1.GroupVersionForDiscovery{
-					GroupVersion: "kustomize.toolkit.fluxcd.io/v1", Version: "v1",
+					GroupVersion: gvKustomizeV1, Version: "v1",
 				},
 			},
 			{
-				Name: "rbac.authorization.k8s.io",
+				Name: groupRBAC,
 				Versions: []metav1.GroupVersionForDiscovery{
-					{GroupVersion: "rbac.authorization.k8s.io/v1", Version: "v1"},
+					{GroupVersion: gvRBACv1, Version: "v1"},
 				},
 				PreferredVersion: metav1.GroupVersionForDiscovery{
-					GroupVersion: "rbac.authorization.k8s.io/v1", Version: "v1",
+					GroupVersion: gvRBACv1, Version: "v1",
 				},
 			},
 		}},
 		resources: map[string]*metav1.APIResourceList{
-			"kustomize.toolkit.fluxcd.io/v1": {
-				GroupVersion: "kustomize.toolkit.fluxcd.io/v1",
+			gvKustomizeV1: {
+				GroupVersion: gvKustomizeV1,
 				APIResources: []metav1.APIResource{
-					{Name: "kustomizations", Kind: "Kustomization", Namespaced: true},
+					{Name: "kustomizations", Kind: kindKustomization, Namespaced: true},
 				},
 			},
-			"kustomize.toolkit.fluxcd.io/v1beta2": {
-				GroupVersion: "kustomize.toolkit.fluxcd.io/v1beta2",
+			gvKustomizeV1beta2: {
+				GroupVersion: gvKustomizeV1beta2,
 				APIResources: []metav1.APIResource{
-					{Name: "kustomizations", Kind: "Kustomization", Namespaced: true},
+					{Name: "kustomizations", Kind: kindKustomization, Namespaced: true},
 				},
 			},
-			"rbac.authorization.k8s.io/v1": {
-				GroupVersion: "rbac.authorization.k8s.io/v1",
+			gvRBACv1: {
+				GroupVersion: gvRBACv1,
 				APIResources: []metav1.APIResource{
 					{Name: "clusterroles", Kind: "ClusterRole", Namespaced: false},
 					{Name: "roles", Kind: "Role", Namespaced: true},
@@ -108,11 +108,11 @@ func newResolver(t *testing.T, fd *fakeDiscoverer, ttl time.Duration) discovery.
 func TestResolve_PreferredVersion(t *testing.T) {
 	fd := newFluxFake()
 	r := newResolver(t, fd, time.Hour)
-	gvk, scope, err := r.Resolve(t.Context(), "kustomize.toolkit.fluxcd.io", "Kustomization", "")
+	gvk, scope, err := r.Resolve(t.Context(), groupKustomize, kindKustomization, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	wantGVK := schema.GroupVersionKind{Group: "kustomize.toolkit.fluxcd.io", Version: "v1", Kind: "Kustomization"}
+	wantGVK := schema.GroupVersionKind{Group: groupKustomize, Version: "v1", Kind: kindKustomization}
 	if gvk != wantGVK {
 		t.Errorf("gvk = %v, want %v", gvk, wantGVK)
 	}
@@ -124,7 +124,7 @@ func TestResolve_PreferredVersion(t *testing.T) {
 func TestResolve_ExplicitVersion(t *testing.T) {
 	fd := newFluxFake()
 	r := newResolver(t, fd, time.Hour)
-	gvk, _, err := r.Resolve(t.Context(), "kustomize.toolkit.fluxcd.io", "Kustomization", "v1beta2")
+	gvk, _, err := r.Resolve(t.Context(), groupKustomize, kindKustomization, "v1beta2")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestResolve_MissingGroup(t *testing.T) {
 func TestResolve_MissingKind(t *testing.T) {
 	fd := newFluxFake()
 	r := newResolver(t, fd, time.Hour)
-	_, _, err := r.Resolve(t.Context(), "kustomize.toolkit.fluxcd.io", "DoesNotExist", "")
+	_, _, err := r.Resolve(t.Context(), groupKustomize, "DoesNotExist", "")
 	if !errors.Is(err, discovery.ErrGVKNotEstablished) {
 		t.Errorf("err = %v, want ErrGVKNotEstablished", err)
 	}
@@ -167,7 +167,7 @@ func TestResolve_CacheHit(t *testing.T) {
 	fd := newFluxFake()
 	r := newResolver(t, fd, time.Hour)
 	for range 5 {
-		if _, _, err := r.Resolve(t.Context(), "kustomize.toolkit.fluxcd.io", "Kustomization", ""); err != nil {
+		if _, _, err := r.Resolve(t.Context(), groupKustomize, kindKustomization, ""); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	}
@@ -182,11 +182,11 @@ func TestResolve_CacheHit(t *testing.T) {
 func TestResolve_CacheExpiry(t *testing.T) {
 	fd := newFluxFake()
 	r := newResolver(t, fd, 10*time.Millisecond)
-	if _, _, err := r.Resolve(t.Context(), "kustomize.toolkit.fluxcd.io", "Kustomization", ""); err != nil {
+	if _, _, err := r.Resolve(t.Context(), groupKustomize, kindKustomization, ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	time.Sleep(30 * time.Millisecond)
-	if _, _, err := r.Resolve(t.Context(), "kustomize.toolkit.fluxcd.io", "Kustomization", ""); err != nil {
+	if _, _, err := r.Resolve(t.Context(), groupKustomize, kindKustomization, ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if g := fd.groupsCalls.Load(); g < 2 {
@@ -197,11 +197,11 @@ func TestResolve_CacheExpiry(t *testing.T) {
 func TestResolve_Invalidate(t *testing.T) {
 	fd := newFluxFake()
 	r := newResolver(t, fd, time.Hour)
-	if _, _, err := r.Resolve(t.Context(), "kustomize.toolkit.fluxcd.io", "Kustomization", ""); err != nil {
+	if _, _, err := r.Resolve(t.Context(), groupKustomize, kindKustomization, ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	r.Invalidate()
-	if _, _, err := r.Resolve(t.Context(), "kustomize.toolkit.fluxcd.io", "Kustomization", ""); err != nil {
+	if _, _, err := r.Resolve(t.Context(), groupKustomize, kindKustomization, ""); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if g := fd.groupsCalls.Load(); g < 2 {
@@ -214,20 +214,20 @@ func TestResolve_NegativeCacheRefreshes(t *testing.T) {
 	// (simulated by adding a group between calls) should be observed quickly.
 	fd := newFluxFake()
 	r := newResolver(t, fd, time.Hour)
-	if _, _, err := r.Resolve(t.Context(), "late.example.io", "Late", ""); !errors.Is(err, discovery.ErrGVKNotEstablished) {
+	if _, _, err := r.Resolve(t.Context(), groupLate, "Late", ""); !errors.Is(err, discovery.ErrGVKNotEstablished) {
 		t.Fatalf("err = %v, want ErrGVKNotEstablished", err)
 	}
 	// Install the new group.
 	fd.groups.Groups = append(fd.groups.Groups, metav1.APIGroup{
-		Name:             "late.example.io",
-		Versions:         []metav1.GroupVersionForDiscovery{{GroupVersion: "late.example.io/v1", Version: "v1"}},
-		PreferredVersion: metav1.GroupVersionForDiscovery{GroupVersion: "late.example.io/v1", Version: "v1"},
+		Name:             groupLate,
+		Versions:         []metav1.GroupVersionForDiscovery{{GroupVersion: gvLateV1, Version: "v1"}},
+		PreferredVersion: metav1.GroupVersionForDiscovery{GroupVersion: gvLateV1, Version: "v1"},
 	})
-	fd.resources["late.example.io/v1"] = &metav1.APIResourceList{
-		GroupVersion: "late.example.io/v1",
+	fd.resources[gvLateV1] = &metav1.APIResourceList{
+		GroupVersion: gvLateV1,
 		APIResources: []metav1.APIResource{{Name: "lates", Kind: "Late", Namespaced: true}},
 	}
-	if _, _, err := r.Resolve(t.Context(), "late.example.io", "Late", ""); err != nil {
+	if _, _, err := r.Resolve(t.Context(), groupLate, "Late", ""); err != nil {
 		t.Fatalf("after install, err = %v, want nil", err)
 	}
 }

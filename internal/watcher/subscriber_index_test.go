@@ -50,29 +50,29 @@ func ownerKeys(in []watcher.OwnerKey) []string {
 func TestSubscriberIndex_Subscribers_LabelSelector(t *testing.T) {
 	idx := watcher.NewSubscriberIndex()
 	wave0 := watcher.Subscriber{
-		Owner:    watcher.OwnerKey{Kind: "Echelon", Namespace: "flux-system", Name: "wave-0"},
-		Selector: mustSelector(t, map[string]string{"wave": "0"}),
+		Owner:    watcher.OwnerKey{Kind: kindEchelon, Namespace: nsFluxSystem, Name: nameWave0},
+		Selector: mustSelector(t, map[string]string{labelWave: "0"}),
 	}
 	wave1 := watcher.Subscriber{
-		Owner:    watcher.OwnerKey{Kind: "Echelon", Namespace: "flux-system", Name: "wave-1"},
-		Selector: mustSelector(t, map[string]string{"wave": "1"}),
+		Owner:    watcher.OwnerKey{Kind: kindEchelon, Namespace: nsFluxSystem, Name: "wave-1"},
+		Selector: mustSelector(t, map[string]string{labelWave: "1"}),
 	}
 	idx.Add(kustomizationGVK, wave0)
 	idx.Add(kustomizationGVK, wave1)
 
-	got := idx.Subscribers(kustomizationGVK, makeObj("flux-system", "k1", map[string]string{"wave": "0"}))
+	got := idx.Subscribers(kustomizationGVK, makeObj(nsFluxSystem, "k1", map[string]string{labelWave: "0"}))
 	want := []string{"Echelon/flux-system/wave-0"}
 	if !equal(ownerKeys(got), want) {
 		t.Errorf("subscribers = %v, want %v", ownerKeys(got), want)
 	}
 
-	got = idx.Subscribers(kustomizationGVK, makeObj("flux-system", "k2", map[string]string{"wave": "1"}))
+	got = idx.Subscribers(kustomizationGVK, makeObj(nsFluxSystem, "k2", map[string]string{labelWave: "1"}))
 	want = []string{"Echelon/flux-system/wave-1"}
 	if !equal(ownerKeys(got), want) {
 		t.Errorf("subscribers = %v, want %v", ownerKeys(got), want)
 	}
 
-	got = idx.Subscribers(kustomizationGVK, makeObj("flux-system", "k3", map[string]string{"wave": "2"}))
+	got = idx.Subscribers(kustomizationGVK, makeObj(nsFluxSystem, "k3", map[string]string{labelWave: "2"}))
 	if len(got) != 0 {
 		t.Errorf("subscribers = %v, want []", ownerKeys(got))
 	}
@@ -106,10 +106,10 @@ func TestSubscriberIndex_Subscribers_NamespaceMatcher(t *testing.T) {
 func TestSubscriberIndex_NilSelectorMatchesAll(t *testing.T) {
 	idx := watcher.NewSubscriberIndex()
 	idx.Add(kustomizationGVK, watcher.Subscriber{
-		Owner: watcher.OwnerKey{Kind: "Echelon", Namespace: "flux-system", Name: "all"},
+		Owner: watcher.OwnerKey{Kind: kindEchelon, Namespace: nsFluxSystem, Name: "all"},
 		// Selector intentionally nil ⇒ should match everything.
 	})
-	got := idx.Subscribers(kustomizationGVK, makeObj("flux-system", "anything", map[string]string{"any": "label"}))
+	got := idx.Subscribers(kustomizationGVK, makeObj(nsFluxSystem, "anything", map[string]string{"any": "label"}))
 	if len(got) != 1 {
 		t.Errorf("nil selector should match everything, got %v", ownerKeys(got))
 	}
@@ -117,7 +117,7 @@ func TestSubscriberIndex_NilSelectorMatchesAll(t *testing.T) {
 
 func TestSubscriberIndex_Remove(t *testing.T) {
 	idx := watcher.NewSubscriberIndex()
-	owner := watcher.OwnerKey{Kind: "Echelon", Namespace: "flux-system", Name: "wave-0"}
+	owner := watcher.OwnerKey{Kind: kindEchelon, Namespace: nsFluxSystem, Name: nameWave0}
 	idx.Add(kustomizationGVK, watcher.Subscriber{Owner: owner, Selector: labels.Everything()})
 	if c := idx.SubscriberCount(kustomizationGVK); c != 1 {
 		t.Errorf("count after Add = %d, want 1", c)
@@ -126,7 +126,7 @@ func TestSubscriberIndex_Remove(t *testing.T) {
 	if c := idx.SubscriberCount(kustomizationGVK); c != 0 {
 		t.Errorf("count after Remove = %d, want 0", c)
 	}
-	got := idx.Subscribers(kustomizationGVK, makeObj("flux-system", "k1", nil))
+	got := idx.Subscribers(kustomizationGVK, makeObj(nsFluxSystem, "k1", nil))
 	if len(got) != 0 {
 		t.Errorf("subscribers after Remove = %v, want []", ownerKeys(got))
 	}
@@ -134,17 +134,17 @@ func TestSubscriberIndex_Remove(t *testing.T) {
 
 func TestSubscriberIndex_AddReplacesExistingForSameOwner(t *testing.T) {
 	idx := watcher.NewSubscriberIndex()
-	owner := watcher.OwnerKey{Kind: "Echelon", Namespace: "flux-system", Name: "wave-0"}
-	idx.Add(kustomizationGVK, watcher.Subscriber{Owner: owner, Selector: mustSelector(t, map[string]string{"wave": "0"})})
-	idx.Add(kustomizationGVK, watcher.Subscriber{Owner: owner, Selector: mustSelector(t, map[string]string{"wave": "1"})})
+	owner := watcher.OwnerKey{Kind: kindEchelon, Namespace: nsFluxSystem, Name: nameWave0}
+	idx.Add(kustomizationGVK, watcher.Subscriber{Owner: owner, Selector: mustSelector(t, map[string]string{labelWave: "0"})})
+	idx.Add(kustomizationGVK, watcher.Subscriber{Owner: owner, Selector: mustSelector(t, map[string]string{labelWave: "1"})})
 	if c := idx.SubscriberCount(kustomizationGVK); c != 1 {
 		t.Errorf("count after re-Add = %d, want 1", c)
 	}
-	got := idx.Subscribers(kustomizationGVK, makeObj("flux-system", "k1", map[string]string{"wave": "1"}))
+	got := idx.Subscribers(kustomizationGVK, makeObj(nsFluxSystem, "k1", map[string]string{labelWave: "1"}))
 	if len(got) != 1 {
 		t.Errorf("re-Add should update selector, got %v", ownerKeys(got))
 	}
-	got = idx.Subscribers(kustomizationGVK, makeObj("flux-system", "k0", map[string]string{"wave": "0"}))
+	got = idx.Subscribers(kustomizationGVK, makeObj(nsFluxSystem, "k0", map[string]string{labelWave: "0"}))
 	if len(got) != 0 {
 		t.Errorf("after re-Add wave=0 should not match, got %v", ownerKeys(got))
 	}
@@ -152,7 +152,7 @@ func TestSubscriberIndex_AddReplacesExistingForSameOwner(t *testing.T) {
 
 func TestSubscriberIndex_GVKsByOwner(t *testing.T) {
 	idx := watcher.NewSubscriberIndex()
-	owner := watcher.OwnerKey{Kind: "Echelon", Namespace: "flux-system", Name: "multi"}
+	owner := watcher.OwnerKey{Kind: kindEchelon, Namespace: nsFluxSystem, Name: "multi"}
 	helmGVK := schema.GroupVersionKind{Group: "helm.toolkit.fluxcd.io", Version: "v2", Kind: "HelmRelease"}
 	idx.Add(kustomizationGVK, watcher.Subscriber{Owner: owner, Selector: labels.Everything()})
 	idx.Add(helmGVK, watcher.Subscriber{Owner: owner, Selector: labels.Everything()})
@@ -176,9 +176,9 @@ func TestSubscriberIndex_Concurrent(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			owner := watcher.OwnerKey{Kind: "Echelon", Namespace: "flux-system", Name: nameOf(i)}
+			owner := watcher.OwnerKey{Kind: kindEchelon, Namespace: nsFluxSystem, Name: nameOf(i)}
 			idx.Add(kustomizationGVK, watcher.Subscriber{Owner: owner, Selector: labels.Everything()})
-			_ = idx.Subscribers(kustomizationGVK, makeObj("flux-system", "k", nil))
+			_ = idx.Subscribers(kustomizationGVK, makeObj(nsFluxSystem, "k", nil))
 			idx.Remove(kustomizationGVK, owner)
 		}(i)
 	}

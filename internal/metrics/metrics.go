@@ -22,13 +22,33 @@ import (
 
 const ns = "echelon"
 
+// Label names. Centralised so both metrics.go and collector.go reference the
+// same string and so callers can build label maps without typos.
+const (
+	labelGroup       = "group"
+	labelVersion     = "version"
+	labelKind        = "kind"
+	labelEvent       = "event"
+	labelResult      = "result"
+	labelController  = "controller"
+	labelStage       = "stage"
+	labelReason      = "reason"
+	labelOwnerKind   = "owner_kind"
+	labelNamespace   = "namespace"
+	labelName        = "name"
+	labelType        = "type"
+	labelStatus      = "status"
+	labelTargetGroup = "target_group"
+	labelTargetKind  = "target_kind"
+)
+
 var (
 	// Informers gauges the number of active dynamic informers per GVK.
 	Informers = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: ns,
 		Name:      "informers",
 		Help:      "Active dynamic informers, one per unique watched GVK.",
-	}, []string{"group", "version", "kind"})
+	}, []string{labelGroup, labelVersion, labelKind})
 
 	// Subscribers gauges the refcount of Echelon/ClusterEchelon subscribers
 	// per GVK.
@@ -36,28 +56,28 @@ var (
 		Namespace: ns,
 		Name:      "subscribers",
 		Help:      "Subscribers per GVK (refcount across Echelons and ClusterEchelons).",
-	}, []string{"group", "version", "kind"})
+	}, []string{labelGroup, labelVersion, labelKind})
 
 	// InformerEvents counts dispatched informer events.
 	InformerEvents = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: ns,
 		Name:      "informer_events_total",
 		Help:      "Informer events dispatched per GVK.",
-	}, []string{"group", "version", "kind", "event"})
+	}, []string{labelGroup, labelVersion, labelKind, labelEvent})
 
 	// SubscribeTotal counts subscription attempts and their result.
 	SubscribeTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: ns,
 		Name:      "subscribe_total",
 		Help:      "Subscribe operations issued by reconcilers.",
-	}, []string{"group", "version", "kind", "result"})
+	}, []string{labelGroup, labelVersion, labelKind, labelResult})
 
 	// UnsubscribeTotal counts unsubscribe operations.
 	UnsubscribeTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: ns,
 		Name:      "unsubscribe_total",
 		Help:      "Unsubscribe operations issued by reconcilers.",
-	}, []string{"group", "version", "kind"})
+	}, []string{labelGroup, labelVersion, labelKind})
 
 	// EventDispatchDuration measures how long each informer event takes from
 	// receipt to enqueue completion.
@@ -66,14 +86,14 @@ var (
 		Name:      "event_dispatch_duration_seconds",
 		Help:      "Time from informer event receipt to subscriber enqueue completion.",
 		Buckets:   prometheus.ExponentialBuckets(0.0001, 2.5, 10),
-	}, []string{"group", "version", "kind"})
+	}, []string{labelGroup, labelVersion, labelKind})
 
 	// DiscoveryResolveTotal counts discovery resolve outcomes.
 	DiscoveryResolveTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: ns,
 		Name:      "discovery_resolve_total",
 		Help:      "Discovery resolve outcomes (hit, miss, not_established, error).",
-	}, []string{"result"})
+	}, []string{labelResult})
 
 	// DiscoveryCacheSize gauges the current discovery cache size.
 	DiscoveryCacheSize = prometheus.NewGauge(prometheus.GaugeOpts{
@@ -88,21 +108,21 @@ var (
 		Name:      "reconcile_stage_duration_seconds",
 		Help:      "Reconcile stage latency, in addition to controller-runtime defaults.",
 		Buckets:   prometheus.ExponentialBuckets(0.001, 2.5, 12),
-	}, []string{"controller", "stage"})
+	}, []string{labelController, labelStage})
 
 	// StatusPatchTotal counts status patch outcomes.
 	StatusPatchTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: ns,
 		Name:      "status_patch_total",
 		Help:      "Status patch outcomes (changed, unchanged, error).",
-	}, []string{"controller", "result"})
+	}, []string{labelController, labelResult})
 
 	// TargetResolveErrors counts per-target resolution errors by reason.
 	TargetResolveErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: ns,
 		Name:      "target_resolve_errors_total",
 		Help:      "Per-target resolution errors, labelled by reason.",
-	}, []string{"controller", "reason"})
+	}, []string{labelController, labelReason})
 
 	// CRDEstablishedEvents counts CRD Established=True transitions observed by
 	// the CRD watcher controller.
@@ -110,14 +130,14 @@ var (
 		Namespace: ns,
 		Name:      "crd_established_events_total",
 		Help:      "CRD Established=True transitions observed by the CRD watcher.",
-	}, []string{"group", "kind"})
+	}, []string{labelGroup, labelKind})
 
 	// OwnersWoken counts owner re-enqueues triggered by external events.
 	OwnersWoken = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: ns,
 		Name:      "owners_woken_total",
 		Help:      "Owners re-enqueued in response to external events.",
-	}, []string{"reason"})
+	}, []string{labelReason})
 )
 
 // All returns every collector defined by this package.

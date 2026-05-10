@@ -77,7 +77,7 @@ func (e *fakeEntry) List() ([]*unstructured.Unstructured, error) {
 func TestRegistry_Subscribe_FirstStartsInformer(t *testing.T) {
 	ff := newFakeFactory()
 	r := watcher.NewRegistry(ff, func(watcher.OwnerKey) {})
-	owner := watcher.OwnerKey{Kind: "Echelon", Namespace: "flux-system", Name: "wave-0"}
+	owner := watcher.OwnerKey{Kind: kindEchelon, Namespace: nsFluxSystem, Name: nameWave0}
 	if err := r.Subscribe(kustomizationGVK, apimeta.RESTScopeNameNamespace, watcher.Subscriber{Owner: owner, Selector: labels.Everything()}); err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
@@ -89,8 +89,8 @@ func TestRegistry_Subscribe_FirstStartsInformer(t *testing.T) {
 func TestRegistry_Subscribe_SecondReusesInformer(t *testing.T) {
 	ff := newFakeFactory()
 	r := watcher.NewRegistry(ff, func(watcher.OwnerKey) {})
-	a := watcher.OwnerKey{Kind: "Echelon", Namespace: "ns", Name: "a"}
-	b := watcher.OwnerKey{Kind: "Echelon", Namespace: "ns", Name: "b"}
+	a := watcher.OwnerKey{Kind: kindEchelon, Namespace: "ns", Name: "a"}
+	b := watcher.OwnerKey{Kind: kindEchelon, Namespace: "ns", Name: "b"}
 	_ = r.Subscribe(kustomizationGVK, apimeta.RESTScopeNameNamespace, watcher.Subscriber{Owner: a, Selector: labels.Everything()})
 	_ = r.Subscribe(kustomizationGVK, apimeta.RESTScopeNameNamespace, watcher.Subscriber{Owner: b, Selector: labels.Everything()})
 	if len(ff.started) != 1 {
@@ -104,8 +104,8 @@ func TestRegistry_Subscribe_SecondReusesInformer(t *testing.T) {
 func TestRegistry_UnsubscribeOfLastStopsInformer(t *testing.T) {
 	ff := newFakeFactory()
 	r := watcher.NewRegistry(ff, func(watcher.OwnerKey) {})
-	a := watcher.OwnerKey{Kind: "Echelon", Namespace: "ns", Name: "a"}
-	b := watcher.OwnerKey{Kind: "Echelon", Namespace: "ns", Name: "b"}
+	a := watcher.OwnerKey{Kind: kindEchelon, Namespace: "ns", Name: "a"}
+	b := watcher.OwnerKey{Kind: kindEchelon, Namespace: "ns", Name: "b"}
 	_ = r.Subscribe(kustomizationGVK, apimeta.RESTScopeNameNamespace, watcher.Subscriber{Owner: a, Selector: labels.Everything()})
 	_ = r.Subscribe(kustomizationGVK, apimeta.RESTScopeNameNamespace, watcher.Subscriber{Owner: b, Selector: labels.Everything()})
 
@@ -126,7 +126,7 @@ func TestRegistry_UnsubscribeOfLastStopsInformer(t *testing.T) {
 func TestRegistry_UnsubscribeAll(t *testing.T) {
 	ff := newFakeFactory()
 	r := watcher.NewRegistry(ff, func(watcher.OwnerKey) {})
-	owner := watcher.OwnerKey{Kind: "Echelon", Namespace: "ns", Name: "multi"}
+	owner := watcher.OwnerKey{Kind: kindEchelon, Namespace: "ns", Name: "multi"}
 	helmGVK := schema.GroupVersionKind{Group: "helm.toolkit.fluxcd.io", Version: "v2", Kind: "HelmRelease"}
 	_ = r.Subscribe(kustomizationGVK, apimeta.RESTScopeNameNamespace, watcher.Subscriber{Owner: owner, Selector: labels.Everything()})
 	_ = r.Subscribe(helmGVK, apimeta.RESTScopeNameNamespace, watcher.Subscriber{Owner: owner, Selector: labels.Everything()})
@@ -140,7 +140,7 @@ func TestRegistry_Subscribe_FactoryError(t *testing.T) {
 	ff := newFakeFactory()
 	ff.failNext = errors.New("boom")
 	r := watcher.NewRegistry(ff, func(watcher.OwnerKey) {})
-	owner := watcher.OwnerKey{Kind: "Echelon", Namespace: "ns", Name: "a"}
+	owner := watcher.OwnerKey{Kind: kindEchelon, Namespace: "ns", Name: "a"}
 	err := r.Subscribe(kustomizationGVK, apimeta.RESTScopeNameNamespace, watcher.Subscriber{Owner: owner, Selector: labels.Everything()})
 	if err == nil {
 		t.Fatalf("expected error from failed factory")
@@ -159,18 +159,18 @@ func TestRegistry_HandlerEnqueuesMatchedSubscribers(t *testing.T) {
 		defer mu.Unlock()
 		enqueued = append(enqueued, o)
 	})
-	owner := watcher.OwnerKey{Kind: "Echelon", Namespace: "flux-system", Name: "wave-0"}
+	owner := watcher.OwnerKey{Kind: kindEchelon, Namespace: nsFluxSystem, Name: nameWave0}
 	_ = r.Subscribe(kustomizationGVK, apimeta.RESTScopeNameNamespace, watcher.Subscriber{
 		Owner:    owner,
-		Selector: mustSelector(t, map[string]string{"wave": "0"}),
+		Selector: mustSelector(t, map[string]string{labelWave: "0"}),
 	})
 
 	entry := ff.entries[kustomizationGVK]
 	if entry == nil {
 		t.Fatalf("no entry created")
 	}
-	matching := makeObj("flux-system", "k1", map[string]string{"wave": "0"})
-	other := makeObj("flux-system", "k2", map[string]string{"wave": "1"})
+	matching := makeObj(nsFluxSystem, "k1", map[string]string{labelWave: "0"})
+	other := makeObj(nsFluxSystem, "k2", map[string]string{labelWave: "1"})
 
 	entry.handler(watcher.EventAdd, matching)
 	entry.handler(watcher.EventUpdate, other) // does not match
@@ -191,7 +191,7 @@ func TestRegistry_HandlerEnqueuesMatchedSubscribers(t *testing.T) {
 func TestRegistry_List_DelegatesToInformer(t *testing.T) {
 	ff := newFakeFactory()
 	r := watcher.NewRegistry(ff, func(watcher.OwnerKey) {})
-	owner := watcher.OwnerKey{Kind: "Echelon", Namespace: "ns", Name: "a"}
+	owner := watcher.OwnerKey{Kind: kindEchelon, Namespace: "ns", Name: "a"}
 	_ = r.Subscribe(kustomizationGVK, apimeta.RESTScopeNameNamespace, watcher.Subscriber{Owner: owner, Selector: labels.Everything()})
 
 	want := []*unstructured.Unstructured{makeObj("ns", "x", nil)}

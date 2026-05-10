@@ -29,7 +29,7 @@ const (
 )
 
 func member(s string) status.Member {
-	return status.Member{Group: "kustomize.toolkit.fluxcd.io", Version: "v1", Kind: "Kustomization", Namespace: "flux-system", Name: "x", Status: s}
+	return status.Member{Group: "kustomize.toolkit.fluxcd.io", Version: "v1", Kind: kindKustomization, Namespace: "flux-system", Name: "x", Status: s}
 }
 
 func TestReduceTarget_EmptySet(t *testing.T) {
@@ -46,7 +46,7 @@ func TestReduceTarget_EmptySet(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := status.ReduceTarget("kustomize.toolkit.fluxcd.io", "v1", "Kustomization", nil, tc.policy)
+			got := status.ReduceTarget("kustomize.toolkit.fluxcd.io", "v1", kindKustomization, nil, tc.policy)
 			if got.Ready != tc.wantReady {
 				t.Errorf("Ready = %s, want %s", got.Ready, tc.wantReady)
 			}
@@ -56,7 +56,7 @@ func TestReduceTarget_EmptySet(t *testing.T) {
 			if got.Summary.Total != 0 {
 				t.Errorf("Summary.Total = %d, want 0", got.Summary.Total)
 			}
-			if got.Group != "kustomize.toolkit.fluxcd.io" || got.Version != "v1" || got.Kind != "Kustomization" {
+			if got.Group != "kustomize.toolkit.fluxcd.io" || got.Version != "v1" || got.Kind != kindKustomization {
 				t.Errorf("identity = (%q,%q,%q), want (kustomize.toolkit.fluxcd.io,v1,Kustomization)", got.Group, got.Version, got.Kind)
 			}
 		})
@@ -134,7 +134,7 @@ func TestReduceTarget_Members(t *testing.T) {
 			for i, s := range tc.statuses {
 				ms[i] = member(s)
 			}
-			got := status.ReduceTarget("kustomize.toolkit.fluxcd.io", "v1", "Kustomization", ms, apiv1.EmptySetUnknown)
+			got := status.ReduceTarget("kustomize.toolkit.fluxcd.io", "v1", kindKustomization, ms, apiv1.EmptySetUnknown)
 			if got.Ready != tc.wantReady {
 				t.Errorf("Ready = %s, want %s", got.Ready, tc.wantReady)
 			}
@@ -167,20 +167,20 @@ func TestReduceOwner(t *testing.T) {
 		},
 		{
 			name:       "all ready",
-			rollups:    []apiv1.TargetRollup{rollup("Kustomization", metav1.ConditionTrue), rollup("HelmRelease", metav1.ConditionTrue)},
+			rollups:    []apiv1.TargetRollup{rollup(kindKustomization, metav1.ConditionTrue), rollup("HelmRelease", metav1.ConditionTrue)},
 			wantStatus: metav1.ConditionTrue,
 			wantReason: apiv1.ReasonAllTargetsReady,
 		},
 		{
 			name:       "any false wins",
-			rollups:    []apiv1.TargetRollup{rollup("Kustomization", metav1.ConditionTrue), rollup("HelmRelease", metav1.ConditionFalse), rollup("ConfigMap", metav1.ConditionUnknown)},
+			rollups:    []apiv1.TargetRollup{rollup(kindKustomization, metav1.ConditionTrue), rollup("HelmRelease", metav1.ConditionFalse), rollup("ConfigMap", metav1.ConditionUnknown)},
 			wantStatus: metav1.ConditionFalse,
 			wantReason: apiv1.ReasonTargetsNotReady,
 			wantInMsg:  []string{"HelmRelease"},
 		},
 		{
 			name:       "unknown when mixed without false",
-			rollups:    []apiv1.TargetRollup{rollup("Kustomization", metav1.ConditionTrue), rollup("HelmRelease", metav1.ConditionUnknown)},
+			rollups:    []apiv1.TargetRollup{rollup(kindKustomization, metav1.ConditionTrue), rollup("HelmRelease", metav1.ConditionUnknown)},
 			wantStatus: metav1.ConditionUnknown,
 			wantReason: apiv1.ReasonTargetsInProgress,
 		},
@@ -205,7 +205,7 @@ func TestReduceOwner(t *testing.T) {
 
 func TestSummarizeOwner(t *testing.T) {
 	rollups := []apiv1.TargetRollup{
-		{Kind: "Kustomization", Summary: apiv1.Summary{Total: 3, Current: 2, InProgress: 1}},
+		{Kind: kindKustomization, Summary: apiv1.Summary{Total: 3, Current: 2, InProgress: 1}},
 		{Kind: "HelmRelease", Summary: apiv1.Summary{Total: 2, Current: 1, Failed: 1}},
 		{Kind: "ConfigMap", Summary: apiv1.Summary{Total: 1, NotFound: 1}},
 	}

@@ -56,27 +56,27 @@ func NewStateCollector(ctx context.Context, lister StateLister) *StateCollector 
 		statusCondition: prometheus.NewDesc(
 			"echelon_status_condition",
 			"1 when the named condition has the named status, 0 otherwise.",
-			[]string{"owner_kind", "namespace", "name", "type", "status"}, nil,
+			[]string{labelOwnerKind, labelNamespace, labelName, labelType, labelStatus}, nil,
 		),
 		observedGeneration: prometheus.NewDesc(
 			"echelon_observed_generation",
 			"metadata.generation observed at the last successful reconcile.",
-			[]string{"owner_kind", "namespace", "name"}, nil,
+			[]string{labelOwnerKind, labelNamespace, labelName}, nil,
 		),
 		targetMembers: prometheus.NewDesc(
 			"echelon_target_members",
 			"Per-target member counts by kstatus bucket; status label includes 'total'.",
-			[]string{"owner_kind", "namespace", "name", "target_group", "target_kind", "status"}, nil,
+			[]string{labelOwnerKind, labelNamespace, labelName, labelTargetGroup, labelTargetKind, labelStatus}, nil,
 		),
 		targetReady: prometheus.NewDesc(
 			"echelon_target_ready",
 			"Per-target Ready encoded as 1=True, 0=False, -1=Unknown.",
-			[]string{"owner_kind", "namespace", "name", "target_group", "target_kind"}, nil,
+			[]string{labelOwnerKind, labelNamespace, labelName, labelTargetGroup, labelTargetKind}, nil,
 		),
 		lastEvaluatedTimestamp: prometheus.NewDesc(
 			"echelon_last_evaluated_timestamp_seconds",
 			"Unix timestamp of the last status evaluation.",
-			[]string{"owner_kind", "namespace", "name"}, nil,
+			[]string{labelOwnerKind, labelNamespace, labelName}, nil,
 		),
 	}
 }

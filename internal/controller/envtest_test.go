@@ -82,7 +82,7 @@ func newEnvFixture(t *testing.T) *envFixture {
 		Registry:   registry,
 		Resolver:   resolver,
 		NewAdapter: controller.NewEchelonAdapter,
-		Controller: "Echelon",
+		Controller: kindEchelon,
 	}
 	return &envFixture{t: t, registry: registry, resolver: resolver, reconciler: rec, mapper: mapper, namespace: ns}
 }
@@ -117,10 +117,10 @@ func createWidget(t *testing.T, ns, name, ready string) *unstructured.Unstructur
 		t.Fatalf("create widget: %v", err)
 	}
 	if ready != "" {
-		_ = unstructured.SetNestedField(w.Object, int64(1), "status", "observedGeneration")
+		_ = unstructured.SetNestedField(w.Object, int64(1), schemaPropStatus, "observedGeneration")
 		_ = unstructured.SetNestedSlice(w.Object, []any{
-			map[string]any{"type": "Ready", "status": ready, "reason": "Test"},
-		}, "status", "conditions")
+			map[string]any{keyType: apiv1.ConditionReady, schemaPropStatus: ready, keyReason: "Test"},
+		}, schemaPropStatus, "conditions")
 		if err := envtestClient.Status().Update(t.Context(), w); err != nil {
 			t.Fatalf("update widget status: %v", err)
 		}
@@ -175,7 +175,7 @@ func TestEnvtest_HappyPath_AllCurrent(t *testing.T) {
 	createWidget(t, fix.namespace, "w1", "True")
 
 	ech := createEchelon(t, fix.namespace, "happy", []apiv1.TargetSpec{
-		{Group: "test.as-code.io", Kind: "Widget", EmptySetPolicy: apiv1.EmptySetUnknown},
+		{Group: groupTestAsCode, Kind: kindWidget, EmptySetPolicy: apiv1.EmptySetUnknown},
 	})
 
 	// First reconcile adds the finalizer; second reconcile starts the informer.
@@ -200,7 +200,7 @@ func TestEnvtest_HappyPath_AllCurrent(t *testing.T) {
 func TestEnvtest_EmptySet_NotReadyPolicy(t *testing.T) {
 	fix := newEnvFixture(t)
 	ech := createEchelon(t, fix.namespace, "empty", []apiv1.TargetSpec{
-		{Group: "test.as-code.io", Kind: "Widget", EmptySetPolicy: apiv1.EmptySetNotReady},
+		{Group: groupTestAsCode, Kind: kindWidget, EmptySetPolicy: apiv1.EmptySetNotReady},
 	})
 
 	for range 3 {
@@ -222,7 +222,7 @@ func TestEnvtest_LateCRD_StalledThenConverges(t *testing.T) {
 	fix := newEnvFixture(t)
 
 	ech := createEchelon(t, fix.namespace, "late", []apiv1.TargetSpec{
-		{Group: "late.test.as-code.io", Kind: "Late", EmptySetPolicy: apiv1.EmptySetUnknown},
+		{Group: "late.test.as-code.io", Kind: kindLate, EmptySetPolicy: apiv1.EmptySetUnknown},
 	})
 
 	// Initial reconcile: should set Stalled=True.
@@ -240,13 +240,13 @@ func TestEnvtest_LateCRD_StalledThenConverges(t *testing.T) {
 		Spec: apiextv1.CustomResourceDefinitionSpec{
 			Group: "late.test.as-code.io",
 			Names: apiextv1.CustomResourceDefinitionNames{
-				Plural: "lates", Singular: "late", Kind: "Late", ListKind: "LateList",
+				Plural: "lates", Singular: "late", Kind: kindLate, ListKind: "LateList",
 			},
 			Scope: apiextv1.NamespaceScoped,
 			Versions: []apiextv1.CustomResourceDefinitionVersion{{
 				Name: "v1", Served: true, Storage: true,
 				Schema: &apiextv1.CustomResourceValidation{
-					OpenAPIV3Schema: &apiextv1.JSONSchemaProps{Type: "object", XPreserveUnknownFields: ptrBool(true)},
+					OpenAPIV3Schema: &apiextv1.JSONSchemaProps{Type: schemaTypeObject, XPreserveUnknownFields: ptrBool(true)},
 				},
 			}},
 		},
@@ -277,7 +277,7 @@ func TestEnvtest_SubscriptionDiff_RemovesInformer(t *testing.T) {
 	fix := newEnvFixture(t)
 
 	ech := createEchelon(t, fix.namespace, "diff", []apiv1.TargetSpec{
-		{Group: "test.as-code.io", Kind: "Widget", EmptySetPolicy: apiv1.EmptySetUnknown},
+		{Group: groupTestAsCode, Kind: kindWidget, EmptySetPolicy: apiv1.EmptySetUnknown},
 	})
 	for range 3 {
 		_, _ = fix.reconciler.ReconcileObject(t.Context(), refresh(t, ech))

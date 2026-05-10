@@ -83,11 +83,9 @@ func (r *Reconciler) ReconcileObject(ctx context.Context, obj client.Object) (ct
 
 	prior := *adapter.Status().DeepCopy()
 
-	var targets []NormalizedTarget
-	var targetErrs []TargetError
-	func() {
+	targets, targetErrs := func() ([]NormalizedTarget, []TargetError) {
 		defer r.observe(metrics.StageDiscovery)()
-		targets, targetErrs = adapter.Targets(ctx, r.Resolver)
+		return adapter.Targets(ctx, r.Resolver)
 	}()
 	for _, te := range targetErrs {
 		metrics.TargetResolveErrors.WithLabelValues(r.Controller, te.Reason).Inc()
@@ -183,7 +181,10 @@ func (r *Reconciler) reconcileSubscriptions(owner watcher.OwnerKey, desired []No
 
 func (r *Reconciler) evaluateTargets(targets []NormalizedTarget) ([]apiv1.TargetRollup, []apiv1.MemberStatus) {
 	rollups := make([]apiv1.TargetRollup, 0, len(targets))
-	var notReady []apiv1.MemberStatus
+	// Stay nil until we actually have not-ready members: an empty-but-allocated
+	// slice would round-trip through status DeepCopy as != nil and trigger
+	// spurious patches against equal prior state.
+	var notReady []apiv1.MemberStatus //nolint:prealloc
 	for _, t := range targets {
 		members := r.listAndCompute(t)
 		var rollup apiv1.TargetRollup
