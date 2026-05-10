@@ -28,4 +28,8 @@ resources:
 - echelon_admin_role.yaml
 - echelon_editor_role.yaml
 - echelon_viewer_role.yaml
+# Permissive ClusterRole granting list/watch on common GitOps resource groups
+# the operator's dynamic informers need. Replace with a narrower role for
+# restricted clusters.
+- dynamic_watch_role.yaml
 

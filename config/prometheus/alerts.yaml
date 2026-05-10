@@ -1,0 +1,58 @@
+# Starter PrometheusRule. Tune thresholds and silence/inhibit pairs for your
+# environment. Severity labels follow the prom-operator convention.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: echelon-operator
+  namespace: system
+  labels:
+    app.kubernetes.io/name: echelon-operator
+    app.kubernetes.io/component: alerts
+spec:
+  groups:
+    - name: echelon.operator
+      interval: 30s
+      rules:
+        - alert: EchelonStuckReconciling
+          expr: |
+            max by (owner_kind, namespace, name) (
+              echelon_status_condition{type="Reconciling", status="True"}
+            ) == 1
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Echelon {{ $labels.namespace }}/{{ $labels.name }} stuck reconciling"
+            description: "Reconciling=True for >10m suggests the controller is unable to settle the object."
+
+        - alert: EchelonStalled
+          expr: |
+            max by (owner_kind, namespace, name) (
+              echelon_status_condition{type="Stalled", status="True"}
+            ) == 1
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Echelon {{ $labels.namespace }}/{{ $labels.name }} stalled"
+            description: "Stalled=True for >5m. Check Stalled condition reason (e.g. GVKNotEstablished, WatchSetupFailed)."
+
+        - alert: EchelonRegistrySubscriberLeak
+          expr: |
+            sum(echelon_subscribers) - sum(echelon_informers) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Subscriber/informer count skew in echelon-operator registry"
+            description: "Subscribers without an active informer indicates a leaked subscription. Investigate operator restart loops."
+
+        - alert: EchelonReconcileErrors
+          expr: |
+            sum(rate(controller_runtime_reconcile_errors_total{controller=~"echelon|clusterechelon|crd-watcher"}[5m])) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Echelon reconciler errors"
+            description: "Sustained reconcile errors. Check operator logs for the failing controller."

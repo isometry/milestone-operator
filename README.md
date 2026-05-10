@@ -1,121 +1,152 @@
 # echelon-operator
-// TODO(user): Add simple overview of use/purpose
 
-## Description
-// TODO(user): An in-depth paragraph about your project and overview of use
+A Kubernetes operator that aggregates the
+[kstatus](https://github.com/kubernetes-sigs/cli-utils/tree/master/pkg/kstatus)
+of arbitrary resources, identified by GVK and label selector, into a single
+kstatus-compatible `Ready` condition exposed on its own CRD.
 
-## Getting Started
+The operator drives a *deployment-wave* / *run-level* mechanism alongside
+[FluxCD](https://fluxcd.io/): downstream consumers gate on an `Echelon`'s
+`Ready` condition to decide when one wave has settled and the next may
+proceed.
+
+## CRDs
+
+| Kind             | Scope        | Use                                                              |
+|------------------|--------------|------------------------------------------------------------------|
+| `Echelon`        | Namespaced   | Aggregate within the Echelon's own namespace                     |
+| `ClusterEchelon` | Cluster-wide | Aggregate across namespaces (per-target `namespaces` selectors)  |
+
+Both CRDs live at `as-code.io/v1`.
+
+### Echelon (minimal)
+
+```yaml
+apiVersion: as-code.io/v1
+kind: Echelon
+metadata: { name: wave-0, namespace: flux-system }
+spec:
+  targets:
+    - group: kustomize.toolkit.fluxcd.io
+      kind: Kustomization
+      selector: { matchLabels: { wave: "0" } }
+      emptySetPolicy: NotReady
+```
+
+### ClusterEchelon (multi-target, multi-scope)
+
+```yaml
+apiVersion: as-code.io/v1
+kind: ClusterEchelon
+metadata: { name: platform-wave-0 }
+spec:
+  targets:
+    - group: kustomize.toolkit.fluxcd.io
+      kind: Kustomization
+      namespaces: [flux-system]
+      selector: { matchLabels: { wave: "0" } }
+      emptySetPolicy: NotReady
+    - group: helm.toolkit.fluxcd.io
+      kind: HelmRelease
+      namespaceSelector: { matchLabels: { tier: platform } }
+      selector: { matchLabels: { wave: "0" } }
+      emptySetPolicy: Unknown
+```
+
+### `emptySetPolicy`
+
+Per-target. Controls how an empty member set is reported:
+
+| Value      | Meaning                                                                 |
+|------------|-------------------------------------------------------------------------|
+| `Unknown`  | (Default) Ready=Unknown, reason=EmptySet — safest for wave gates        |
+| `Ready`    | Ready=True — vacuously advance when nothing matches                     |
+| `NotReady` | Ready=False — emptiness is itself a misconfiguration                    |
+
+### Conditions
+
+`Echelon` and `ClusterEchelon` expose three conditions:
+
+- `Ready` — kstatus-compatible aggregate over all targets
+- `Reconciling` — True while the controller is wiring watchers / settling
+- `Stalled` — True for non-transient structural problems (`GVKNotEstablished`, `NamespaceScopeMismatch`, `WatchSetupFailed`, `DiscoveryFailed`)
+
+`Stalled` is independent of `Ready`. When `Stalled=True`, `Ready` reflects what
+we *can* observe (typically `Unknown`) — never silently `True`.
+
+## Architecture
+
+| Layer                    | Package                  | Responsibility                                          |
+|--------------------------|--------------------------|---------------------------------------------------------|
+| Per-resource readiness   | `internal/status`        | Wraps `kstatus.Compute`, reduces members → rollup       |
+| Discovery TTL cache      | `internal/discovery`     | Resolves group+kind → GVK + scope                       |
+| Dynamic watcher registry | `internal/watcher`       | Refcounted "one informer per GVK" pattern               |
+| Reconciler               | `internal/controller`    | Generic pipeline shared by Echelon and ClusterEchelon   |
+| Metrics                  | `internal/metrics`       | Prometheus inventory + lister-backed state collector    |
+
+The reconciler is single-pass and idempotent. Per-stage timing histograms
+(`echelon_reconcile_stage_duration_seconds`) and an idempotency check
+(`echelon_status_patch_total{result=unchanged}`) make slow or churning
+deployments diagnosable in production.
+
+## Observability
+
+Metrics are registered against the controller-runtime metrics registry; the
+manager's `/metrics` endpoint exposes both the standard `controller_runtime_*`
+families and the operator-specific `echelon_*` families documented in
+[`PLAN.md`](./PLAN.md#metric-inventory).
+
+A starter `ServiceMonitor` and `PrometheusRule` ship in
+[`config/prometheus/`](./config/prometheus/); a sample Grafana dashboard JSON
+is in [`config/grafana/`](./config/grafana/).
+
+## Getting started
 
 ### Prerequisites
-- go version v1.24.0+
-- docker version 17.03+.
-- kubectl version v1.11.3+.
-- Access to a Kubernetes v1.11.3+ cluster.
 
-### To Deploy on the cluster
-**Build and push your image to the location specified by `IMG`:**
+- Go 1.26.3+
+- Docker 17.03+
+- kubectl v1.11.3+
+- A Kubernetes cluster (Kubernetes v1.27+ recommended)
 
-```sh
-make docker-build docker-push IMG=<some-registry>/echelon-operator:tag
-```
-
-**NOTE:** This image ought to be published in the personal registry you specified.
-And it is required to have access to pull the image from the working environment.
-Make sure you have the proper permission to the registry if the above commands don’t work.
-
-**Install the CRDs into the cluster:**
+### Run unit tests
 
 ```sh
-make install
+go test ./internal/...
 ```
 
-**Deploy the Manager to the cluster with the image specified by `IMG`:**
+### Run envtest integration tests
 
 ```sh
-make deploy IMG=<some-registry>/echelon-operator:tag
+make setup-envtest
+KUBEBUILDER_ASSETS="$(./bin/setup-envtest use --bin-dir ./bin -p path)" \
+  go test ./internal/controller/... -run TestEnvtest
 ```
 
-> **NOTE**: If you encounter RBAC errors, you may need to grant yourself cluster-admin
-privileges or be logged in as admin.
-
-**Create instances of your solution**
-You can apply the samples (examples) from the config/sample:
+### Build and deploy
 
 ```sh
-kubectl apply -k config/samples/
+make docker-build docker-push IMG=<registry>/echelon-operator:tag
+make install                      # installs CRDs
+make deploy IMG=<registry>/echelon-operator:tag
+kubectl apply -k config/samples/  # sample Echelon and ClusterEchelon
 ```
 
->**NOTE**: Ensure that the samples has default values to test it out.
+### Watching custom resource kinds
 
-### To Uninstall
-**Delete the instances (CRs) from the cluster:**
+The default install grants the operator's dynamic informers `get,list,watch`
+on the FluxCD resource groups. To watch additional kinds, edit
+[`config/rbac/dynamic_watch_role.yaml`](./config/rbac/dynamic_watch_role.yaml)
+and re-deploy.
 
-```sh
-kubectl delete -k config/samples/
-```
+For restricted clusters, replace that ClusterRoleBinding with a narrower role
+covering only the kinds you intend to reference from `spec.targets[]`.
 
-**Delete the APIs(CRDs) from the cluster:**
+## Design
 
-```sh
-make uninstall
-```
-
-**UnDeploy the controller from the cluster:**
-
-```sh
-make undeploy
-```
-
-## Project Distribution
-
-Following the options to release and provide this solution to the users.
-
-### By providing a bundle with all YAML files
-
-1. Build the installer for the image built and published in the registry:
-
-```sh
-make build-installer IMG=<some-registry>/echelon-operator:tag
-```
-
-**NOTE:** The makefile target mentioned above generates an 'install.yaml'
-file in the dist directory. This file contains all the resources built
-with Kustomize, which are necessary to install this project without its
-dependencies.
-
-2. Using the installer
-
-Users can just run 'kubectl apply -f <URL for YAML BUNDLE>' to install
-the project, i.e.:
-
-```sh
-kubectl apply -f https://raw.githubusercontent.com/<org>/echelon-operator/<tag or branch>/dist/install.yaml
-```
-
-### By providing a Helm Chart
-
-1. Build the chart using the optional helm plugin
-
-```sh
-operator-sdk edit --plugins=helm/v1-alpha
-```
-
-2. See that a chart was generated under 'dist/chart', and users
-can obtain this solution from there.
-
-**NOTE:** If you change the project, you need to update the Helm Chart
-using the same command above to sync the latest changes. Furthermore,
-if you create webhooks, you need to use the above command with
-the '--force' flag and manually ensure that any custom configuration
-previously added to 'dist/chart/values.yaml' or 'dist/chart/manager/manager.yaml'
-is manually re-applied afterwards.
-
-## Contributing
-// TODO(user): Add detailed information on how you would like others to contribute to this project
-
-**NOTE:** Run `make help` for more information on all potential `make` targets
-
-More information can be found via the [Kubebuilder Documentation](https://book.kubebuilder.io/introduction.html)
+The full design — including the API surface, watcher registry semantics,
+reconcile pipeline, reduction rules, metric inventory, cardinality budget, and
+v1 compatibility discipline — is in [`PLAN.md`](./PLAN.md).
 
 ## License
 
@@ -132,4 +163,3 @@ distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
-

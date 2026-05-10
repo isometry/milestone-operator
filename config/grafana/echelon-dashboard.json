@@ -1,0 +1,102 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "graphTooltip": 1,
+  "panels": [
+    {
+      "type": "stat",
+      "title": "Echelons Ready",
+      "datasource": "Prometheus",
+      "targets": [
+        { "expr": "sum(echelon_status_condition{type=\"Ready\", status=\"True\"})", "refId": "A", "legendFormat": "Ready" }
+      ],
+      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 }
+    },
+    {
+      "type": "stat",
+      "title": "Echelons Stalled",
+      "datasource": "Prometheus",
+      "targets": [
+        { "expr": "sum(echelon_status_condition{type=\"Stalled\", status=\"True\"})", "refId": "A", "legendFormat": "Stalled" }
+      ],
+      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 }
+    },
+    {
+      "type": "stat",
+      "title": "Active Informers",
+      "datasource": "Prometheus",
+      "targets": [
+        { "expr": "sum(echelon_informers)", "refId": "A", "legendFormat": "Informers" }
+      ],
+      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 }
+    },
+    {
+      "type": "stat",
+      "title": "Total Subscribers",
+      "datasource": "Prometheus",
+      "targets": [
+        { "expr": "sum(echelon_subscribers)", "refId": "A", "legendFormat": "Subscribers" }
+      ],
+      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 }
+    },
+    {
+      "type": "table",
+      "title": "Echelon Readiness",
+      "datasource": "Prometheus",
+      "targets": [
+        { "expr": "echelon_status_condition{type=\"Ready\", status=\"True\"}", "refId": "A", "format": "table", "instant": true }
+      ],
+      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 }
+    },
+    {
+      "type": "table",
+      "title": "Per-Target Member Counts",
+      "datasource": "Prometheus",
+      "targets": [
+        { "expr": "echelon_target_members", "refId": "A", "format": "table", "instant": true }
+      ],
+      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Reconcile Stage Latency (p95)",
+      "datasource": "Prometheus",
+      "targets": [
+        { "expr": "histogram_quantile(0.95, sum(rate(echelon_reconcile_stage_duration_seconds_bucket[5m])) by (le, stage, controller))", "refId": "A", "legendFormat": "{{controller}}/{{stage}}" }
+      ],
+      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 6 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Status Patch Outcomes",
+      "datasource": "Prometheus",
+      "targets": [
+        { "expr": "sum(rate(echelon_status_patch_total[5m])) by (controller, result)", "refId": "A", "legendFormat": "{{controller}}/{{result}}" }
+      ],
+      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 6 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Informer Events Dispatched",
+      "datasource": "Prometheus",
+      "targets": [
+        { "expr": "sum(rate(echelon_informer_events_total[5m])) by (kind, event)", "refId": "A", "legendFormat": "{{kind}}/{{event}}" }
+      ],
+      "gridPos": { "x": 0, "y": 18, "w": 12, "h": 6 }
+    },
+    {
+      "type": "timeseries",
+      "title": "Discovery Resolve Outcomes",
+      "datasource": "Prometheus",
+      "targets": [
+        { "expr": "sum(rate(echelon_discovery_resolve_total[5m])) by (result)", "refId": "A", "legendFormat": "{{result}}" }
+      ],
+      "gridPos": { "x": 12, "y": 18, "w": 12, "h": 6 }
+    }
+  ],
+  "schemaVersion": 39,
+  "tags": ["echelon-operator", "fluxcd"],
+  "title": "Echelon Operator",
+  "uid": "echelon-operator",
+  "version": 1
+}
