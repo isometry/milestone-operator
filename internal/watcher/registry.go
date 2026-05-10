@@ -152,6 +152,12 @@ func (r *Registry) GVKCount() int {
 	return len(r.informers)
 }
 
+// GVKsByOwner reports which GVKs owner currently subscribes to. Used by the
+// reconciler to compute subscription diffs.
+func (r *Registry) GVKsByOwner(owner OwnerKey) []schema.GroupVersionKind {
+	return r.index.GVKsByOwner(owner)
+}
+
 func (r *Registry) hasSubscriberLocked(gvk schema.GroupVersionKind, owner OwnerKey) bool {
 	for _, k := range r.index.GVKsByOwner(owner) {
 		if k == gvk {
