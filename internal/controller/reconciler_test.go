@@ -21,6 +21,7 @@ import (
 	"github.com/isometry/echelon-operator/internal/controller"
 	"github.com/isometry/echelon-operator/internal/discovery"
 	"github.com/isometry/echelon-operator/internal/watcher"
+	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -136,7 +137,10 @@ func newScheme(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	sc := runtime.NewScheme()
 	if err := apiv1.AddToScheme(sc); err != nil {
-		t.Fatalf("AddToScheme: %v", err)
+		t.Fatalf("AddToScheme apiv1: %v", err)
+	}
+	if err := corev1.AddToScheme(sc); err != nil {
+		t.Fatalf("AddToScheme corev1: %v", err)
 	}
 	return sc
 }
