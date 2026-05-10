@@ -1,0 +1,5 @@
+## Append samples of your project ##
+resources:
+- as-code_v1_echelon.yaml
+- as-code_v1_clusterechelon.yaml
+# +kubebuilder:scaffold:manifestskustomizesamples

@@ -1,0 +1,9 @@
+apiVersion: as-code.io/v1
+kind: ClusterEchelon
+metadata:
+  labels:
+    app.kubernetes.io/name: echelon-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: clusterechelon-sample
+spec:
+  # TODO(user): Add fields here
