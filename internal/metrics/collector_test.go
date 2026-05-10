@@ -231,6 +231,28 @@ func TestStateCollector_TargetMembersPerStatusBucket(t *testing.T) {
 	}
 }
 
+// TestStateCollector_MultipleEchelons_SeparateSeries checks that two Echelons
+// sharing a name across different namespaces produce two distinct metric
+// series — i.e. the namespace label disambiguates them. Without per-namespace
+// emission a deleted-then-recreated owner would clobber the live one's gauge.
+func TestStateCollector_MultipleEchelons_SeparateSeries(t *testing.T) {
+	lister := &fakeLister{echelons: []apiv1.Echelon{
+		newReadyEchelon("flux-system", "wave-0"),
+		newReadyEchelon("team-a", "wave-0"),
+	}}
+	col := metrics.NewStateCollector(t.Context(), lister)
+
+	for _, ns := range []string{"flux-system", "team-a"} {
+		v := valueAt(t, col, "echelon_status_condition", map[string]string{
+			"owner_kind": "Echelon", "namespace": ns, "name": "wave-0",
+			"type": "Ready", "status": "True",
+		})
+		if v != 1 {
+			t.Errorf("namespace=%q Ready=True gauge = %v, want 1", ns, v)
+		}
+	}
+}
+
 func joinStrings(m map[string]bool) string {
 	out := make([]string, 0, len(m))
 	for k := range m {

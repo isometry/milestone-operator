@@ -34,9 +34,9 @@ import (
 // CRD shows up.
 type CRDWatcher struct {
 	client.Client
-	Resolver        discovery.Resolver
-	EchelonEvents   chan<- event.GenericEvent
-	CEchelonEvents  chan<- event.GenericEvent
+	Resolver       discovery.Resolver
+	EchelonEvents  chan<- event.GenericEvent
+	CEchelonEvents chan<- event.GenericEvent
 }
 
 // +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch

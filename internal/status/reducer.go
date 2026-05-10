@@ -21,10 +21,10 @@ import (
 
 // Member identifies a single resource and its computed kstatus.
 type Member struct {
-	Group, Version, Kind  string
-	Namespace, Name       string
-	Status, Reason        string
-	Message               string
+	Group, Version, Kind string
+	Namespace, Name      string
+	Status, Reason       string
+	Message              string
 }
 
 // ReduceTarget reduces members of one target into a TargetRollup. When the

@@ -119,9 +119,9 @@ type TargetRollup struct {
 // MemberStatus identifies an individual resource and its computed kstatus.
 type MemberStatus struct {
 	// +optional
-	Group     string `json:"group,omitempty"`
-	Version   string `json:"version"`
-	Kind      string `json:"kind"`
+	Group   string `json:"group,omitempty"`
+	Version string `json:"version"`
+	Kind    string `json:"kind"`
 	// +optional
 	Namespace string `json:"namespace,omitempty"`
 	Name      string `json:"name"`

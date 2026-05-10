@@ -76,7 +76,9 @@ func (r *Reconciler) ReconcileObject(ctx context.Context, obj client.Object) (ct
 		if err := r.Client.Update(ctx, obj); err != nil {
 			return ctrl.Result{}, fmt.Errorf("add finalizer: %w", err)
 		}
-		return ctrl.Result{Requeue: true}, nil
+		// The Update emits a Watch event on the owner; controller-runtime
+		// requeues from that automatically. No explicit Requeue needed.
+		return ctrl.Result{}, nil
 	}
 
 	prior := *adapter.Status().DeepCopy()

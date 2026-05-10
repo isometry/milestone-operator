@@ -186,17 +186,13 @@ func newFixture(t *testing.T, ech *apiv1.Echelon, fa *fakeAdapter, freg *fakeReg
 	}
 }
 
-func TestReconcile_AddsFinalizerAndRequeues(t *testing.T) {
+func TestReconcile_AddsFinalizer(t *testing.T) {
 	ech := newEchelon("e1")
 	fa := &fakeAdapter{obj: ech}
 	r := newFixture(t, ech, fa, newFakeRegistry())
 
-	res, err := r.ReconcileObject(t.Context(), ech)
-	if err != nil {
+	if _, err := r.ReconcileObject(t.Context(), ech); err != nil {
 		t.Fatalf("Reconcile: %v", err)
-	}
-	if !res.Requeue {
-		t.Errorf("expected requeue after adding finalizer")
 	}
 	found := false
 	for _, f := range ech.GetFinalizers() {
@@ -395,7 +391,7 @@ func TestReconcile_CapsNotReadyMembers(t *testing.T) {
 	ech.Finalizers = []string{apiv1.Finalizer}
 	freg := newFakeRegistry()
 	// 60 explicitly not-ready members; cap is 50.
-	var members []*unstructured.Unstructured
+	members := make([]*unstructured.Unstructured, 0, 60)
 	for i := range 60 {
 		u := &unstructured.Unstructured{}
 		u.SetAPIVersion("kustomize.toolkit.fluxcd.io/v1")
@@ -444,8 +440,81 @@ func TestReconcile_NotFoundFromGet_NoOp(t *testing.T) {
 	if err != nil {
 		t.Errorf("expected nil error, got %v", err)
 	}
-	if res.Requeue || res.RequeueAfter != 0 {
+	if res != (reconcile.Result{}) {
 		t.Errorf("expected zero result, got %+v", res)
+	}
+}
+
+// TestReconcile_MultipleEchelons_IndependentStatus drives two owners through
+// the pipeline against a shared registry and asserts each computes its own
+// status. e1 watches Kustomizations (one Current member ⇒ Ready=True); e2
+// watches HelmReleases with an empty member set under the NotReady policy
+// (⇒ Ready=False). Independence means: shared registry, distinct outcomes.
+func TestReconcile_MultipleEchelons_IndependentStatus(t *testing.T) {
+	helmGVK := schema.GroupVersionKind{Group: "helm.toolkit.fluxcd.io", Version: "v2", Kind: "HelmRelease"}
+
+	e1 := newEchelon("e1")
+	e1.Finalizers = []string{apiv1.Finalizer}
+	e2 := newEchelon("e2")
+	e2.Finalizers = []string{apiv1.Finalizer}
+
+	freg := newFakeRegistry()
+	freg.listResponses[kustomizationGVK] = []*unstructured.Unstructured{currentMember("a")}
+	// helmGVK has no listResponses entry → empty set.
+
+	fa1 := &fakeAdapter{obj: e1, targets: []controller.NormalizedTarget{{
+		Index: 0, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
+		Selector: mustSelector(t), EmptySetPolicy: apiv1.EmptySetUnknown,
+	}}}
+	fa2 := &fakeAdapter{obj: e2, targets: []controller.NormalizedTarget{{
+		Index: 0, GVK: helmGVK, Scope: apimeta.RESTScopeNameNamespace,
+		Selector: mustSelector(t), EmptySetPolicy: apiv1.EmptySetNotReady,
+	}}}
+
+	cl := fake.NewClientBuilder().
+		WithScheme(newScheme(t)).
+		WithObjects(e1, e2).
+		WithStatusSubresource(e1, e2).
+		Build()
+	r := &controller.Reconciler{
+		Client:   cl,
+		Registry: freg,
+		Resolver: nil,
+		NewAdapter: func(obj client.Object) controller.OwnerAdapter {
+			if obj.GetName() == "e1" {
+				return fa1
+			}
+			return fa2
+		},
+		Controller: "Echelon",
+		Now:        func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) },
+	}
+
+	if _, err := r.ReconcileObject(t.Context(), e1); err != nil {
+		t.Fatalf("e1 Reconcile: %v", err)
+	}
+	if _, err := r.ReconcileObject(t.Context(), e2); err != nil {
+		t.Fatalf("e2 Reconcile: %v", err)
+	}
+
+	if got := readyStatusOf(e1); got != metav1.ConditionTrue {
+		t.Errorf("e1 Ready=%s, want True; conditions=%+v", got, e1.Status.Conditions)
+	}
+	if got := readyStatusOf(e2); got != metav1.ConditionFalse {
+		t.Errorf("e2 Ready=%s, want False; conditions=%+v", got, e2.Status.Conditions)
+	}
+
+	// Each owner should have subscribed to its own GVK only.
+	owner1 := watcher.OwnerKey{Kind: "Echelon", Namespace: "flux-system", Name: "e1"}
+	owner2 := watcher.OwnerKey{Kind: "Echelon", Namespace: "flux-system", Name: "e2"}
+	if got := freg.GVKsByOwner(owner1); len(got) != 1 || got[0] != kustomizationGVK {
+		t.Errorf("e1 subscriptions = %v, want [Kustomization]", got)
+	}
+	if got := freg.GVKsByOwner(owner2); len(got) != 1 || got[0] != helmGVK {
+		t.Errorf("e2 subscriptions = %v, want [HelmRelease]", got)
+	}
+	if fa1.patches != 1 || fa2.patches != 1 {
+		t.Errorf("patches: fa1=%d fa2=%d, want 1 each", fa1.patches, fa2.patches)
 	}
 }
 

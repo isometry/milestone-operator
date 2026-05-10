@@ -91,7 +91,7 @@ func (s *SubscriberIndex) Subscribers(gvk schema.GroupVersionKind, obj client.Ob
 	if !ok {
 		return nil
 	}
-	var out []OwnerKey
+	out := make([]OwnerKey, 0, len(subs))
 	for _, sub := range subs {
 		if !matches(sub, obj) {
 			continue

@@ -153,11 +153,11 @@ func TestReduceOwner(t *testing.T) {
 		return apiv1.TargetRollup{Kind: kind, Ready: ready}
 	}
 	cases := []struct {
-		name        string
-		rollups     []apiv1.TargetRollup
-		wantStatus  metav1.ConditionStatus
-		wantReason  string
-		wantInMsg   []string // substrings expected in the message
+		name       string
+		rollups    []apiv1.TargetRollup
+		wantStatus metav1.ConditionStatus
+		wantReason string
+		wantInMsg  []string // substrings expected in the message
 	}{
 		{
 			name:       "no targets defensive",

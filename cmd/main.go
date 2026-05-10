@@ -145,7 +145,9 @@ func main() {
 			setupLog.Error(err, "init metrics cert watcher")
 			os.Exit(1)
 		}
-		metricsServerOptions.TLSOpts = append(metricsServerOptions.TLSOpts, func(c *tls.Config) { c.GetCertificate = metricsCertWatcher.GetCertificate })
+		metricsServerOptions.TLSOpts = append(metricsServerOptions.TLSOpts, func(c *tls.Config) {
+			c.GetCertificate = metricsCertWatcher.GetCertificate
+		})
 	}
 
 	cfg := ctrl.GetConfigOrDie()
