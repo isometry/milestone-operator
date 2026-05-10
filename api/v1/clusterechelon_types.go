@@ -20,33 +20,36 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
-
 // ClusterEchelonSpec defines the desired state of ClusterEchelon.
 type ClusterEchelonSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
-
-	// Foo is an example field of ClusterEchelon. Edit clusterechelon_types.go to remove/update
-	Foo string `json:"foo,omitempty"`
+	// Targets is the set of resource selections this ClusterEchelon aggregates
+	// over. Each target may scope its search via Namespaces or NamespaceSelector.
+	// +kubebuilder:validation:MinItems=1
+	// +listType=atomic
+	Targets []ClusterTargetSpec `json:"targets"`
 }
 
-// ClusterEchelonStatus defines the observed state of ClusterEchelon.
+// ClusterEchelonStatus is the observed state of ClusterEchelon.
 type ClusterEchelonStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	EchelonStatusBase `json:",inline"`
 }
 
 // +kubebuilder:object:root=true
+// +kubebuilder:resource:scope=Cluster,shortName=cech
 // +kubebuilder:subresource:status
+// +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
+// +kubebuilder:printcolumn:name="Reason",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].reason"
+// +kubebuilder:printcolumn:name="Total",type="integer",JSONPath=".status.summary.total"
+// +kubebuilder:printcolumn:name="Current",type="integer",JSONPath=".status.summary.current"
+// +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
-// ClusterEchelon is the Schema for the clusterechelons API.
+// ClusterEchelon aggregates the kstatus of resources matching its targets
+// across namespaces, exposing a kstatus-compatible Ready condition.
 type ClusterEchelon struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   ClusterEchelonSpec   `json:"spec,omitempty"`
+	Spec   ClusterEchelonSpec   `json:"spec"`
 	Status ClusterEchelonStatus `json:"status,omitempty"`
 }
 

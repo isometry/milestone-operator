@@ -11,13 +11,33 @@ spec:
     kind: ClusterEchelon
     listKind: ClusterEchelonList
     plural: clusterechelons
+    shortNames:
+    - cech
     singular: clusterechelon
-  scope: Namespaced
+  scope: Cluster
   versions:
-  - name: v1
+  - additionalPrinterColumns:
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Ready')].reason
+      name: Reason
+      type: string
+    - jsonPath: .status.summary.total
+      name: Total
+      type: integer
+    - jsonPath: .status.summary.current
+      name: Current
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1
     schema:
       openAPIV3Schema:
-        description: ClusterEchelon is the Schema for the clusterechelons API.
+        description: |-
+          ClusterEchelon aggregates the kstatus of resources matching its targets
+          across namespaces, exposing a kstatus-compatible Ready condition.
         properties:
           apiVersion:
             description: |-
@@ -39,14 +59,373 @@ spec:
           spec:
             description: ClusterEchelonSpec defines the desired state of ClusterEchelon.
             properties:
-              foo:
-                description: Foo is an example field of ClusterEchelon. Edit clusterechelon_types.go
-                  to remove/update
-                type: string
+              targets:
+                description: |-
+                  Targets is the set of resource selections this ClusterEchelon aggregates
+                  over. Each target may scope its search via Namespaces or NamespaceSelector.
+                items:
+                  description: |-
+                    ClusterTargetSpec is TargetSpec extended with namespace selection.
+                    Exactly one of Namespaces or NamespaceSelector may be set; both empty means
+                    "all namespaces".
+                  properties:
+                    emptySetPolicy:
+                      default: Unknown
+                      description: |-
+                        EmptySetPolicy controls Ready reporting when zero resources match.
+                        Defaults to Unknown when omitted.
+                      enum:
+                      - Unknown
+                      - Ready
+                      - NotReady
+                      type: string
+                    group:
+                      description: |-
+                        Group is the API group of the target kind. Empty string means the core
+                        Kubernetes group.
+                      type: string
+                    kind:
+                      description: Kind is the target kind (e.g. "Kustomization",
+                        "HelmRelease").
+                      minLength: 1
+                      type: string
+                    namespaceSelector:
+                      description: |-
+                        NamespaceSelector matches namespaces by label. Mutually exclusive with
+                        Namespaces.
+                      properties:
+                        matchExpressions:
+                          description: matchExpressions is a list of label selector
+                            requirements. The requirements are ANDed.
+                          items:
+                            description: |-
+                              A label selector requirement is a selector that contains values, a key, and an operator that
+                              relates the key and values.
+                            properties:
+                              key:
+                                description: key is the label key that the selector
+                                  applies to.
+                                type: string
+                              operator:
+                                description: |-
+                                  operator represents a key's relationship to a set of values.
+                                  Valid operators are In, NotIn, Exists and DoesNotExist.
+                                type: string
+                              values:
+                                description: |-
+                                  values is an array of string values. If the operator is In or NotIn,
+                                  the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                  the values array must be empty. This array is replaced during a strategic
+                                  merge patch.
+                                items:
+                                  type: string
+                                type: array
+                                x-kubernetes-list-type: atomic
+                            required:
+                            - key
+                            - operator
+                            type: object
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        matchLabels:
+                          additionalProperties:
+                            type: string
+                          description: |-
+                            matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                            map is equivalent to an element of matchExpressions, whose key field is "key", the
+                            operator is "In", and the values array contains only "value". The requirements are ANDed.
+                          type: object
+                      type: object
+                      x-kubernetes-map-type: atomic
+                    namespaces:
+                      description: |-
+                        Namespaces is an explicit allow-list of namespaces to search. Mutually
+                        exclusive with NamespaceSelector.
+                      items:
+                        type: string
+                      type: array
+                      x-kubernetes-list-type: set
+                    selector:
+                      description: |-
+                        Selector is a standard Kubernetes label selector. Nil selects every
+                        resource of Kind in scope.
+                      properties:
+                        matchExpressions:
+                          description: matchExpressions is a list of label selector
+                            requirements. The requirements are ANDed.
+                          items:
+                            description: |-
+                              A label selector requirement is a selector that contains values, a key, and an operator that
+                              relates the key and values.
+                            properties:
+                              key:
+                                description: key is the label key that the selector
+                                  applies to.
+                                type: string
+                              operator:
+                                description: |-
+                                  operator represents a key's relationship to a set of values.
+                                  Valid operators are In, NotIn, Exists and DoesNotExist.
+                                type: string
+                              values:
+                                description: |-
+                                  values is an array of string values. If the operator is In or NotIn,
+                                  the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                  the values array must be empty. This array is replaced during a strategic
+                                  merge patch.
+                                items:
+                                  type: string
+                                type: array
+                                x-kubernetes-list-type: atomic
+                            required:
+                            - key
+                            - operator
+                            type: object
+                          type: array
+                          x-kubernetes-list-type: atomic
+                        matchLabels:
+                          additionalProperties:
+                            type: string
+                          description: |-
+                            matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                            map is equivalent to an element of matchExpressions, whose key field is "key", the
+                            operator is "In", and the values array contains only "value". The requirements are ANDed.
+                          type: object
+                      type: object
+                      x-kubernetes-map-type: atomic
+                    version:
+                      description: |-
+                        Version is the API version of the target kind. When empty, the operator
+                        resolves the preferred version via discovery.
+                      type: string
+                  required:
+                  - kind
+                  type: object
+                  x-kubernetes-validations:
+                  - message: namespaces and namespaceSelector are mutually exclusive
+                    rule: '!(has(self.namespaces) && has(self.namespaceSelector))'
+                minItems: 1
+                type: array
+                x-kubernetes-list-type: atomic
+            required:
+            - targets
             type: object
           status:
-            description: ClusterEchelonStatus defines the observed state of ClusterEchelon.
+            description: ClusterEchelonStatus is the observed state of ClusterEchelon.
+            properties:
+              conditions:
+                description: Conditions exposes Ready, Reconciling, and Stalled (kstatus-compatible).
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              lastEvaluatedTime:
+                description: LastEvaluatedTime is the timestamp of the last status
+                  evaluation.
+                format: date-time
+                type: string
+              notReadyMembers:
+                description: |-
+                  NotReadyMembers lists members whose kstatus is not Current. Capped to
+                  avoid object-size explosions; Truncated indicates the cap was hit.
+                items:
+                  description: MemberStatus identifies an individual resource and
+                    its computed kstatus.
+                  properties:
+                    group:
+                      type: string
+                    kind:
+                      type: string
+                    message:
+                      type: string
+                    name:
+                      type: string
+                    namespace:
+                      type: string
+                    reason:
+                      type: string
+                    status:
+                      description: Status is the kstatus computed by sigs.k8s.io/cli-utils.
+                      enum:
+                      - Current
+                      - InProgress
+                      - Failed
+                      - NotFound
+                      - Terminating
+                      - Unknown
+                      type: string
+                    version:
+                      type: string
+                  required:
+                  - kind
+                  - name
+                  - status
+                  - version
+                  type: object
+                type: array
+              observedGeneration:
+                description: |-
+                  ObservedGeneration mirrors metadata.generation at the time of the last
+                  successful reconcile.
+                format: int64
+                type: integer
+              summary:
+                description: Summary aggregates member counters across all targets.
+                properties:
+                  current:
+                    format: int32
+                    type: integer
+                  failed:
+                    format: int32
+                    type: integer
+                  inProgress:
+                    format: int32
+                    type: integer
+                  notFound:
+                    format: int32
+                    type: integer
+                  terminating:
+                    format: int32
+                    type: integer
+                  total:
+                    format: int32
+                    type: integer
+                  unknown:
+                    format: int32
+                    type: integer
+                required:
+                - current
+                - failed
+                - inProgress
+                - notFound
+                - terminating
+                - total
+                - unknown
+                type: object
+              targets:
+                description: Targets carries per-target rollups in spec order.
+                items:
+                  description: TargetRollup is the per-target aggregated readiness
+                    reported on the owner.
+                  properties:
+                    group:
+                      type: string
+                    kind:
+                      type: string
+                    ready:
+                      description: |-
+                        Ready is True when every selected member is Current; False when any
+                        member is Failed or NotFound; Unknown otherwise (or per emptySetPolicy
+                        when no members match).
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    reason:
+                      type: string
+                    summary:
+                      description: Summary holds aggregate kstatus counters for a
+                        set of resources.
+                      properties:
+                        current:
+                          format: int32
+                          type: integer
+                        failed:
+                          format: int32
+                          type: integer
+                        inProgress:
+                          format: int32
+                          type: integer
+                        notFound:
+                          format: int32
+                          type: integer
+                        terminating:
+                          format: int32
+                          type: integer
+                        total:
+                          format: int32
+                          type: integer
+                        unknown:
+                          format: int32
+                          type: integer
+                      required:
+                      - current
+                      - failed
+                      - inProgress
+                      - notFound
+                      - terminating
+                      - total
+                      - unknown
+                      type: object
+                    version:
+                      type: string
+                  required:
+                  - kind
+                  - ready
+                  - summary
+                  type: object
+                type: array
+              truncated:
+                description: Truncated is true when NotReadyMembers was capped.
+                type: boolean
             type: object
+        required:
+        - spec
         type: object
     served: true
     storage: true
