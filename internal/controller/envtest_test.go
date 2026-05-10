@@ -11,7 +11,6 @@ You may obtain a copy of the License at
 package controller_test
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -66,7 +65,7 @@ func newEnvFixture(t *testing.T) *envFixture {
 	if err != nil {
 		t.Fatalf("discovery client: %v", err)
 	}
-	resolver := discovery.NewResolver(dc, time.Hour)
+	resolver := discovery.NewResolver(discovery.WrapClient(dc), time.Hour)
 
 	dyn, err := dynamic.NewForConfig(envtestCfg)
 	if err != nil {
@@ -91,7 +90,7 @@ func newEnvFixture(t *testing.T) *envFixture {
 func createNamespace(t *testing.T, name string) {
 	t.Helper()
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: name}}
-	if err := envtestClient.Create(context.Background(), ns); err != nil && !apierrors.IsAlreadyExists(err) {
+	if err := envtestClient.Create(t.Context(), ns); err != nil && !apierrors.IsAlreadyExists(err) {
 		t.Fatalf("create namespace %s: %v", name, err)
 	}
 }
@@ -103,7 +102,7 @@ func createEchelon(t *testing.T, ns, name string, targets []apiv1.TargetSpec) *a
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name},
 		Spec:       apiv1.EchelonSpec{Targets: targets},
 	}
-	if err := envtestClient.Create(context.Background(), ech); err != nil {
+	if err := envtestClient.Create(t.Context(), ech); err != nil {
 		t.Fatalf("create echelon: %v", err)
 	}
 	return ech
@@ -114,7 +113,7 @@ func createEchelon(t *testing.T, ns, name string, targets []apiv1.TargetSpec) *a
 func createWidget(t *testing.T, ns, name, ready string) *unstructured.Unstructured {
 	t.Helper()
 	w := newWidget(ns, name, "")
-	if err := envtestClient.Create(context.Background(), w); err != nil {
+	if err := envtestClient.Create(t.Context(), w); err != nil {
 		t.Fatalf("create widget: %v", err)
 	}
 	if ready != "" {
@@ -122,7 +121,7 @@ func createWidget(t *testing.T, ns, name, ready string) *unstructured.Unstructur
 		_ = unstructured.SetNestedSlice(w.Object, []any{
 			map[string]any{"type": "Ready", "status": ready, "reason": "Test"},
 		}, "status", "conditions")
-		if err := envtestClient.Status().Update(context.Background(), w); err != nil {
+		if err := envtestClient.Status().Update(t.Context(), w); err != nil {
 			t.Fatalf("update widget status: %v", err)
 		}
 	}
@@ -136,14 +135,14 @@ func reconcileToConvergence(t *testing.T, fix *envFixture, key client.ObjectKey,
 	deadline := time.Now().Add(convergenceMaxDur)
 	for time.Now().Before(deadline) {
 		ech := &apiv1.Echelon{}
-		if err := envtestClient.Get(context.Background(), key, ech); err != nil {
+		if err := envtestClient.Get(t.Context(), key, ech); err != nil {
 			t.Fatalf("get echelon: %v", err)
 		}
-		if _, err := fix.reconciler.ReconcileObject(context.Background(), ech); err != nil {
+		if _, err := fix.reconciler.ReconcileObject(t.Context(), ech); err != nil {
 			t.Fatalf("reconcile: %v", err)
 		}
 		// Re-fetch to read current status.
-		_ = envtestClient.Get(context.Background(), key, ech)
+		_ = envtestClient.Get(t.Context(), key, ech)
 		if err := predicate(ech); err == nil {
 			return
 		}
@@ -182,7 +181,7 @@ func TestEnvtest_HappyPath_AllCurrent(t *testing.T) {
 	// First reconcile adds the finalizer; second reconcile starts the informer.
 	// Informers need a moment to sync; we then loop until Ready=True or timeout.
 	for i := range 3 {
-		_, err := fix.reconciler.ReconcileObject(context.Background(), refresh(t, ech))
+		_, err := fix.reconciler.ReconcileObject(t.Context(), refresh(t, ech))
 		if err != nil {
 			t.Fatalf("reconcile %d: %v", i, err)
 		}
@@ -205,7 +204,7 @@ func TestEnvtest_EmptySet_NotReadyPolicy(t *testing.T) {
 	})
 
 	for range 3 {
-		_, _ = fix.reconciler.ReconcileObject(context.Background(), refresh(t, ech))
+		_, _ = fix.reconciler.ReconcileObject(t.Context(), refresh(t, ech))
 	}
 	time.Sleep(informerWarmup)
 
@@ -227,8 +226,8 @@ func TestEnvtest_LateCRD_StalledThenConverges(t *testing.T) {
 	})
 
 	// Initial reconcile: should set Stalled=True.
-	_, _ = fix.reconciler.ReconcileObject(context.Background(), refresh(t, ech))
-	_, _ = fix.reconciler.ReconcileObject(context.Background(), refresh(t, ech)) // post-finalizer
+	_, _ = fix.reconciler.ReconcileObject(t.Context(), refresh(t, ech))
+	_, _ = fix.reconciler.ReconcileObject(t.Context(), refresh(t, ech)) // post-finalizer
 
 	got := refresh(t, ech)
 	if stalled(got) != metav1.ConditionTrue {
@@ -252,10 +251,10 @@ func TestEnvtest_LateCRD_StalledThenConverges(t *testing.T) {
 			}},
 		},
 	}
-	if err := envtestClient.Create(context.Background(), lateCRD); err != nil && !apierrors.IsAlreadyExists(err) {
+	if err := envtestClient.Create(t.Context(), lateCRD); err != nil && !apierrors.IsAlreadyExists(err) {
 		t.Fatalf("create late CRD: %v", err)
 	}
-	if err := waitForCRDEstablished(envtestClient, "lates.late.test.as-code.io", 10*time.Second); err != nil {
+	if err := waitForCRDEstablished(t.Context(), envtestClient, "lates.late.test.as-code.io", 10*time.Second); err != nil {
 		t.Fatalf("wait CRD established: %v", err)
 	}
 
@@ -281,7 +280,7 @@ func TestEnvtest_SubscriptionDiff_RemovesInformer(t *testing.T) {
 		{Group: "test.as-code.io", Kind: "Widget", EmptySetPolicy: apiv1.EmptySetUnknown},
 	})
 	for range 3 {
-		_, _ = fix.reconciler.ReconcileObject(context.Background(), refresh(t, ech))
+		_, _ = fix.reconciler.ReconcileObject(t.Context(), refresh(t, ech))
 	}
 	if got := fix.registry.GVKCount(); got != 1 {
 		t.Fatalf("after subscribe GVKCount=%d, want 1", got)
@@ -289,15 +288,15 @@ func TestEnvtest_SubscriptionDiff_RemovesInformer(t *testing.T) {
 
 	// Edit spec to remove all targets requires MinItems=1 in CRD validation,
 	// so we instead delete the Echelon, which triggers the finalizer cleanup.
-	if err := envtestClient.Delete(context.Background(), refresh(t, ech)); err != nil {
+	if err := envtestClient.Delete(t.Context(), refresh(t, ech)); err != nil {
 		t.Fatalf("delete echelon: %v", err)
 	}
 	for range 3 {
 		curr := &apiv1.Echelon{}
-		if err := envtestClient.Get(context.Background(), client.ObjectKeyFromObject(ech), curr); err != nil {
+		if err := envtestClient.Get(t.Context(), client.ObjectKeyFromObject(ech), curr); err != nil {
 			break // gone
 		}
-		if _, err := fix.reconciler.ReconcileObject(context.Background(), curr); err != nil {
+		if _, err := fix.reconciler.ReconcileObject(t.Context(), curr); err != nil {
 			t.Fatalf("post-delete reconcile: %v", err)
 		}
 	}
@@ -310,7 +309,7 @@ func TestEnvtest_SubscriptionDiff_RemovesInformer(t *testing.T) {
 func refresh(t *testing.T, ech *apiv1.Echelon) *apiv1.Echelon {
 	t.Helper()
 	out := &apiv1.Echelon{}
-	if err := envtestClient.Get(context.Background(), client.ObjectKeyFromObject(ech), out); err != nil {
+	if err := envtestClient.Get(t.Context(), client.ObjectKeyFromObject(ech), out); err != nil {
 		t.Fatalf("refresh: %v", err)
 	}
 	return out

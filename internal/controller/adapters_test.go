@@ -31,8 +31,10 @@ type fakeDisc struct {
 	resources map[string]*metav1.APIResourceList
 }
 
-func (f *fakeDisc) ServerGroups() (*metav1.APIGroupList, error) { return f.groups, nil }
-func (f *fakeDisc) ServerResourcesForGroupVersion(gv string) (*metav1.APIResourceList, error) {
+func (f *fakeDisc) ServerGroups(_ context.Context) (*metav1.APIGroupList, error) {
+	return f.groups, nil
+}
+func (f *fakeDisc) ServerResourcesForGroupVersion(_ context.Context, gv string) (*metav1.APIResourceList, error) {
 	if rl, ok := f.resources[gv]; ok {
 		return rl, nil
 	}
@@ -43,8 +45,8 @@ func newDisc() discovery.Resolver {
 	fd := &fakeDisc{
 		groups: &metav1.APIGroupList{Groups: []metav1.APIGroup{
 			{
-				Name: "kustomize.toolkit.fluxcd.io",
-				Versions: []metav1.GroupVersionForDiscovery{{GroupVersion: "kustomize.toolkit.fluxcd.io/v1", Version: "v1"}},
+				Name:             "kustomize.toolkit.fluxcd.io",
+				Versions:         []metav1.GroupVersionForDiscovery{{GroupVersion: "kustomize.toolkit.fluxcd.io/v1", Version: "v1"}},
 				PreferredVersion: metav1.GroupVersionForDiscovery{GroupVersion: "kustomize.toolkit.fluxcd.io/v1", Version: "v1"},
 			},
 			{
@@ -69,7 +71,7 @@ func TestEchelonAdapter_Targets_NamespaceMatcherIsOwnNamespace(t *testing.T) {
 		}},
 	}
 	a := controller.NewEchelonAdapter(ech)
-	targets, errs := a.Targets(context.Background(), newDisc())
+	targets, errs := a.Targets(t.Context(), newDisc())
 	if len(errs) != 0 {
 		t.Fatalf("unexpected errs: %v", errs)
 	}
@@ -99,7 +101,7 @@ func TestEchelonAdapter_Targets_DiscoveryFailureReportsTargetError(t *testing.T)
 		}},
 	}
 	a := controller.NewEchelonAdapter(ech)
-	targets, errs := a.Targets(context.Background(), newDisc())
+	targets, errs := a.Targets(t.Context(), newDisc())
 	if len(targets) != 0 {
 		t.Errorf("targets should be empty when discovery fails")
 	}
@@ -119,7 +121,7 @@ func TestClusterEchelonAdapter_Targets_NamespaceListMatcher(t *testing.T) {
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).Build()
 	factory := controller.NewClusterEchelonAdapterFactory(cl)
 	a := factory(ce)
-	targets, errs := a.Targets(context.Background(), newDisc())
+	targets, errs := a.Targets(t.Context(), newDisc())
 	if len(errs) != 0 {
 		t.Fatalf("unexpected errs: %v", errs)
 	}
@@ -147,7 +149,7 @@ func TestClusterEchelonAdapter_Targets_NamespaceSelectorListsNamespaces(t *testi
 	}
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(ns1, ns2).Build()
 	factory := controller.NewClusterEchelonAdapterFactory(cl)
-	targets, errs := factory(ce).Targets(context.Background(), newDisc())
+	targets, errs := factory(ce).Targets(t.Context(), newDisc())
 	if len(errs) != 0 {
 		t.Fatalf("errs: %v", errs)
 	}
@@ -170,7 +172,7 @@ func TestClusterEchelonAdapter_Targets_ClusterScopedKindWithNamespaces_IsScopeMi
 	}
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).Build()
 	factory := controller.NewClusterEchelonAdapterFactory(cl)
-	targets, errs := factory(ce).Targets(context.Background(), newDisc())
+	targets, errs := factory(ce).Targets(t.Context(), newDisc())
 	if len(targets) != 0 {
 		t.Errorf("scope mismatch should drop the target; got %d", len(targets))
 	}
@@ -187,7 +189,7 @@ func TestClusterEchelonAdapter_Targets_NoNamespaceFilter_AllNamespaces(t *testin
 		}}},
 	}
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).Build()
-	targets, errs := controller.NewClusterEchelonAdapterFactory(cl)(ce).Targets(context.Background(), newDisc())
+	targets, errs := controller.NewClusterEchelonAdapterFactory(cl)(ce).Targets(t.Context(), newDisc())
 	if len(errs) != 0 {
 		t.Fatalf("errs: %v", errs)
 	}
@@ -203,7 +205,7 @@ func TestEchelonAdapter_PassesScopeFromDiscovery(t *testing.T) {
 			{Group: "kustomize.toolkit.fluxcd.io", Kind: "Kustomization"},
 		}},
 	}
-	targets, _ := controller.NewEchelonAdapter(ech).Targets(context.Background(), newDisc())
+	targets, _ := controller.NewEchelonAdapter(ech).Targets(t.Context(), newDisc())
 	if targets[0].Scope != apimeta.RESTScopeNameNamespace {
 		t.Errorf("scope = %v, want Namespaced", targets[0].Scope)
 	}
@@ -212,7 +214,7 @@ func TestEchelonAdapter_PassesScopeFromDiscovery(t *testing.T) {
 // Sanity: the discovery resolver is required.
 func TestEchelonAdapter_NilResolverIsTargetError(t *testing.T) {
 	ech := &apiv1.Echelon{ObjectMeta: metav1.ObjectMeta{Namespace: "x", Name: "x"}}
-	_, errs := controller.NewEchelonAdapter(ech).Targets(context.Background(), nil)
+	_, errs := controller.NewEchelonAdapter(ech).Targets(t.Context(), nil)
 	if len(errs) == 0 || errs[0].Reason != apiv1.ReasonDiscoveryFailed {
 		t.Errorf("expected DiscoveryFailed; got %+v", errs)
 	}
@@ -226,7 +228,7 @@ func TestEchelonAdapter_GVK(t *testing.T) {
 			{Group: "kustomize.toolkit.fluxcd.io", Kind: "Kustomization"},
 		}},
 	}
-	targets, _ := controller.NewEchelonAdapter(ech).Targets(context.Background(), newDisc())
+	targets, _ := controller.NewEchelonAdapter(ech).Targets(t.Context(), newDisc())
 	wantGVK := schema.GroupVersionKind{Group: "kustomize.toolkit.fluxcd.io", Version: "v1", Kind: "Kustomization"}
 	if targets[0].GVK != wantGVK {
 		t.Errorf("GVK = %v, want %v", targets[0].GVK, wantGVK)

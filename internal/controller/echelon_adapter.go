@@ -47,7 +47,7 @@ func (a *EchelonAdapter) OwnerKey() watcher.OwnerKey {
 // Targets normalizes the spec.targets[] entries; per-target discovery failures
 // are returned as TargetError, not as a fatal error, so the reconciler can
 // proceed with the resolvable subset.
-func (a *EchelonAdapter) Targets(_ context.Context, dr discovery.Resolver) ([]NormalizedTarget, []TargetError) {
+func (a *EchelonAdapter) Targets(ctx context.Context, dr discovery.Resolver) ([]NormalizedTarget, []TargetError) {
 	if dr == nil {
 		// Defensive: a misconfigured Reconciler would otherwise nil-panic.
 		return nil, []TargetError{{Reason: apiv1.ReasonDiscoveryFailed, Err: errors.New("nil discovery resolver")}}
@@ -58,7 +58,7 @@ func (a *EchelonAdapter) Targets(_ context.Context, dr discovery.Resolver) ([]No
 	out := make([]NormalizedTarget, 0, len(a.Echelon.Spec.Targets))
 	var errs []TargetError
 	for i, t := range a.Echelon.Spec.Targets {
-		gvk, scope, err := dr.Resolve(t.Group, t.Kind, t.Version)
+		gvk, scope, err := dr.Resolve(ctx, t.Group, t.Kind, t.Version)
 		if err != nil {
 			errs = append(errs, TargetError{
 				Index:  i,

@@ -14,6 +14,7 @@ You may obtain a copy of the License at
 package discovery
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -22,6 +23,7 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	clientdiscovery "k8s.io/client-go/discovery"
 )
 
 // ErrGVKNotEstablished signals the requested group/kind cannot be resolved by
@@ -29,16 +31,38 @@ import (
 var ErrGVKNotEstablished = errors.New("GVK not established")
 
 // Discoverer is the minimal subset of k8s.io/client-go/discovery.DiscoveryInterface
-// needed by the resolver. Defining it here lets tests fake it without dragging
-// in the full clientgo testing kit.
+// needed by the resolver. The real client-go methods do not yet accept a
+// context (k8s.io/client-go v0.33); WrapClient adapts a real client into this
+// interface, and tests fake it directly.
 type Discoverer interface {
-	ServerGroups() (*metav1.APIGroupList, error)
-	ServerResourcesForGroupVersion(groupVersion string) (*metav1.APIResourceList, error)
+	ServerGroups(ctx context.Context) (*metav1.APIGroupList, error)
+	ServerResourcesForGroupVersion(ctx context.Context, groupVersion string) (*metav1.APIResourceList, error)
+}
+
+// WrapClient adapts a client-go DiscoveryInterface to the context-aware
+// Discoverer used by the resolver. The ctx is not yet honoured by client-go
+// discovery; the underlying RESTClient timeout currently bounds these calls.
+// When client-go ships ctx-aware discovery, this wrapper will pass ctx through
+// and become a no-op adapter.
+func WrapClient(d clientdiscovery.DiscoveryInterface) Discoverer {
+	return &clientDiscoverer{d: d}
+}
+
+type clientDiscoverer struct {
+	d clientdiscovery.DiscoveryInterface
+}
+
+func (c *clientDiscoverer) ServerGroups(_ context.Context) (*metav1.APIGroupList, error) {
+	return c.d.ServerGroups()
+}
+
+func (c *clientDiscoverer) ServerResourcesForGroupVersion(_ context.Context, gv string) (*metav1.APIResourceList, error) {
+	return c.d.ServerResourcesForGroupVersion(gv)
 }
 
 // Resolver maps target identities to concrete GVK + scope.
 type Resolver interface {
-	Resolve(group, kind, version string) (schema.GroupVersionKind, apimeta.RESTScopeName, error)
+	Resolve(ctx context.Context, group, kind, version string) (schema.GroupVersionKind, apimeta.RESTScopeName, error)
 	Invalidate()
 }
 
@@ -71,7 +95,7 @@ func NewResolver(d Discoverer, ttl time.Duration) Resolver {
 	}
 }
 
-func (r *resolver) Resolve(group, kind, version string) (schema.GroupVersionKind, apimeta.RESTScopeName, error) {
+func (r *resolver) Resolve(ctx context.Context, group, kind, version string) (schema.GroupVersionKind, apimeta.RESTScopeName, error) {
 	key := cacheKey{group, kind, version}
 	if hit, ok := r.lookup(key); ok {
 		return hit.gvk, hit.scope, nil
@@ -79,7 +103,7 @@ func (r *resolver) Resolve(group, kind, version string) (schema.GroupVersionKind
 
 	resolvedVersion := version
 	if resolvedVersion == "" {
-		v, err := r.preferredVersion(group)
+		v, err := r.preferredVersion(ctx, group)
 		if err != nil {
 			return schema.GroupVersionKind{}, "", err
 		}
@@ -87,9 +111,9 @@ func (r *resolver) Resolve(group, kind, version string) (schema.GroupVersionKind
 	}
 
 	gv := groupVersionString(group, resolvedVersion)
-	rl, err := r.d.ServerResourcesForGroupVersion(gv)
+	rl, err := r.d.ServerResourcesForGroupVersion(ctx, gv)
 	if err != nil {
-		return schema.GroupVersionKind{}, "", fmt.Errorf("%w: %s: %v", ErrGVKNotEstablished, gv, err)
+		return schema.GroupVersionKind{}, "", fmt.Errorf("%w: %s: %w", ErrGVKNotEstablished, gv, err)
 	}
 	for _, res := range rl.APIResources {
 		if res.Kind != kind {
@@ -128,10 +152,10 @@ func (r *resolver) store(k cacheKey, e cacheEntry) {
 	r.cache[k] = e
 }
 
-func (r *resolver) preferredVersion(group string) (string, error) {
-	groups, err := r.d.ServerGroups()
+func (r *resolver) preferredVersion(ctx context.Context, group string) (string, error) {
+	groups, err := r.d.ServerGroups(ctx)
 	if err != nil {
-		return "", fmt.Errorf("%w: ServerGroups: %v", ErrGVKNotEstablished, err)
+		return "", fmt.Errorf("%w: ServerGroups: %w", ErrGVKNotEstablished, err)
 	}
 	for _, g := range groups.Groups {
 		if g.Name != group {

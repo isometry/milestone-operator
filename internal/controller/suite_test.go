@@ -150,7 +150,7 @@ func setupEnvtest() error {
 		return err
 	}
 	// Wait briefly for the Widget CRD to become Established.
-	if err := waitForCRDEstablished(cl, "widgets.test.as-code.io", 30*time.Second); err != nil {
+	if err := waitForCRDEstablished(context.Background(), cl, "widgets.test.as-code.io", 30*time.Second); err != nil {
 		return err
 	}
 	return nil
@@ -165,11 +165,11 @@ func teardownEnvtest() {
 	}
 }
 
-func waitForCRDEstablished(c client.Client, name string, timeout time.Duration) error {
+func waitForCRDEstablished(ctx context.Context, c client.Client, name string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	crd := &apiextv1.CustomResourceDefinition{}
 	for time.Now().Before(deadline) {
-		if err := c.Get(context.Background(), client.ObjectKey{Name: name}, crd); err == nil {
+		if err := c.Get(ctx, client.ObjectKey{Name: name}, crd); err == nil {
 			for _, cond := range crd.Status.Conditions {
 				if cond.Type == apiextv1.Established && cond.Status == apiextv1.ConditionTrue {
 					return nil

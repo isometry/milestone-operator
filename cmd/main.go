@@ -150,6 +150,10 @@ func main() {
 
 	cfg := ctrl.GetConfigOrDie()
 
+	// Manager signal context — cancelled on SIGINT/SIGTERM. Captured here so it
+	// can be threaded into the metrics state collector before mgr.Start runs.
+	ctx := ctrl.SetupSignalHandler()
+
 	mgr, err := ctrl.NewManager(cfg, ctrl.Options{
 		Scheme:                 scheme,
 		Metrics:                metricsServerOptions,
@@ -163,13 +167,15 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Discovery resolver (TTL cache)
+	// Discovery resolver (TTL cache). client-go's DiscoveryInterface is not yet
+	// context-aware (k8s.io/client-go v0.33); resolverpkg.WrapClient adapts it
+	// to the resolver's ctx-aware Discoverer interface.
 	discoveryClient, err := discovery.NewDiscoveryClientForConfig(cfg)
 	if err != nil {
 		setupLog.Error(err, "unable to construct discovery client")
 		os.Exit(1)
 	}
-	resolver := resolverpkg.NewResolver(discoveryClient, discoveryTTL)
+	resolver := resolverpkg.NewResolver(resolverpkg.WrapClient(discoveryClient), discoveryTTL)
 
 	// Dynamic informer factory
 	dynClient, err := dynamic.NewForConfig(cfg)
@@ -250,7 +256,7 @@ func main() {
 		setupLog.Error(err, "register metrics")
 		os.Exit(1)
 	}
-	stateCollector := metrics.NewStateCollector(&managerStateLister{client: mgr.GetClient()})
+	stateCollector := metrics.NewStateCollector(ctx, &managerStateLister{client: mgr.GetClient()})
 	if err := ctrlmetrics.Registry.Register(stateCollector); err != nil {
 		setupLog.Error(err, "register state collector")
 		os.Exit(1)
@@ -279,7 +285,7 @@ func main() {
 	}
 
 	setupLog.Info("starting manager")
-	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
+	if err := mgr.Start(ctx); err != nil {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}
@@ -291,19 +297,18 @@ type managerStateLister struct {
 	client client.Client
 }
 
-func (l *managerStateLister) ListEchelons() []apiv1.Echelon {
+func (l *managerStateLister) ListEchelons(ctx context.Context) []apiv1.Echelon {
 	list := &apiv1.EchelonList{}
-	if err := l.client.List(context.Background(), list); err != nil {
+	if err := l.client.List(ctx, list); err != nil {
 		return nil
 	}
 	return list.Items
 }
 
-func (l *managerStateLister) ListClusterEchelons() []apiv1.ClusterEchelon {
+func (l *managerStateLister) ListClusterEchelons(ctx context.Context) []apiv1.ClusterEchelon {
 	list := &apiv1.ClusterEchelonList{}
-	if err := l.client.List(context.Background(), list); err != nil {
+	if err := l.client.List(ctx, list); err != nil {
 		return nil
 	}
 	return list.Items
 }
-

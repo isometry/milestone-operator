@@ -191,7 +191,7 @@ func TestReconcile_AddsFinalizerAndRequeues(t *testing.T) {
 	fa := &fakeAdapter{obj: ech}
 	r := newFixture(t, ech, fa, newFakeRegistry())
 
-	res, err := r.ReconcileObject(context.Background(), ech)
+	res, err := r.ReconcileObject(t.Context(), ech)
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -223,7 +223,7 @@ func TestReconcile_HappyPath_AllCurrent(t *testing.T) {
 	}
 	r := newFixture(t, ech, fa, freg)
 
-	if _, err := r.ReconcileObject(context.Background(), ech); err != nil {
+	if _, err := r.ReconcileObject(t.Context(), ech); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
 	if got := readyStatusOf(ech); got != metav1.ConditionTrue {
@@ -250,7 +250,7 @@ func TestReconcile_EmptySet_AppliesPolicy(t *testing.T) {
 	}
 	r := newFixture(t, ech, fa, freg)
 
-	if _, err := r.ReconcileObject(context.Background(), ech); err != nil {
+	if _, err := r.ReconcileObject(t.Context(), ech); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
 	if got := readyStatusOf(ech); got != metav1.ConditionFalse {
@@ -270,7 +270,7 @@ func TestReconcile_Deletion_RunsFinalizer(t *testing.T) {
 	fa := &fakeAdapter{obj: ech}
 	r := newFixture(t, ech, fa, freg)
 
-	if _, err := r.ReconcileObject(context.Background(), ech); err != nil {
+	if _, err := r.ReconcileObject(t.Context(), ech); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
 	if len(freg.unsubOps) != 1 {
@@ -303,7 +303,7 @@ func TestReconcile_SubscriptionDiff_RemovesStale(t *testing.T) {
 	}
 	r := newFixture(t, ech, fa, freg)
 
-	if _, err := r.ReconcileObject(context.Background(), ech); err != nil {
+	if _, err := r.ReconcileObject(t.Context(), ech); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
 	found := false
@@ -330,7 +330,7 @@ func TestReconcile_TargetResolveError_SetsStalled(t *testing.T) {
 	}
 	r := newFixture(t, ech, fa, newFakeRegistry())
 
-	res, err := r.ReconcileObject(context.Background(), ech)
+	res, err := r.ReconcileObject(t.Context(), ech)
 	if err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
@@ -356,11 +356,11 @@ func TestReconcile_PatchIdempotency(t *testing.T) {
 	}
 	r := newFixture(t, ech, fa, freg)
 
-	if _, err := r.ReconcileObject(context.Background(), ech); err != nil {
+	if _, err := r.ReconcileObject(t.Context(), ech); err != nil {
 		t.Fatalf("first reconcile: %v", err)
 	}
 	patches1 := fa.patches
-	if _, err := r.ReconcileObject(context.Background(), ech); err != nil {
+	if _, err := r.ReconcileObject(t.Context(), ech); err != nil {
 		t.Fatalf("second reconcile: %v", err)
 	}
 	if fa.patches != patches1 {
@@ -382,7 +382,7 @@ func TestReconcile_SubscribeFailure_SetsStalled(t *testing.T) {
 	}
 	r := newFixture(t, ech, fa, freg)
 
-	if _, err := r.ReconcileObject(context.Background(), ech); err != nil {
+	if _, err := r.ReconcileObject(t.Context(), ech); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
 	if !hasCondition(ech, apiv1.ConditionStalled, metav1.ConditionTrue) {
@@ -419,7 +419,7 @@ func TestReconcile_CapsNotReadyMembers(t *testing.T) {
 	}
 	r := newFixture(t, ech, fa, freg)
 
-	if _, err := r.ReconcileObject(context.Background(), ech); err != nil {
+	if _, err := r.ReconcileObject(t.Context(), ech); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
 	if got := len(ech.Status.NotReadyMembers); got != 50 {
@@ -440,7 +440,7 @@ func TestReconcile_NotFoundFromGet_NoOp(t *testing.T) {
 		Controller: "Echelon",
 	}
 	rf := r.AsReconcileFunc(func() client.Object { return &apiv1.Echelon{} })
-	res, err := rf(context.Background(), reconcileRequest("flux-system", "missing"))
+	res, err := rf(t.Context(), reconcileRequest("flux-system", "missing"))
 	if err != nil {
 		t.Errorf("expected nil error, got %v", err)
 	}

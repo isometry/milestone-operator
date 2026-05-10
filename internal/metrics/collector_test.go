@@ -11,6 +11,7 @@ You may obtain a copy of the License at
 package metrics_test
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -79,8 +80,10 @@ type fakeLister struct {
 	clusterEchelons []apiv1.ClusterEchelon
 }
 
-func (f *fakeLister) ListEchelons() []apiv1.Echelon                 { return f.echelons }
-func (f *fakeLister) ListClusterEchelons() []apiv1.ClusterEchelon   { return f.clusterEchelons }
+func (f *fakeLister) ListEchelons(_ context.Context) []apiv1.Echelon { return f.echelons }
+func (f *fakeLister) ListClusterEchelons(_ context.Context) []apiv1.ClusterEchelon {
+	return f.clusterEchelons
+}
 
 func newReadyEchelon(ns, name string) apiv1.Echelon {
 	now := metav1.NewTime(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
@@ -109,7 +112,7 @@ func newReadyEchelon(ns, name string) apiv1.Echelon {
 func TestStateCollector_EmitsConditionAndGenerationGauges(t *testing.T) {
 	lister := &fakeLister{echelons: []apiv1.Echelon{newReadyEchelon("flux-system", "wave-0")}}
 	reg := prometheus.NewRegistry()
-	col := metrics.NewStateCollector(lister)
+	col := metrics.NewStateCollector(t.Context(), lister)
 	if err := reg.Register(col); err != nil {
 		t.Fatalf("register: %v", err)
 	}
@@ -118,10 +121,10 @@ func TestStateCollector_EmitsConditionAndGenerationGauges(t *testing.T) {
 		t.Fatalf("gather: %v", err)
 	}
 	want := map[string]bool{
-		"echelon_status_condition":              true,
-		"echelon_observed_generation":           true,
-		"echelon_target_members":                true,
-		"echelon_target_ready":                  true,
+		"echelon_status_condition":                 true,
+		"echelon_observed_generation":              true,
+		"echelon_target_members":                   true,
+		"echelon_target_ready":                     true,
 		"echelon_last_evaluated_timestamp_seconds": true,
 	}
 	have := map[string]bool{}
@@ -137,7 +140,7 @@ func TestStateCollector_EmitsConditionAndGenerationGauges(t *testing.T) {
 
 func TestStateCollector_StatusConditionGauge(t *testing.T) {
 	lister := &fakeLister{echelons: []apiv1.Echelon{newReadyEchelon("flux-system", "wave-0")}}
-	col := metrics.NewStateCollector(lister)
+	col := metrics.NewStateCollector(t.Context(), lister)
 
 	v := valueAt(t, col, "echelon_status_condition", map[string]string{
 		"owner_kind": "Echelon", "namespace": "flux-system", "name": "wave-0",
@@ -171,7 +174,7 @@ func TestStateCollector_TargetReadyEncodes(t *testing.T) {
 			ech := newReadyEchelon("flux-system", "x")
 			ech.Status.Targets[0].Ready = tc.ready
 			lister := &fakeLister{echelons: []apiv1.Echelon{ech}}
-			col := metrics.NewStateCollector(lister)
+			col := metrics.NewStateCollector(t.Context(), lister)
 			v := valueAt(t, col, "echelon_target_ready", map[string]string{
 				"owner_kind": "Echelon", "namespace": "flux-system", "name": "x",
 				"target_group": "kustomize.toolkit.fluxcd.io", "target_kind": "Kustomization",
@@ -195,7 +198,7 @@ func TestStateCollector_ClusterEchelonHasEmptyNamespaceLabel(t *testing.T) {
 			},
 		},
 	}
-	col := metrics.NewStateCollector(&fakeLister{clusterEchelons: []apiv1.ClusterEchelon{ce}})
+	col := metrics.NewStateCollector(t.Context(), &fakeLister{clusterEchelons: []apiv1.ClusterEchelon{ce}})
 	v := valueAt(t, col, "echelon_status_condition", map[string]string{
 		"owner_kind": "ClusterEchelon", "namespace": "", "name": "platform-wave",
 		"type": "Ready", "status": "Unknown",
@@ -208,7 +211,7 @@ func TestStateCollector_ClusterEchelonHasEmptyNamespaceLabel(t *testing.T) {
 func TestStateCollector_TargetMembersPerStatusBucket(t *testing.T) {
 	ech := newReadyEchelon("flux-system", "wave-0")
 	ech.Status.Targets[0].Summary = apiv1.Summary{Total: 4, Current: 1, InProgress: 2, Failed: 1}
-	col := metrics.NewStateCollector(&fakeLister{echelons: []apiv1.Echelon{ech}})
+	col := metrics.NewStateCollector(t.Context(), &fakeLister{echelons: []apiv1.Echelon{ech}})
 
 	cases := map[string]float64{
 		"current":    1,

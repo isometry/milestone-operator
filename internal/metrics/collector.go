@@ -11,6 +11,8 @@ You may obtain a copy of the License at
 package metrics
 
 import (
+	"context"
+
 	apiv1 "github.com/isometry/echelon-operator/api/v1"
 	"github.com/prometheus/client_golang/prometheus"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -18,16 +20,23 @@ import (
 
 // StateLister is the abstraction the collector uses to walk Echelon and
 // ClusterEchelon objects at scrape time. In production this is implemented by
-// a controller-runtime cache-backed lister; tests inject a fake.
+// a controller-runtime cache-backed lister; tests inject a fake. The ctx is
+// the manager's signal context — when shutdown begins, in-flight scrapes fail
+// soft (return empty slices) rather than blocking.
 type StateLister interface {
-	ListEchelons() []apiv1.Echelon
-	ListClusterEchelons() []apiv1.ClusterEchelon
+	ListEchelons(ctx context.Context) []apiv1.Echelon
+	ListClusterEchelons(ctx context.Context) []apiv1.ClusterEchelon
 }
 
 // StateCollector emits per-object gauges for every Echelon/ClusterEchelon at
 // scrape time. Lister-backed so a deleted object's series disappears
 // immediately on the next scrape, with no per-reconcile bookkeeping.
+//
+// The Prometheus Collector interface predates context.Context, so the base
+// context is captured at construction; it is the manager's signal context and
+// becomes Done on shutdown.
 type StateCollector struct {
+	base   context.Context
 	lister StateLister
 
 	statusCondition        *prometheus.Desc
@@ -37,9 +46,12 @@ type StateCollector struct {
 	lastEvaluatedTimestamp *prometheus.Desc
 }
 
-// NewStateCollector returns a StateCollector backed by lister.
-func NewStateCollector(lister StateLister) *StateCollector {
+// NewStateCollector returns a StateCollector backed by lister. ctx is used for
+// every List call made during a scrape; it should be the manager's signal
+// context so scrapes-in-flight unblock during shutdown.
+func NewStateCollector(ctx context.Context, lister StateLister) *StateCollector {
 	return &StateCollector{
+		base:   ctx,
 		lister: lister,
 		statusCondition: prometheus.NewDesc(
 			"echelon_status_condition",
@@ -80,10 +92,10 @@ func (c *StateCollector) Describe(ch chan<- *prometheus.Desc) {
 
 // Collect implements prometheus.Collector.
 func (c *StateCollector) Collect(ch chan<- prometheus.Metric) {
-	for _, e := range c.lister.ListEchelons() {
+	for _, e := range c.lister.ListEchelons(c.base) {
 		c.emit(ch, "Echelon", e.GetNamespace(), e.GetName(), &e.Status.EchelonStatusBase)
 	}
-	for _, e := range c.lister.ListClusterEchelons() {
+	for _, e := range c.lister.ListClusterEchelons(c.base) {
 		c.emit(ch, "ClusterEchelon", "", e.GetName(), &e.Status.EchelonStatusBase)
 	}
 }

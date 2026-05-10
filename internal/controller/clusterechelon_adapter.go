@@ -62,7 +62,7 @@ func (a *ClusterEchelonAdapter) Targets(ctx context.Context, dr discovery.Resolv
 	var errs []TargetError
 
 	for i, t := range a.ClusterEchelon.Spec.Targets {
-		gvk, scope, err := dr.Resolve(t.Group, t.Kind, t.Version)
+		gvk, scope, err := dr.Resolve(ctx, t.Group, t.Kind, t.Version)
 		if err != nil {
 			errs = append(errs, TargetError{
 				Index:  i,
