@@ -63,6 +63,14 @@ type InformerFactory interface {
 // EnqueueFunc enqueues a single owner for reconciliation.
 type EnqueueFunc func(owner OwnerKey)
 
+// startInFlight tracks an informer Start call in progress. The owning
+// goroutine fills err (if any) and then closes done; waiters block on done and
+// then read err under the registry lock.
+type startInFlight struct {
+	done chan struct{}
+	err  error
+}
+
 // Registry coordinates the per-GVK informers and the SubscriberIndex,
 // implementing the refcounted "shared informer per GVK" pattern.
 type Registry struct {
@@ -73,6 +81,10 @@ type Registry struct {
 	mu        sync.Mutex
 	informers map[schema.GroupVersionKind]InformerEntry
 	refcount  map[schema.GroupVersionKind]int
+	// starting tracks GVKs whose informer Start is in flight. New Subscribes
+	// for the same GVK wait on the in-flight result instead of either
+	// serialising on r.mu or starting a duplicate informer.
+	starting map[schema.GroupVersionKind]*startInFlight
 }
 
 // NewRegistry returns a Registry wired to factory and enqueue.
@@ -83,34 +95,71 @@ func NewRegistry(factory InformerFactory, enqueue EnqueueFunc) *Registry {
 		index:     NewSubscriberIndex(),
 		informers: make(map[schema.GroupVersionKind]InformerEntry),
 		refcount:  make(map[schema.GroupVersionKind]int),
+		starting:  make(map[schema.GroupVersionKind]*startInFlight),
 	}
 }
 
 // Subscribe registers sub for gvk, starting the per-GVK informer if this is
 // the first subscriber. Idempotent: re-subscribing the same Owner replaces the
 // previous Subscriber (selector update) without changing refcounts.
+//
+// The slow factory.Start call runs without holding r.mu — concurrent Subscribes
+// for unrelated GVKs proceed in parallel, and concurrent Subscribes for the
+// same GVK wait on a single shared start (one informer per GVK invariant
+// preserved).
 func (r *Registry) Subscribe(gvk schema.GroupVersionKind, scope apimeta.RESTScopeName, sub Subscriber) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	exists := r.hasSubscriberLocked(gvk, sub.Owner)
-	if !exists {
-		if _, ok := r.informers[gvk]; !ok {
-			entry, err := r.factory.Start(gvk, scope, r.dispatch(gvk))
-			if err != nil {
-				metrics.SubscribeTotal.WithLabelValues(gvk.Group, gvk.Version, gvk.Kind, metrics.SubscribeError).Inc()
-				return fmt.Errorf("watcher: start informer for %s: %w", gvk, err)
-			}
-			r.informers[gvk] = entry
-			metrics.Informers.WithLabelValues(gvk.Group, gvk.Version, gvk.Kind).Set(1)
+	for {
+		r.mu.Lock()
+		if _, running := r.informers[gvk]; running {
+			r.registerLocked(gvk, sub)
+			r.mu.Unlock()
+			return nil
 		}
+		if inflight, ok := r.starting[gvk]; ok {
+			r.mu.Unlock()
+			<-inflight.done
+			if inflight.err != nil {
+				metrics.SubscribeTotal.WithLabelValues(gvk.Group, gvk.Version, gvk.Kind, metrics.SubscribeError).Inc()
+				return fmt.Errorf("watcher: start informer for %s: %w", gvk, inflight.err)
+			}
+			// Start succeeded: loop back and take the running path to
+			// register this subscriber.
+			continue
+		}
+		// No informer, no in-flight start: this Subscribe owns the start.
+		inflight := &startInFlight{done: make(chan struct{})}
+		r.starting[gvk] = inflight
+		r.mu.Unlock()
+
+		entry, err := r.factory.Start(gvk, scope, r.dispatch(gvk))
+
+		r.mu.Lock()
+		delete(r.starting, gvk)
+		if err != nil {
+			inflight.err = err
+			close(inflight.done)
+			metrics.SubscribeTotal.WithLabelValues(gvk.Group, gvk.Version, gvk.Kind, metrics.SubscribeError).Inc()
+			r.mu.Unlock()
+			return fmt.Errorf("watcher: start informer for %s: %w", gvk, err)
+		}
+		r.informers[gvk] = entry
+		metrics.Informers.WithLabelValues(gvk.Group, gvk.Version, gvk.Kind).Set(1)
+		r.registerLocked(gvk, sub)
+		close(inflight.done)
+		r.mu.Unlock()
+		return nil
+	}
+}
+
+// registerLocked records sub in the index and updates refcount/metrics. The
+// caller must hold r.mu and have ensured the informer for gvk is running.
+func (r *Registry) registerLocked(gvk schema.GroupVersionKind, sub Subscriber) {
+	if !r.hasSubscriberLocked(gvk, sub.Owner) {
 		r.refcount[gvk]++
 		metrics.Subscribers.WithLabelValues(gvk.Group, gvk.Version, gvk.Kind).Set(float64(r.refcount[gvk]))
 	}
-
 	r.index.Add(gvk, sub)
 	metrics.SubscribeTotal.WithLabelValues(gvk.Group, gvk.Version, gvk.Kind, metrics.SubscribeOK).Inc()
-	return nil
 }
 
 // Unsubscribe drops owner's subscription for gvk. Stops the informer when the

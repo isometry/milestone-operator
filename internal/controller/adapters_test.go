@@ -57,7 +57,7 @@ func newDisc() discovery.Resolver {
 		}},
 		resources: map[string]*metav1.APIResourceList{
 			gvKustomizeV1: {APIResources: []metav1.APIResource{{Name: "kustomizations", Kind: kindKustomization, Namespaced: true}}},
-			gvRBACv1:      {APIResources: []metav1.APIResource{{Name: "clusterroles", Kind: "ClusterRole", Namespaced: false}}},
+			gvRBACv1:      {APIResources: []metav1.APIResource{{Name: "clusterroles", Kind: kindClusterRole, Namespaced: false}}},
 		},
 	}
 	return discovery.NewResolver(fd, time.Hour)
@@ -90,6 +90,27 @@ func TestEchelonAdapter_Targets_NamespaceMatcherIsOwnNamespace(t *testing.T) {
 	}
 	if tgt.NamespaceMatcher("other") {
 		t.Errorf("matcher should reject foreign namespace")
+	}
+}
+
+// TestEchelonAdapter_Targets_ClusterScopedKind_IsScopeMismatch guards the
+// asymmetric scope contract: an Echelon (namespaced) can only target
+// namespaced resources. Pointing one at a cluster-scoped kind must be
+// surfaced as a TargetError rather than silently starting an informer whose
+// namespace matcher will filter everything out.
+func TestEchelonAdapter_Targets_ClusterScopedKind_IsScopeMismatch(t *testing.T) {
+	ech := &apiv1.Echelon{
+		ObjectMeta: metav1.ObjectMeta{Namespace: nsFluxSystem, Name: "x"},
+		Spec: apiv1.EchelonSpec{Targets: []apiv1.TargetSpec{
+			{Group: groupRBAC, Kind: kindClusterRole},
+		}},
+	}
+	targets, errs := controller.NewEchelonAdapter(ech).Targets(t.Context(), newDisc())
+	if len(targets) != 0 {
+		t.Errorf("scope mismatch should drop the target; got %d", len(targets))
+	}
+	if len(errs) != 1 || errs[0].Reason != apiv1.ReasonNamespaceScopeMismatch {
+		t.Errorf("errs = %+v, want one ReasonNamespaceScopeMismatch", errs)
 	}
 }
 
@@ -166,7 +187,7 @@ func TestClusterEchelonAdapter_Targets_ClusterScopedKindWithNamespaces_IsScopeMi
 	ce := &apiv1.ClusterEchelon{
 		ObjectMeta: metav1.ObjectMeta{Name: "x"},
 		Spec: apiv1.ClusterEchelonSpec{Targets: []apiv1.ClusterTargetSpec{{
-			TargetSpec: apiv1.TargetSpec{Group: groupRBAC, Kind: "ClusterRole"},
+			TargetSpec: apiv1.TargetSpec{Group: groupRBAC, Kind: kindClusterRole},
 			Namespaces: []string{nsFluxSystem},
 		}}},
 	}

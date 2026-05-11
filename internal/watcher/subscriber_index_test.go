@@ -153,7 +153,7 @@ func TestSubscriberIndex_AddReplacesExistingForSameOwner(t *testing.T) {
 func TestSubscriberIndex_GVKsByOwner(t *testing.T) {
 	idx := watcher.NewSubscriberIndex()
 	owner := watcher.OwnerKey{Kind: kindEchelon, Namespace: nsFluxSystem, Name: "multi"}
-	helmGVK := schema.GroupVersionKind{Group: "helm.toolkit.fluxcd.io", Version: "v2", Kind: "HelmRelease"}
+	helmGVK := schema.GroupVersionKind{Group: groupHelmToolkit, Version: "v2", Kind: kindHelmRelease}
 	idx.Add(kustomizationGVK, watcher.Subscriber{Owner: owner, Selector: labels.Everything()})
 	idx.Add(helmGVK, watcher.Subscriber{Owner: owner, Selector: labels.Everything()})
 

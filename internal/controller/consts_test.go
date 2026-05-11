@@ -23,6 +23,7 @@ const (
 	gvRBACv1          = groupRBAC + "/v1"
 	kindLate          = "Late"
 	groupMissing      = "missing.io"
+	kindClusterRole   = "ClusterRole"
 	kindWidget        = "Widget"
 	groupTestAsCode   = "test.as-code.io"
 	schemaTypeObject  = "object"

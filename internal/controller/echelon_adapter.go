@@ -13,10 +13,12 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	apiv1 "github.com/isometry/echelon-operator/api/v1"
 	"github.com/isometry/echelon-operator/internal/discovery"
 	"github.com/isometry/echelon-operator/internal/watcher"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -66,6 +68,20 @@ func (a *EchelonAdapter) Targets(ctx context.Context, dr discovery.Resolver) ([]
 				Kind:   t.Kind,
 				Reason: apiv1.ReasonGVKNotEstablished,
 				Err:    err,
+			})
+			continue
+		}
+		// Echelons are namespaced and only ever observe resources in their
+		// own namespace. Targeting a cluster-scoped kind would silently
+		// produce an empty set after the namespace matcher; surface the
+		// configuration error instead.
+		if scope != apimeta.RESTScopeNameNamespace {
+			errs = append(errs, TargetError{
+				Index:  i,
+				Group:  gvk.Group,
+				Kind:   gvk.Kind,
+				Reason: apiv1.ReasonNamespaceScopeMismatch,
+				Err:    fmt.Errorf("kind %q is cluster-scoped; Echelon can only target namespaced resources (use ClusterEchelon)", gvk.Kind),
 			})
 			continue
 		}

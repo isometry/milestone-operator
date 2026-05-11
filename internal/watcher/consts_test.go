@@ -11,8 +11,10 @@ You may obtain a copy of the License at
 package watcher_test
 
 const (
-	kindEchelon  = "Echelon"
-	labelWave    = "wave"
-	nsFluxSystem = "flux-system"
-	nameWave0    = "wave-0"
+	kindEchelon      = "Echelon"
+	labelWave        = "wave"
+	nsFluxSystem     = "flux-system"
+	nameWave0        = "wave-0"
+	groupHelmToolkit = "helm.toolkit.fluxcd.io"
+	kindHelmRelease  = "HelmRelease"
 )
