@@ -115,7 +115,19 @@ func (r *Reconciler[T]) ReconcileObject(ctx context.Context, obj T) (ctrl.Result
 	}
 	memberErrs = append(memberErrs, subscribeErrs...)
 
-	rollups, notReady := r.evaluateMembers(members)
+	// Carry subscribe failures into evaluateMembers so the lister-less GVKs
+	// surface as Ready=Unknown instead of empty-set rollups (which
+	// emptySetPolicy: Ready would promote to Ready=True).
+	failedReasons := failedMemberReasons(subscribeErrs)
+
+	rollups, notReady, listErrs := r.evaluateMembers(members, failedReasons)
+	for _, le := range listErrs {
+		log.V(1).Info("list failed",
+			"name", le.Name, "group", le.Group, "version", le.Version, "kind", le.Kind,
+			"reason", le.Reason, "err", le.Err)
+		metrics.MemberResolveErrors.WithLabelValues(r.Controller, le.Reason).Inc()
+	}
+	memberErrs = append(memberErrs, listErrs...)
 	log.V(1).Info("evaluated", "rollups", len(rollups), "notReady", len(notReady))
 
 	r.applyStatus(adapter.Status(), obj.GetGeneration(), rollups, notReady, memberErrs)
@@ -229,14 +241,35 @@ func (r *Reconciler[T]) reconcileSubscriptions(ctx context.Context, owner watche
 	return errs
 }
 
-func (r *Reconciler[T]) evaluateMembers(members []NormalizedMember) (map[string]apiv1.MemberRollup, []apiv1.ResourceStatus) {
+// evaluateMembers produces per-member rollups, owner-level not-ready
+// resources, and MemberErrors for list failures. Members named in
+// failedReasons skip list+reduce — their lister is missing or the upstream
+// subscribe already failed, and emptySetPolicy must not see an empty result.
+func (r *Reconciler[T]) evaluateMembers(members []NormalizedMember, failedReasons map[string]string) (map[string]apiv1.MemberRollup, []apiv1.ResourceStatus, []MemberError) {
 	rollups := make(map[string]apiv1.MemberRollup, len(members))
 	// Stay nil until we actually have not-ready resources: an empty-but-allocated
 	// slice would round-trip through status DeepCopy as != nil and trigger
 	// spurious patches against equal prior state.
 	var notReady []apiv1.ResourceStatus //nolint:prealloc
+	var listErrs []MemberError
 	for _, m := range members {
-		resources := r.listAndCompute(m)
+		if reason, skip := failedReasons[m.Name]; skip {
+			rollups[m.Name] = failedRollup(m.GVK, reason)
+			continue
+		}
+		resources, err := r.listAndCompute(m)
+		if err != nil {
+			rollups[m.Name] = failedRollup(m.GVK, apiv1.ReasonWatchSetupFailed)
+			listErrs = append(listErrs, MemberError{
+				Name:    m.Name,
+				Group:   m.GVK.Group,
+				Version: m.GVK.Version,
+				Kind:    m.GVK.Kind,
+				Reason:  apiv1.ReasonWatchSetupFailed,
+				Err:     err,
+			})
+			continue
+		}
 		var rollup apiv1.MemberRollup
 		func() {
 			defer r.observe(metrics.StageReduce)()
@@ -245,10 +278,10 @@ func (r *Reconciler[T]) evaluateMembers(members []NormalizedMember) (map[string]
 		rollups[m.Name] = rollup
 		notReady = append(notReady, notReadyResourcesOf(resources)...)
 	}
-	return rollups, notReady
+	return rollups, notReady, listErrs
 }
 
-func (r *Reconciler[T]) listAndCompute(m NormalizedMember) []status.Resource {
+func (r *Reconciler[T]) listAndCompute(m NormalizedMember) ([]status.Resource, error) {
 	objs, err := func() ([]*unstructured.Unstructured, error) {
 		defer r.observe(metrics.StageList)()
 		o, err := r.Registry.List(m.GVK)
@@ -265,14 +298,44 @@ func (r *Reconciler[T]) listAndCompute(m NormalizedMember) []status.Resource {
 		return out, nil
 	}()
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer r.observe(metrics.StageCompute)()
 	resources := make([]status.Resource, 0, len(objs))
 	for _, u := range objs {
 		resources = append(resources, status.Compute(u))
 	}
-	return resources
+	return resources, nil
+}
+
+// failedRollup forces Ready=Unknown so emptySetPolicy can't promote a missing
+// informer / failed list to Ready=True.
+func failedRollup(gvk schema.GroupVersionKind, reason string) apiv1.MemberRollup {
+	return apiv1.MemberRollup{
+		Group:   gvk.Group,
+		Version: gvk.Version,
+		Kind:    gvk.Kind,
+		Ready:   metav1.ConditionUnknown,
+		Reason:  reason,
+	}
+}
+
+func failedMemberReasons(errs []MemberError) map[string]string {
+	if len(errs) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(errs))
+	for _, e := range errs {
+		if e.Name == "" {
+			continue
+		}
+		// First reason wins so the user-facing reason is the earliest failure
+		// in the upstream pipeline (subscribe before list).
+		if _, ok := out[e.Name]; !ok {
+			out[e.Name] = e.Reason
+		}
+	}
+	return out
 }
 
 func (r *Reconciler[T]) applyStatus(sb *apiv1.EchelonStatusBase, generation int64, rollups map[string]apiv1.MemberRollup, notReady []apiv1.ResourceStatus, errs []MemberError) {
@@ -366,17 +429,24 @@ func capResources(in []apiv1.ResourceStatus, cap int) ([]apiv1.ResourceStatus, b
 }
 
 func setCondition(sb *apiv1.EchelonStatusBase, condType string, st metav1.ConditionStatus, reason, message string) {
-	c := metav1.Condition{Type: condType, Status: st, Reason: reason, Message: message}
+	c := metav1.Condition{
+		Type:               condType,
+		Status:             st,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: sb.ObservedGeneration,
+	}
 	apimeta.SetStatusCondition(&sb.Conditions, c)
 }
 
 func (r *Reconciler[T]) applyStalledFromErrors(sb *apiv1.EchelonStatusBase, errs []MemberError) {
 	if len(errs) == 0 {
 		apimeta.SetStatusCondition(&sb.Conditions, metav1.Condition{
-			Type:    apiv1.ConditionStalled,
-			Status:  metav1.ConditionFalse,
-			Reason:  apiv1.ReasonReconciling,
-			Message: "",
+			Type:               apiv1.ConditionStalled,
+			Status:             metav1.ConditionFalse,
+			Reason:             apiv1.ReasonReconciling,
+			Message:            "",
+			ObservedGeneration: sb.ObservedGeneration,
 		})
 		return
 	}
@@ -404,10 +474,11 @@ func (r *Reconciler[T]) applyStalledFromErrors(sb *apiv1.EchelonStatusBase, errs
 		message = fmt.Sprintf("%s; … %d more", message, overflow)
 	}
 	apimeta.SetStatusCondition(&sb.Conditions, metav1.Condition{
-		Type:    apiv1.ConditionStalled,
-		Status:  metav1.ConditionTrue,
-		Reason:  primary,
-		Message: message,
+		Type:               apiv1.ConditionStalled,
+		Status:             metav1.ConditionTrue,
+		Reason:             primary,
+		Message:            message,
+		ObservedGeneration: sb.ObservedGeneration,
 	})
 }
 
@@ -431,6 +502,13 @@ func statusEqualIgnoringTimestamp(a, b apiv1.EchelonStatusBase) bool {
 	return reflect.DeepEqual(a, b)
 }
 
+// stripTransitionTimes zeroes ObservedGeneration *deliberately*: SetStatus
+// Condition rewrites the per-condition obsGen on every call, so leaving it in
+// the comparison would force a patch on every reconcile (even an identical
+// one) once the generation has been written once. status.observedGeneration
+// (the top-level field) carries the authoritative freshness signal and is
+// part of the deep compare, so genuine generation bumps still patch exactly
+// once.
 func stripTransitionTimes(in []metav1.Condition) []metav1.Condition {
 	out := make([]metav1.Condition, len(in))
 	copy(out, in)

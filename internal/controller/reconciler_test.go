@@ -42,6 +42,7 @@ type fakeRegistry struct {
 	subscribed    map[watcher.OwnerKey]map[schema.GroupVersionKind]watcher.Subscriber
 	subscribeErr  map[schema.GroupVersionKind]error
 	listResponses map[schema.GroupVersionKind][]*unstructured.Unstructured
+	listErr       map[schema.GroupVersionKind]error
 	subscribeOps  []schema.GroupVersionKind
 	unsubOps      []schema.GroupVersionKind
 }
@@ -51,6 +52,7 @@ func newFakeRegistry() *fakeRegistry {
 		subscribed:    make(map[watcher.OwnerKey]map[schema.GroupVersionKind]watcher.Subscriber),
 		subscribeErr:  make(map[schema.GroupVersionKind]error),
 		listResponses: make(map[schema.GroupVersionKind][]*unstructured.Unstructured),
+		listErr:       make(map[schema.GroupVersionKind]error),
 	}
 }
 
@@ -92,6 +94,9 @@ func (r *fakeRegistry) UnsubscribeAll(owner watcher.OwnerKey) {
 func (r *fakeRegistry) List(gvk schema.GroupVersionKind) ([]*unstructured.Unstructured, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if err := r.listErr[gvk]; err != nil {
+		return nil, err
+	}
 	return r.listResponses[gvk], nil
 }
 
@@ -696,4 +701,171 @@ func intToStr(i int) string {
 
 func reconcileRequest(ns, name string) reconcile.Request {
 	return reconcile.Request{NamespacedName: client.ObjectKey{Namespace: ns, Name: name}}
+}
+
+// TestReconcile_ListFailure_DoesNotPromoteToReady covers the silent-empty-set
+// bug: a List error on a member with emptySetPolicy: Ready must not produce
+// Ready=True.
+func TestReconcile_ListFailure_DoesNotPromoteToReady(t *testing.T) {
+	ech := newEchelon("e1")
+	ech.Finalizers = []string{apiv1.Finalizer}
+	freg := newFakeRegistry()
+	freg.listErr[kustomizationGVK] = errors.New("cache unavailable")
+	fa := &fakeAdapter{
+		obj: ech,
+		members: []controller.NormalizedMember{{
+			Name: memberKustomizations, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
+			Selector: mustSelector(t), EmptySetPolicy: apiv1.EmptySetReady,
+		}},
+	}
+	r := newFixture(t, ech, fa, freg)
+
+	if _, err := r.ReconcileObject(t.Context(), ech); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	got, ok := ech.Status.Members[memberKustomizations]
+	if !ok {
+		t.Fatalf("Members[%q] missing", memberKustomizations)
+	}
+	if got.Ready != metav1.ConditionUnknown {
+		t.Errorf("Members[%q].Ready = %s, want Unknown", memberKustomizations, got.Ready)
+	}
+	if got.Reason != apiv1.ReasonWatchSetupFailed {
+		t.Errorf("Members[%q].Reason = %q, want %q", memberKustomizations, got.Reason, apiv1.ReasonWatchSetupFailed)
+	}
+	if !hasCondition(ech, apiv1.ConditionStalled, metav1.ConditionTrue) {
+		t.Errorf("Stalled should be True after list failure; conditions=%+v", ech.Status.Conditions)
+	}
+	if got := readyStatusOf(ech); got == metav1.ConditionTrue {
+		t.Errorf("Ready=True leaked through list failure; want Unknown/False")
+	}
+}
+
+// TestReconcile_SubscribeFailure_PerMemberRollupWatchSetupFailed: a grouped
+// Subscribe failure must surface as WatchSetupFailed on every member in the
+// GVK group, not just the aggregate Stalled condition.
+func TestReconcile_SubscribeFailure_PerMemberRollupWatchSetupFailed(t *testing.T) {
+	ech := newEchelon("e1")
+	ech.Finalizers = []string{apiv1.Finalizer}
+	freg := newFakeRegistry()
+	freg.subscribeErr[kustomizationGVK] = errors.New("apiserver down")
+
+	selA, _ := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{MatchLabels: map[string]string{labelWave: "a"}})
+	selB, _ := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{MatchLabels: map[string]string{labelWave: "b"}})
+	fa := &fakeAdapter{
+		obj: ech,
+		members: []controller.NormalizedMember{
+			{Name: memberWaveA, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
+				Selector: selA, EmptySetPolicy: apiv1.EmptySetReady},
+			{Name: memberWaveB, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
+				Selector: selB, EmptySetPolicy: apiv1.EmptySetReady},
+		},
+	}
+	r := newFixture(t, ech, fa, freg)
+
+	if _, err := r.ReconcileObject(t.Context(), ech); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	for _, name := range []string{memberWaveA, memberWaveB} {
+		got, ok := ech.Status.Members[name]
+		if !ok {
+			t.Errorf("Members[%q] missing", name)
+			continue
+		}
+		if got.Ready != metav1.ConditionUnknown {
+			t.Errorf("Members[%q].Ready = %s, want Unknown", name, got.Ready)
+		}
+		if got.Reason != apiv1.ReasonWatchSetupFailed {
+			t.Errorf("Members[%q].Reason = %q, want %q", name, got.Reason, apiv1.ReasonWatchSetupFailed)
+		}
+	}
+}
+
+// TestReconcile_Conditions_CarryObservedGeneration covers consumer-side
+// freshness: every condition the reconciler writes must carry the owner's
+// current generation, so Flux can distinguish a settled condition from a
+// stale one without cross-referencing status.observedGeneration.
+func TestReconcile_Conditions_CarryObservedGeneration(t *testing.T) {
+	ech := newEchelon("e1")
+	ech.Finalizers = []string{apiv1.Finalizer}
+	ech.Generation = 7
+	freg := newFakeRegistry()
+	freg.listResponses[kustomizationGVK] = []*unstructured.Unstructured{currentResource("a")}
+	fa := &fakeAdapter{
+		obj: ech,
+		members: []controller.NormalizedMember{{
+			Name: memberKustomizations, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
+			Selector: mustSelector(t), EmptySetPolicy: apiv1.EmptySetUnknown,
+		}},
+	}
+	r := newFixture(t, ech, fa, freg)
+
+	if _, err := r.ReconcileObject(t.Context(), ech); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	for _, ct := range []string{apiv1.ConditionReady, apiv1.ConditionReconciling, apiv1.ConditionStalled} {
+		var found *metav1.Condition
+		for i := range ech.Status.Conditions {
+			if ech.Status.Conditions[i].Type == ct {
+				found = &ech.Status.Conditions[i]
+				break
+			}
+		}
+		if found == nil {
+			t.Errorf("condition %q not present", ct)
+			continue
+		}
+		if found.ObservedGeneration != 7 {
+			t.Errorf("condition %q observedGeneration = %d, want 7", ct, found.ObservedGeneration)
+		}
+	}
+}
+
+// TestReconcile_PatchIdempotency_AtGenerationBump: a generation bump
+// produces exactly one patch (to publish the new top-level
+// observedGeneration), and repeat reconciles at that same generation produce
+// zero further patches. The "no churn" invariant lives in stripTransition
+// Times, which zeroes per-condition observedGeneration to prevent its
+// rewrites from driving additional patches.
+func TestReconcile_PatchIdempotency_AtGenerationBump(t *testing.T) {
+	ech := newEchelon("e1")
+	ech.Finalizers = []string{apiv1.Finalizer}
+	freg := newFakeRegistry()
+	freg.listResponses[kustomizationGVK] = []*unstructured.Unstructured{currentResource("a")}
+	fa := &fakeAdapter{
+		obj: ech,
+		members: []controller.NormalizedMember{{
+			Name: memberKustomizations, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
+			Selector: mustSelector(t), EmptySetPolicy: apiv1.EmptySetUnknown,
+		}},
+	}
+	r := newFixture(t, ech, fa, freg)
+
+	if _, err := r.ReconcileObject(t.Context(), ech); err != nil {
+		t.Fatalf("first reconcile: %v", err)
+	}
+	patches1 := fa.patches
+
+	// Push the generation bump through the cluster store so the next reconcile
+	// sees gen=2 stably (fake client otherwise rewrites Generation from its
+	// stored copy during Status().Update).
+	ech.Generation++
+	if err := r.Client.Update(t.Context(), ech); err != nil {
+		t.Fatalf("update echelon: %v", err)
+	}
+	if _, err := r.ReconcileObject(t.Context(), ech); err != nil {
+		t.Fatalf("post-bump reconcile: %v", err)
+	}
+	if fa.patches != patches1+1 {
+		t.Fatalf("generation bump should produce one patch: %d → %d, want %d", patches1, fa.patches, patches1+1)
+	}
+	patches2 := fa.patches
+
+	if _, err := r.ReconcileObject(t.Context(), ech); err != nil {
+		t.Fatalf("steady-state reconcile: %v", err)
+	}
+	if fa.patches != patches2 {
+		t.Errorf("steady-state reconcile after generation bump churned: %d → %d", patches2, fa.patches)
+	}
 }
