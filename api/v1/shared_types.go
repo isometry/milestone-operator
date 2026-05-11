@@ -86,24 +86,43 @@ type ClusterTargetSpec struct {
 	NamespaceSelector *metav1.LabelSelector `json:"namespaceSelector,omitempty"`
 }
 
-// Summary holds aggregate kstatus counters for a set of resources.
+// Summary holds aggregate kstatus counters for a set of resources. All counters
+// are always populated; a zero value means no members fall in that bucket, not
+// "not yet computed". The bucket names mirror sigs.k8s.io/cli-utils kstatus.
 type Summary struct {
-	Total       int32 `json:"total"`
-	Current     int32 `json:"current"`
-	InProgress  int32 `json:"inProgress"`
-	Failed      int32 `json:"failed"`
-	NotFound    int32 `json:"notFound"`
+	// Total is the count of resources currently matched by the target's
+	// selector. Total == sum of all the other buckets.
+	Total int32 `json:"total"`
+	// Current counts members whose kstatus is Current (steady-state ready).
+	Current int32 `json:"current"`
+	// InProgress counts members whose kstatus is InProgress (still converging).
+	InProgress int32 `json:"inProgress"`
+	// Failed counts members whose kstatus is Failed.
+	Failed int32 `json:"failed"`
+	// NotFound counts members whose kstatus is NotFound (selector matched a
+	// name but the resource is absent).
+	NotFound int32 `json:"notFound"`
+	// Terminating counts members whose kstatus is Terminating (deletion in
+	// progress).
 	Terminating int32 `json:"terminating"`
-	Unknown     int32 `json:"unknown"`
+	// Unknown counts members whose kstatus could not be determined.
+	Unknown int32 `json:"unknown"`
 }
 
 // TargetRollup is the per-target aggregated readiness reported on the owner.
+// One TargetRollup is produced for every entry in spec.targets, in the same
+// order, regardless of whether discovery succeeded.
 type TargetRollup struct {
+	// Group is the API group of the resolved target Kind. Empty for the core
+	// Kubernetes group.
 	// +optional
 	Group string `json:"group,omitempty"`
+	// Version is the API version resolved via discovery (the spec's version
+	// when set; otherwise the group's preferred version).
 	// +optional
 	Version string `json:"version,omitempty"`
-	Kind    string `json:"kind"`
+	// Kind is the target Kind as declared in the spec.
+	Kind string `json:"kind"`
 
 	// Ready is True when every selected member is Current; False when any
 	// member is Failed or NotFound; Unknown otherwise (or per emptySetPolicy
@@ -111,26 +130,42 @@ type TargetRollup struct {
 	// +kubebuilder:validation:Enum=True;False;Unknown
 	Ready metav1.ConditionStatus `json:"ready"`
 
+	// Reason is a short machine-readable code summarising why Ready has its
+	// current value (e.g. AllMembersReady, MembersNotReady, EmptySet).
 	// +optional
-	Reason  string  `json:"reason,omitempty"`
+	Reason string `json:"reason,omitempty"`
+	// Summary holds the per-kstatus-bucket counts that produced Ready.
 	Summary Summary `json:"summary"`
 }
 
-// MemberStatus identifies an individual resource and its computed kstatus.
+// MemberStatus identifies an individual matched resource and the kstatus
+// computed for it. Only members whose Status is not Current are surfaced on the
+// owner (see EchelonStatusBase.NotReadyMembers).
 type MemberStatus struct {
+	// Group is the API group of the member resource. Empty for the core group.
 	// +optional
-	Group   string `json:"group,omitempty"`
+	Group string `json:"group,omitempty"`
+	// Version is the API version of the member resource.
 	Version string `json:"version"`
-	Kind    string `json:"kind"`
+	// Kind is the API Kind of the member resource.
+	Kind string `json:"kind"`
+	// Namespace is the namespace of the member resource. Empty when the
+	// resource is cluster-scoped.
 	// +optional
 	Namespace string `json:"namespace,omitempty"`
-	Name      string `json:"name"`
+	// Name is the name of the member resource.
+	Name string `json:"name"`
 
-	// Status is the kstatus computed by sigs.k8s.io/cli-utils.
+	// Status is the kstatus computed by sigs.k8s.io/cli-utils for this
+	// member.
 	// +kubebuilder:validation:Enum=Current;InProgress;Failed;NotFound;Terminating;Unknown
 	Status string `json:"status"`
+	// Reason is the kstatus reason for this member when one was provided by
+	// sigs.k8s.io/cli-utils.
 	// +optional
 	Reason string `json:"reason,omitempty"`
+	// Message is the kstatus message for this member when one was provided by
+	// sigs.k8s.io/cli-utils.
 	// +optional
 	Message string `json:"message,omitempty"`
 }

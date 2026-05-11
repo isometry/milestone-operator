@@ -12,7 +12,6 @@ package controller
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -366,8 +365,3 @@ func stripTransitionTimes(in []metav1.Condition) []metav1.Condition {
 	}
 	return out
 }
-
-// errMissingResolver is sentinel for tests that forget to wire a resolver.
-var errMissingResolver = errors.New("controller: nil resolver")
-
-var _ = errMissingResolver // reserved; not yet used
