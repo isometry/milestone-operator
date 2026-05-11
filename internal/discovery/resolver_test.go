@@ -209,6 +209,42 @@ func TestResolve_Invalidate(t *testing.T) {
 	}
 }
 
+// TestResolve_CoreGroupOmittedVersion: when group=="" and version=="", the
+// resolver must short-circuit to v1 and validate via
+// ServerResourcesForGroupVersion. ServerGroups doesn't list the core group,
+// so calling it would return ErrGVKNotEstablished — this fake fails that
+// call so the test will only pass if it's never invoked.
+func TestResolve_CoreGroupOmittedVersion(t *testing.T) {
+	fd := &fakeDiscoverer{
+		// no groups configured → ServerGroups returns "no groups" error
+		resources: map[string]*metav1.APIResourceList{
+			"v1": {
+				GroupVersion: "v1",
+				APIResources: []metav1.APIResource{
+					{Name: "configmaps", Kind: "ConfigMap", Namespaced: true},
+					{Name: "pods", Kind: "Pod", Namespaced: true},
+				},
+			},
+		},
+	}
+	r := newResolver(t, fd, time.Hour)
+
+	gvk, scope, err := r.Resolve(t.Context(), "", "ConfigMap", "")
+	if err != nil {
+		t.Fatalf("ConfigMap: %v", err)
+	}
+	want := schema.GroupVersionKind{Group: "", Version: "v1", Kind: "ConfigMap"}
+	if gvk != want {
+		t.Errorf("gvk = %v, want %v", gvk, want)
+	}
+	if scope != apimeta.RESTScopeNameNamespace {
+		t.Errorf("scope = %v, want Namespaced", scope)
+	}
+	if g := fd.groupsCalls.Load(); g != 0 {
+		t.Errorf("ServerGroups invoked %d times for core-group short-circuit; want 0", g)
+	}
+}
+
 func TestResolve_NegativeCacheRefreshes(t *testing.T) {
 	// A miss should not be cached as long-lived; a subsequent CRD install
 	// (simulated by adding a group between calls) should be observed quickly.

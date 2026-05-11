@@ -36,7 +36,6 @@ import (
 const (
 	convergenceMaxDur = 15 * time.Second
 	convergencePoll   = 100 * time.Millisecond
-	informerWarmup    = 500 * time.Millisecond
 )
 
 // envFixture wires a real Reconciler against the envtest apiserver. Each
@@ -186,8 +185,6 @@ func TestEnvtest_HappyPath_AllCurrent(t *testing.T) {
 			t.Fatalf("reconcile %d: %v", i, err)
 		}
 	}
-	time.Sleep(informerWarmup)
-
 	reconcileToConvergence(t, fix, client.ObjectKeyFromObject(ech), func(e *apiv1.Echelon) error {
 		if ready(e) != metav1.ConditionTrue {
 			return fmt.Errorf("Ready=%s", ready(e))
@@ -206,8 +203,6 @@ func TestEnvtest_EmptySet_NotReadyPolicy(t *testing.T) {
 	for range 3 {
 		_, _ = fix.reconciler.ReconcileObject(t.Context(), refresh(t, ech))
 	}
-	time.Sleep(informerWarmup)
-
 	reconcileToConvergence(t, fix, client.ObjectKeyFromObject(ech), func(e *apiv1.Echelon) error {
 		if ready(e) != metav1.ConditionFalse {
 			return fmt.Errorf("Ready=%s", ready(e))
@@ -390,8 +385,6 @@ func TestEnvtest_TwoMembersSameGVK_DistinctSelectors(t *testing.T) {
 	for range 3 {
 		_, _ = fix.reconciler.ReconcileObject(t.Context(), refresh(t, ech))
 	}
-	time.Sleep(informerWarmup)
-
 	reconcileToConvergence(t, fix, client.ObjectKeyFromObject(ech), func(e *apiv1.Echelon) error {
 		if ready(e) != metav1.ConditionTrue {
 			return fmt.Errorf("Ready=%s", ready(e))

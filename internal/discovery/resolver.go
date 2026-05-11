@@ -103,11 +103,17 @@ func (r *resolver) Resolve(ctx context.Context, group, kind, version string) (sc
 
 	resolvedVersion := version
 	if resolvedVersion == "" {
-		v, err := r.preferredVersion(ctx, group)
-		if err != nil {
-			return schema.GroupVersionKind{}, "", err
+		// ServerGroups doesn't list the core API group; short-circuit so that
+		// omitted-version core resources (ConfigMap, Pod, …) resolve.
+		if group == "" {
+			resolvedVersion = "v1"
+		} else {
+			v, err := r.preferredVersion(ctx, group)
+			if err != nil {
+				return schema.GroupVersionKind{}, "", err
+			}
+			resolvedVersion = v
 		}
-		resolvedVersion = v
 	}
 
 	gv := groupVersionString(group, resolvedVersion)
