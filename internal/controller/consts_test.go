@@ -22,6 +22,7 @@ const (
 	groupRBAC         = "rbac.authorization.k8s.io"
 	gvRBACv1          = groupRBAC + "/v1"
 	kindLate          = "Late"
+	groupMissing      = "missing.io"
 	kindWidget        = "Widget"
 	groupTestAsCode   = "test.as-code.io"
 	schemaTypeObject  = "object"

@@ -13,6 +13,8 @@ package controller_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -319,7 +321,7 @@ func TestReconcile_TargetResolveError_SetsStalled(t *testing.T) {
 	fa := &fakeAdapter{
 		obj: ech,
 		errs: []controller.TargetError{{
-			Index: 0, Group: "missing.io", Version: "v1", Kind: kindLate,
+			Index: 0, Group: groupMissing, Version: "v1", Kind: kindLate,
 			Reason: apiv1.ReasonGVKNotEstablished,
 			Err:    errors.New("not established"),
 		}},
@@ -335,6 +337,74 @@ func TestReconcile_TargetResolveError_SetsStalled(t *testing.T) {
 	}
 	if !hasCondition(ech, apiv1.ConditionStalled, metav1.ConditionTrue) {
 		t.Errorf("expected Stalled=True; conditions=%+v", ech.Status.Conditions)
+	}
+}
+
+// TestReconcile_StalledMessage_TruncatesManyErrors guards the API-server
+// condition-message size limit: even a pathological owner with hundreds of
+// misconfigured targets must produce a bounded Stalled message with an
+// explicit overflow suffix.
+func TestReconcile_StalledMessage_TruncatesManyErrors(t *testing.T) {
+	const cap = 50
+	const overflow = 10
+	ech := newEchelon("e1")
+	ech.Finalizers = []string{apiv1.Finalizer}
+
+	errs := make([]controller.TargetError, 0, cap+overflow)
+	for i := range cap + overflow {
+		errs = append(errs, controller.TargetError{
+			Index:   i,
+			Group:   groupMissing,
+			Version: "v1",
+			Kind:    "Kind" + intToStr(i),
+			Reason:  apiv1.ReasonGVKNotEstablished,
+			Err:     fmt.Errorf("not established %d", i),
+		})
+	}
+	fa := &fakeAdapter{obj: ech, errs: errs}
+	r := newFixture(t, ech, fa, newFakeRegistry())
+
+	if _, err := r.ReconcileObject(t.Context(), ech); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	msg := stalledMessageOf(ech)
+	if !strings.Contains(msg, fmt.Sprintf("… %d more", overflow)) {
+		t.Errorf("expected overflow suffix '… %d more' in message; got %q", overflow, msg)
+	}
+	// Exactly cap entries before the suffix: count separators in the prefix.
+	prefix, _, found := strings.Cut(msg, "; … ")
+	if !found {
+		t.Fatalf("expected '; … ' separator in message; got %q", msg)
+	}
+	if parts := strings.Split(prefix, "; "); len(parts) != cap {
+		t.Errorf("expected %d entries before suffix, got %d", cap, len(parts))
+	}
+	// Beyond-cap kinds must not appear; in-cap kinds must.
+	if strings.Contains(msg, fmt.Sprintf("Kind%d ", cap+overflow-1)) {
+		t.Errorf("beyond-cap kind leaked into message: %q", msg)
+	}
+	if !strings.Contains(msg, "Kind0 ") {
+		t.Errorf("in-cap kind missing from message: %q", msg)
+	}
+}
+
+func TestReconcile_StalledMessage_NoTruncationWhenWithinCap(t *testing.T) {
+	ech := newEchelon("e1")
+	ech.Finalizers = []string{apiv1.Finalizer}
+	errs := []controller.TargetError{
+		{Index: 0, Group: groupMissing, Version: "v1", Kind: "K0",
+			Reason: apiv1.ReasonGVKNotEstablished, Err: errors.New("nope")},
+		{Index: 1, Group: groupMissing, Version: "v1", Kind: "K1",
+			Reason: apiv1.ReasonGVKNotEstablished, Err: errors.New("nope")},
+	}
+	fa := &fakeAdapter{obj: ech, errs: errs}
+	r := newFixture(t, ech, fa, newFakeRegistry())
+
+	if _, err := r.ReconcileObject(t.Context(), ech); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if msg := stalledMessageOf(ech); strings.Contains(msg, "more") {
+		t.Errorf("did not expect truncation marker; got %q", msg)
 	}
 }
 
@@ -536,6 +606,15 @@ func hasCondition(ech *apiv1.Echelon, t string, st metav1.ConditionStatus) bool 
 		}
 	}
 	return false
+}
+
+func stalledMessageOf(ech *apiv1.Echelon) string {
+	for _, c := range ech.Status.Conditions {
+		if c.Type == apiv1.ConditionStalled {
+			return c.Message
+		}
+	}
+	return ""
 }
 
 func intToStr(i int) string {

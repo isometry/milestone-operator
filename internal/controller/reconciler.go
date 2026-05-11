@@ -44,6 +44,11 @@ const stalledRequeue = 30 * time.Second
 // 1MiB etcd limit even on huge selectors.
 const defaultMemberCap = 50
 
+// defaultStalledErrorCap caps the per-target errors enumerated in the Stalled
+// condition message. Beyond this we append a "... N more" suffix. Mirrors
+// defaultMemberCap's role: bound the worst-case condition size.
+const defaultStalledErrorCap = 50
+
 // Reconciler is the GVK-agnostic reconcile pipeline shared by Echelon and
 // ClusterEchelon controllers. Behavioural variation is encapsulated in
 // OwnerAdapter implementations passed by the per-controller wiring.
@@ -54,17 +59,20 @@ type Reconciler struct {
 	NewAdapter func(client.Object) OwnerAdapter
 	Controller string
 
-	// Now and MemberCap have sensible defaults; injectable for tests.
-	Now       func() time.Time
-	MemberCap int
+	// Now, MemberCap and StalledErrorCap have sensible defaults; injectable
+	// for tests.
+	Now             func() time.Time
+	MemberCap       int
+	StalledErrorCap int
 }
 
 // ReconcileObject runs the full pipeline for the given owner object. Per-stage
-// metrics are emitted via metrics.ObserveStage.
+// metrics are emitted via metrics.ObserveStage. Stage-boundary diagnostics
+// are emitted at V(1) so operators can grep an otherwise-silent pipeline.
 func (r *Reconciler) ReconcileObject(ctx context.Context, obj client.Object) (ctrl.Result, error) {
-	log := logf.FromContext(ctx)
 	adapter := r.NewAdapter(obj)
 	ownerKey := adapter.OwnerKey()
+	log := logf.FromContext(ctx).WithValues("controller", r.Controller, "owner", ownerKey)
 
 	if !obj.GetDeletionTimestamp().IsZero() {
 		return r.finalize(ctx, obj, ownerKey)
@@ -80,6 +88,7 @@ func (r *Reconciler) ReconcileObject(ctx context.Context, obj client.Object) (ct
 		return ctrl.Result{}, nil
 	}
 
+	log.V(1).Info("reconciling", "generation", obj.GetGeneration())
 	prior := *adapter.Status().DeepCopy()
 
 	targets, targetErrs := func() ([]NormalizedTarget, []TargetError) {
@@ -88,12 +97,22 @@ func (r *Reconciler) ReconcileObject(ctx context.Context, obj client.Object) (ct
 	}()
 	for _, te := range targetErrs {
 		metrics.TargetResolveErrors.WithLabelValues(r.Controller, te.Reason).Inc()
+		log.V(1).Info("target discovery failed",
+			"index", te.Index, "group", te.Group, "kind", te.Kind,
+			"reason", te.Reason, "err", te.Err)
 	}
+	log.V(1).Info("discovery resolved", "targets", len(targets), "errors", len(targetErrs))
 
 	subscribeErrs := r.reconcileSubscriptions(ownerKey, targets)
+	for _, se := range subscribeErrs {
+		log.V(1).Info("subscription failed",
+			"index", se.Index, "group", se.Group, "version", se.Version, "kind", se.Kind,
+			"reason", se.Reason, "err", se.Err)
+	}
 	targetErrs = append(targetErrs, subscribeErrs...)
 
 	rollups, notReady := r.evaluateTargets(targets)
+	log.V(1).Info("evaluated", "rollups", len(rollups), "notReady", len(notReady))
 
 	r.applyStatus(adapter.Status(), obj.GetGeneration(), rollups, notReady, targetErrs)
 
@@ -104,14 +123,16 @@ func (r *Reconciler) ReconcileObject(ctx context.Context, obj client.Object) (ct
 			return ctrl.Result{}, err
 		}
 		metrics.StatusPatchTotal.WithLabelValues(r.Controller, metrics.PatchChanged).Inc()
-		log.V(1).Info("status patched", "owner", ownerKey, "ready", readyConditionStatus(adapter.Status()))
+		log.V(1).Info("status patched", "ready", readyConditionStatus(adapter.Status()))
 	} else {
 		// Preserve prior LastEvaluatedTime when nothing substantive changed.
 		adapter.Status().LastEvaluatedTime = prior.LastEvaluatedTime
 		metrics.StatusPatchTotal.WithLabelValues(r.Controller, metrics.PatchUnchanged).Inc()
+		log.V(1).Info("status unchanged", "ready", readyConditionStatus(adapter.Status()))
 	}
 
 	if r.isStalled(adapter.Status()) {
+		log.V(1).Info("stalled; requeuing", "after", stalledRequeue)
 		return ctrl.Result{RequeueAfter: stalledRequeue}, nil
 	}
 	return ctrl.Result{}, nil
@@ -233,7 +254,7 @@ func (r *Reconciler) applyStatus(sb *apiv1.EchelonStatusBase, generation int64, 
 	readyStatus, readyReason, readyMessage := status.ReduceOwner(rollups)
 	setCondition(sb, apiv1.ConditionReady, readyStatus, readyReason, readyMessage)
 	setCondition(sb, apiv1.ConditionReconciling, metav1.ConditionFalse, apiv1.ReasonReconciling, "")
-	applyStalledFromErrors(sb, errs)
+	r.applyStalledFromErrors(sb, errs)
 }
 
 func (r *Reconciler) patchStatus(ctx context.Context, adapter OwnerAdapter) error {
@@ -257,6 +278,13 @@ func (r *Reconciler) memberCap() int {
 		return defaultMemberCap
 	}
 	return r.MemberCap
+}
+
+func (r *Reconciler) stalledErrorCap() int {
+	if r.StalledErrorCap <= 0 {
+		return defaultStalledErrorCap
+	}
+	return r.StalledErrorCap
 }
 
 func (r *Reconciler) isStalled(sb *apiv1.EchelonStatusBase) bool {
@@ -312,7 +340,7 @@ func setCondition(sb *apiv1.EchelonStatusBase, condType string, st metav1.Condit
 	apimeta.SetStatusCondition(&sb.Conditions, c)
 }
 
-func applyStalledFromErrors(sb *apiv1.EchelonStatusBase, errs []TargetError) {
+func (r *Reconciler) applyStalledFromErrors(sb *apiv1.EchelonStatusBase, errs []TargetError) {
 	if len(errs) == 0 {
 		apimeta.SetStatusCondition(&sb.Conditions, metav1.Condition{
 			Type:    apiv1.ConditionStalled,
@@ -322,17 +350,30 @@ func applyStalledFromErrors(sb *apiv1.EchelonStatusBase, errs []TargetError) {
 		})
 		return
 	}
-	// Use the first reason; message lists offenders for visibility.
+	// Use the first reason; message lists offenders for visibility. Cap the
+	// enumeration so a pathological owner can't exceed condition-message
+	// limits; the overflow count is surfaced explicitly.
 	primary := errs[0].Reason
-	parts := make([]string, 0, len(errs))
-	for _, e := range errs {
+	cap := r.stalledErrorCap()
+	visible := errs
+	overflow := 0
+	if len(errs) > cap {
+		visible = errs[:cap]
+		overflow = len(errs) - cap
+	}
+	parts := make([]string, 0, len(visible))
+	for _, e := range visible {
 		parts = append(parts, fmt.Sprintf("%s.%s/%s [%s]: %v", e.Group, e.Version, e.Kind, e.Reason, e.Err))
+	}
+	message := strings.Join(parts, "; ")
+	if overflow > 0 {
+		message = fmt.Sprintf("%s; … %d more", message, overflow)
 	}
 	apimeta.SetStatusCondition(&sb.Conditions, metav1.Condition{
 		Type:    apiv1.ConditionStalled,
 		Status:  metav1.ConditionTrue,
 		Reason:  primary,
-		Message: strings.Join(parts, "; "),
+		Message: message,
 	})
 }
 
