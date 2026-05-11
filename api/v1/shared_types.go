@@ -240,7 +240,13 @@ const (
 	ReasonNamespaceScopeMismatch = "NamespaceScopeMismatch"
 	ReasonDiscoveryFailed        = "DiscoveryFailed"
 	ReasonWatchSetupFailed       = "WatchSetupFailed"
-	ReasonReconciling            = "Reconciling"
+
+	// ReasonReconciling marks an in-flight reconcile. Reserved for a future
+	// transient Reconciling=True patch; the current pipeline never writes it.
+	ReasonReconciling = "Reconciling"
+	// ReasonReconcileComplete marks a settled reconcile — the reason carried
+	// on Reconciling=False (always) and Stalled=False (no-error path).
+	ReasonReconcileComplete = "ReconcileComplete"
 )
 
 // Finalizer applied to Echelon and ClusterEchelon objects so the operator can

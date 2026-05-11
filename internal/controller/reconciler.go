@@ -109,6 +109,7 @@ func (r *Reconciler[T]) ReconcileObject(ctx context.Context, obj T) (ctrl.Result
 
 	subscribeErrs := r.reconcileSubscriptions(ctx, ownerKey, members)
 	for _, se := range subscribeErrs {
+		metrics.MemberResolveErrors.WithLabelValues(r.Controller, se.Reason).Inc()
 		log.V(1).Info("subscription failed",
 			"name", se.Name, "group", se.Group, "version", se.Version, "kind", se.Kind,
 			"reason", se.Reason, "err", se.Err)
@@ -346,7 +347,7 @@ func (r *Reconciler[T]) applyStatus(sb *apiv1.EchelonStatusBase, generation int6
 
 	readyStatus, readyReason, readyMessage := status.ReduceOwner(rollups)
 	setCondition(sb, apiv1.ConditionReady, readyStatus, readyReason, readyMessage)
-	setCondition(sb, apiv1.ConditionReconciling, metav1.ConditionFalse, apiv1.ReasonReconciling, "")
+	setCondition(sb, apiv1.ConditionReconciling, metav1.ConditionFalse, apiv1.ReasonReconcileComplete, "")
 	r.applyStalledFromErrors(sb, errs)
 }
 
@@ -444,7 +445,7 @@ func (r *Reconciler[T]) applyStalledFromErrors(sb *apiv1.EchelonStatusBase, errs
 		apimeta.SetStatusCondition(&sb.Conditions, metav1.Condition{
 			Type:               apiv1.ConditionStalled,
 			Status:             metav1.ConditionFalse,
-			Reason:             apiv1.ReasonReconciling,
+			Reason:             apiv1.ReasonReconcileComplete,
 			Message:            "",
 			ObservedGeneration: sb.ObservedGeneration,
 		})

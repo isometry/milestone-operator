@@ -22,7 +22,9 @@ import (
 	apiv1 "github.com/isometry/echelon-operator/api/v1"
 	"github.com/isometry/echelon-operator/internal/controller"
 	"github.com/isometry/echelon-operator/internal/discovery"
+	ctrmetrics "github.com/isometry/echelon-operator/internal/metrics"
 	"github.com/isometry/echelon-operator/internal/watcher"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -739,6 +741,42 @@ func TestReconcile_ListFailure_DoesNotPromoteToReady(t *testing.T) {
 	}
 	if got := readyStatusOf(ech); got == metav1.ConditionTrue {
 		t.Errorf("Ready=True leaked through list failure; want Unknown/False")
+	}
+}
+
+// TestReconcile_SubscribeFailure_IncrementsMemberResolveErrors mirrors the
+// existing metric coverage for discovery and list failures: subscribe
+// failures must bump echelon_member_resolve_errors_total{reason=
+// WatchSetupFailed} so operators can alert on informer setup outages.
+func TestReconcile_SubscribeFailure_IncrementsMemberResolveErrors(t *testing.T) {
+	ech := newEchelon("e1")
+	ech.Finalizers = []string{apiv1.Finalizer}
+	freg := newFakeRegistry()
+	freg.subscribeErr[kustomizationGVK] = errors.New("apiserver down")
+
+	selA, _ := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{MatchLabels: map[string]string{labelWave: "a"}})
+	selB, _ := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{MatchLabels: map[string]string{labelWave: "b"}})
+	fa := &fakeAdapter{
+		obj: ech,
+		members: []controller.NormalizedMember{
+			{Name: memberWaveA, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
+				Selector: selA, EmptySetPolicy: apiv1.EmptySetReady},
+			{Name: memberWaveB, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
+				Selector: selB, EmptySetPolicy: apiv1.EmptySetReady},
+		},
+	}
+	r := newFixture(t, ech, fa, freg)
+
+	counter := ctrmetrics.MemberResolveErrors.WithLabelValues(kindEchelon, apiv1.ReasonWatchSetupFailed)
+	before := testutil.ToFloat64(counter)
+
+	if _, err := r.ReconcileObject(t.Context(), ech); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	got := testutil.ToFloat64(counter) - before
+	if got != 2 {
+		t.Errorf("MemberResolveErrors{WatchSetupFailed} delta = %v, want 2 (one per member in failing GVK group)", got)
 	}
 }
 

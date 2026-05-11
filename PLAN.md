@@ -359,7 +359,10 @@ end-to-end (create Echelon, mutate resources, assert metric values via
 ```
 1. Fetch; if deletionTimestamp → run finalizer (UnsubscribeAll), remove finalizer, return.
 2. Ensure finalizer present.
-3. Begin reconcile (Reconciling=True; deferred Reconciling=False on success path).
+3. Begin reconcile. *Low-churn model: the pipeline never writes a transient
+   `Reconciling=True` patch; the settled-state condition is
+   `Reconciling=False` with `Reason=ReconcileComplete`. `Reason=Reconciling`
+   is reserved for a future transient-True write if the model changes.*
 4. Adapter.Members() — discovery resolution sorted-by-key; collect per-member errors as
    MemberError so the reconcile continues for the resolvable subset.
 5. Reconcile subscriptions (one informer per unique GVK across members):

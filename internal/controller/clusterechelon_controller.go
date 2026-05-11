@@ -12,6 +12,7 @@ package controller
 
 import (
 	"context"
+	"maps"
 
 	apiv1 "github.com/isometry/echelon-operator/api/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -54,11 +55,7 @@ func (r *ClusterEchelonReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(
 			&corev1.Namespace{},
 			handler.EnqueueRequestsFromMapFunc(r.namespaceToClusterEchelons),
-			// Label-changed admits the only events that can affect
-			// namespaceSelector membership; deletion still has to wake
-			// previously-matching owners so they drop the namespace from
-			// their materialised set.
-			builder.WithPredicates(predicate.Or(predicate.LabelChangedPredicate{}, deleteEventPredicate{})),
+			builder.WithPredicates(namespaceMembershipPredicate{}),
 		)
 	if r.EnqueueEvents != nil {
 		b = b.WatchesRawSource(source.Channel(r.EnqueueEvents, &handler.EnqueueRequestForObject{}))
@@ -96,12 +93,24 @@ func usesNamespaceSelector(ce *apiv1.ClusterEchelon) bool {
 	return false
 }
 
-// deleteEventPredicate admits Delete events only; the LabelChangedPredicate
-// in the Or() chain ignores deletions, so without this side namespace removes
-// would never reach the map func.
-type deleteEventPredicate struct{ predicate.Funcs }
+// namespaceMembershipPredicate admits the Namespace events that can affect a
+// ClusterEchelon's namespaceSelector membership: creation (new namespace may
+// match), label-only updates (matching may flip), and deletion (previously
+// matching namespace drops). Heartbeat updates with unchanged labels are
+// dropped so unrelated noise doesn't churn reconciles.
+//
+// Spelled out explicitly rather than relying on
+// predicate.LabelChangedPredicate{} composed via predicate.Or — that
+// composition admits Creates today only because Funcs.Create defaults to
+// true, which is fragile across controller-runtime upgrades.
+type namespaceMembershipPredicate struct{ predicate.Funcs }
 
-func (deleteEventPredicate) Create(event.CreateEvent) bool   { return false }
-func (deleteEventPredicate) Update(event.UpdateEvent) bool   { return false }
-func (deleteEventPredicate) Delete(event.DeleteEvent) bool   { return true }
-func (deleteEventPredicate) Generic(event.GenericEvent) bool { return false }
+func (namespaceMembershipPredicate) Create(event.CreateEvent) bool { return true }
+func (namespaceMembershipPredicate) Update(e event.UpdateEvent) bool {
+	if e.ObjectOld == nil || e.ObjectNew == nil {
+		return false
+	}
+	return !maps.Equal(e.ObjectOld.GetLabels(), e.ObjectNew.GetLabels())
+}
+func (namespaceMembershipPredicate) Delete(event.DeleteEvent) bool   { return true }
+func (namespaceMembershipPredicate) Generic(event.GenericEvent) bool { return false }
