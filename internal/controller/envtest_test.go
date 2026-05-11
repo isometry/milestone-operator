@@ -46,7 +46,7 @@ type envFixture struct {
 	t          *testing.T
 	registry   *watcher.Registry
 	resolver   discovery.Resolver
-	reconciler *controller.Reconciler
+	reconciler *controller.Reconciler[*apiv1.Echelon]
 	mapper     *restmapper.DeferredDiscoveryRESTMapper
 	namespace  string
 }
@@ -77,7 +77,7 @@ func newEnvFixture(t *testing.T) *envFixture {
 
 	registry := watcher.NewRegistry(dynFactory, func(watcher.OwnerKey) {})
 
-	rec := &controller.Reconciler{
+	rec := &controller.Reconciler[*apiv1.Echelon]{
 		Client:     envtestClient,
 		Registry:   registry,
 		Resolver:   resolver,

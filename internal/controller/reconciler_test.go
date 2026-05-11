@@ -119,7 +119,6 @@ type fakeAdapter struct {
 	patches  int
 }
 
-func (a *fakeAdapter) Object() client.Object { return a.obj }
 func (a *fakeAdapter) OwnerKey() watcher.OwnerKey {
 	return watcher.OwnerKey{Kind: kindEchelon, Namespace: a.obj.GetNamespace(), Name: a.obj.GetName()}
 }
@@ -175,14 +174,14 @@ func currentMember(name string) *unstructured.Unstructured {
 
 var kustomizationGVK = schema.GroupVersionKind{Group: groupKustomize, Version: "v1", Kind: kindKustomization}
 
-func newFixture(t *testing.T, ech *apiv1.Echelon, fa *fakeAdapter, freg *fakeRegistry) *controller.Reconciler {
+func newFixture(t *testing.T, ech *apiv1.Echelon, fa *fakeAdapter, freg *fakeRegistry) *controller.Reconciler[*apiv1.Echelon] {
 	t.Helper()
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(ech).WithStatusSubresource(ech).Build()
-	return &controller.Reconciler{
+	return &controller.Reconciler[*apiv1.Echelon]{
 		Client:     cl,
 		Registry:   freg,
 		Resolver:   nil, // unused: fakeAdapter pre-resolves targets
-		NewAdapter: func(_ client.Object) controller.OwnerAdapter { return fa },
+		NewAdapter: func(_ *apiv1.Echelon) controller.OwnerAdapter { return fa },
 		Controller: kindEchelon,
 		Now:        func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) },
 	}
@@ -499,13 +498,13 @@ func TestReconcile_CapsNotReadyMembers(t *testing.T) {
 func TestReconcile_NotFoundFromGet_NoOp(t *testing.T) {
 	// AsReconcileFunc should swallow IsNotFound and return no error.
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).Build()
-	r := &controller.Reconciler{
+	r := &controller.Reconciler[*apiv1.Echelon]{
 		Client:     cl,
 		Registry:   newFakeRegistry(),
-		NewAdapter: func(_ client.Object) controller.OwnerAdapter { return nil },
+		NewAdapter: func(_ *apiv1.Echelon) controller.OwnerAdapter { return nil },
 		Controller: kindEchelon,
 	}
-	rf := r.AsReconcileFunc(func() client.Object { return &apiv1.Echelon{} })
+	rf := r.AsReconcileFunc(func() *apiv1.Echelon { return &apiv1.Echelon{} })
 	res, err := rf(t.Context(), reconcileRequest(nsFluxSystem, "missing"))
 	if err != nil {
 		t.Errorf("expected nil error, got %v", err)
@@ -546,11 +545,11 @@ func TestReconcile_MultipleEchelons_IndependentStatus(t *testing.T) {
 		WithObjects(e1, e2).
 		WithStatusSubresource(e1, e2).
 		Build()
-	r := &controller.Reconciler{
+	r := &controller.Reconciler[*apiv1.Echelon]{
 		Client:   cl,
 		Registry: freg,
 		Resolver: nil,
-		NewAdapter: func(obj client.Object) controller.OwnerAdapter {
+		NewAdapter: func(obj *apiv1.Echelon) controller.OwnerAdapter {
 			if obj.GetName() == "e1" {
 				return fa1
 			}

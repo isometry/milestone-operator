@@ -29,13 +29,10 @@ type EchelonAdapter struct {
 	Echelon *apiv1.Echelon
 }
 
-// NewEchelonAdapter constructs an adapter for obj.
-func NewEchelonAdapter(obj client.Object) OwnerAdapter {
-	return &EchelonAdapter{Echelon: obj.(*apiv1.Echelon)}
+// NewEchelonAdapter constructs an adapter for e.
+func NewEchelonAdapter(e *apiv1.Echelon) OwnerAdapter {
+	return &EchelonAdapter{Echelon: e}
 }
-
-// Object returns the wrapped Echelon.
-func (a *EchelonAdapter) Object() client.Object { return a.Echelon }
 
 // OwnerKey returns the watcher.OwnerKey for this Echelon.
 func (a *EchelonAdapter) OwnerKey() watcher.OwnerKey {

@@ -205,14 +205,14 @@ func main() {
 	registry := watcher.NewRegistry(dynFactory, enqueue)
 
 	// Generic reconcilers (one per CRD).
-	echelonReconciler := &controller.Reconciler{
+	echelonReconciler := &controller.Reconciler[*apiv1.Echelon]{
 		Client:     mgr.GetClient(),
 		Registry:   registry,
 		Resolver:   resolver,
 		NewAdapter: controller.NewEchelonAdapter,
 		Controller: "Echelon",
 	}
-	clusterEchelonReconciler := &controller.Reconciler{
+	clusterEchelonReconciler := &controller.Reconciler[*apiv1.ClusterEchelon]{
 		Client:     mgr.GetClient(),
 		Registry:   registry,
 		Resolver:   resolver,

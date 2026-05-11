@@ -33,17 +33,14 @@ type ClusterEchelonAdapter struct {
 }
 
 // NewClusterEchelonAdapterFactory returns a NewAdapter function bound to c.
-func NewClusterEchelonAdapterFactory(c client.Client) func(client.Object) OwnerAdapter {
-	return func(obj client.Object) OwnerAdapter {
+func NewClusterEchelonAdapterFactory(c client.Client) func(*apiv1.ClusterEchelon) OwnerAdapter {
+	return func(ce *apiv1.ClusterEchelon) OwnerAdapter {
 		return &ClusterEchelonAdapter{
-			ClusterEchelon: obj.(*apiv1.ClusterEchelon),
+			ClusterEchelon: ce,
 			Client:         c,
 		}
 	}
 }
-
-// Object returns the wrapped ClusterEchelon.
-func (a *ClusterEchelonAdapter) Object() client.Object { return a.ClusterEchelon }
 
 // OwnerKey returns the watcher.OwnerKey for this ClusterEchelon.
 func (a *ClusterEchelonAdapter) OwnerKey() watcher.OwnerKey {

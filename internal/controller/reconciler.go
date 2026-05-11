@@ -52,11 +52,15 @@ const defaultStalledErrorCap = 50
 // Reconciler is the GVK-agnostic reconcile pipeline shared by Echelon and
 // ClusterEchelon controllers. Behavioural variation is encapsulated in
 // OwnerAdapter implementations passed by the per-controller wiring.
-type Reconciler struct {
+//
+// The owner type T (e.g. *apiv1.Echelon) is a type parameter so that
+// NewAdapter is statically typed: mis-pairing a Reconciler[*apiv1.X] with a
+// NewAdapter func(*apiv1.Y) is a compile error at the assignment site.
+type Reconciler[T client.Object] struct {
 	Client     client.Client
 	Registry   RegistryAPI
 	Resolver   discovery.Resolver
-	NewAdapter func(client.Object) OwnerAdapter
+	NewAdapter func(T) OwnerAdapter
 	Controller string
 
 	// Now, MemberCap and StalledErrorCap have sensible defaults; injectable
@@ -69,7 +73,7 @@ type Reconciler struct {
 // ReconcileObject runs the full pipeline for the given owner object. Per-stage
 // metrics are emitted via metrics.ObserveStage. Stage-boundary diagnostics
 // are emitted at V(1) so operators can grep an otherwise-silent pipeline.
-func (r *Reconciler) ReconcileObject(ctx context.Context, obj client.Object) (ctrl.Result, error) {
+func (r *Reconciler[T]) ReconcileObject(ctx context.Context, obj T) (ctrl.Result, error) {
 	adapter := r.NewAdapter(obj)
 	ownerKey := adapter.OwnerKey()
 	log := logf.FromContext(ctx).WithValues("controller", r.Controller, "owner", ownerKey)
@@ -140,7 +144,7 @@ func (r *Reconciler) ReconcileObject(ctx context.Context, obj client.Object) (ct
 
 // AsReconcileFunc adapts ReconcileObject to a controller-runtime
 // reconcile.Func that fetches obj using newObj() before delegating.
-func (r *Reconciler) AsReconcileFunc(newObj func() client.Object) reconcile.Func {
+func (r *Reconciler[T]) AsReconcileFunc(newObj func() T) reconcile.Func {
 	return func(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 		obj := newObj()
 		if err := r.Client.Get(ctx, req.NamespacedName, obj); err != nil {
@@ -153,7 +157,7 @@ func (r *Reconciler) AsReconcileFunc(newObj func() client.Object) reconcile.Func
 	}
 }
 
-func (r *Reconciler) finalize(ctx context.Context, obj client.Object, ownerKey watcher.OwnerKey) (ctrl.Result, error) {
+func (r *Reconciler[T]) finalize(ctx context.Context, obj T, ownerKey watcher.OwnerKey) (ctrl.Result, error) {
 	if !controllerutil.ContainsFinalizer(obj, apiv1.Finalizer) {
 		return ctrl.Result{}, nil
 	}
@@ -165,7 +169,7 @@ func (r *Reconciler) finalize(ctx context.Context, obj client.Object, ownerKey w
 	return ctrl.Result{}, nil
 }
 
-func (r *Reconciler) reconcileSubscriptions(owner watcher.OwnerKey, desired []NormalizedTarget) []TargetError {
+func (r *Reconciler[T]) reconcileSubscriptions(owner watcher.OwnerKey, desired []NormalizedTarget) []TargetError {
 	defer r.observe(metrics.StageSubscriptions)()
 
 	desiredSet := make(map[schema.GroupVersionKind]NormalizedTarget, len(desired))
@@ -199,7 +203,7 @@ func (r *Reconciler) reconcileSubscriptions(owner watcher.OwnerKey, desired []No
 	return errs
 }
 
-func (r *Reconciler) evaluateTargets(targets []NormalizedTarget) ([]apiv1.TargetRollup, []apiv1.MemberStatus) {
+func (r *Reconciler[T]) evaluateTargets(targets []NormalizedTarget) ([]apiv1.TargetRollup, []apiv1.MemberStatus) {
 	rollups := make([]apiv1.TargetRollup, 0, len(targets))
 	// Stay nil until we actually have not-ready members: an empty-but-allocated
 	// slice would round-trip through status DeepCopy as != nil and trigger
@@ -218,7 +222,7 @@ func (r *Reconciler) evaluateTargets(targets []NormalizedTarget) ([]apiv1.Target
 	return rollups, notReady
 }
 
-func (r *Reconciler) listAndCompute(t NormalizedTarget) []status.Member {
+func (r *Reconciler[T]) listAndCompute(t NormalizedTarget) []status.Member {
 	objs, err := func() ([]*unstructured.Unstructured, error) {
 		defer r.observe(metrics.StageList)()
 		o, err := r.Registry.List(t.GVK)
@@ -245,7 +249,7 @@ func (r *Reconciler) listAndCompute(t NormalizedTarget) []status.Member {
 	return members
 }
 
-func (r *Reconciler) applyStatus(sb *apiv1.EchelonStatusBase, generation int64, rollups []apiv1.TargetRollup, notReady []apiv1.MemberStatus, errs []TargetError) {
+func (r *Reconciler[T]) applyStatus(sb *apiv1.EchelonStatusBase, generation int64, rollups []apiv1.TargetRollup, notReady []apiv1.MemberStatus, errs []TargetError) {
 	sb.ObservedGeneration = generation
 	sb.Targets = rollups
 	sb.Summary = status.SummarizeOwner(rollups)
@@ -257,37 +261,37 @@ func (r *Reconciler) applyStatus(sb *apiv1.EchelonStatusBase, generation int64, 
 	r.applyStalledFromErrors(sb, errs)
 }
 
-func (r *Reconciler) patchStatus(ctx context.Context, adapter OwnerAdapter) error {
+func (r *Reconciler[T]) patchStatus(ctx context.Context, adapter OwnerAdapter) error {
 	defer r.observe(metrics.StagePatch)()
 	return adapter.PatchStatus(ctx, r.Client)
 }
 
-func (r *Reconciler) observe(stage string) func() {
+func (r *Reconciler[T]) observe(stage string) func() {
 	return metrics.ObserveStage(r.Controller, stage)
 }
 
-func (r *Reconciler) now() time.Time {
+func (r *Reconciler[T]) now() time.Time {
 	if r.Now == nil {
 		return time.Now()
 	}
 	return r.Now()
 }
 
-func (r *Reconciler) memberCap() int {
+func (r *Reconciler[T]) memberCap() int {
 	if r.MemberCap <= 0 {
 		return defaultMemberCap
 	}
 	return r.MemberCap
 }
 
-func (r *Reconciler) stalledErrorCap() int {
+func (r *Reconciler[T]) stalledErrorCap() int {
 	if r.StalledErrorCap <= 0 {
 		return defaultStalledErrorCap
 	}
 	return r.StalledErrorCap
 }
 
-func (r *Reconciler) isStalled(sb *apiv1.EchelonStatusBase) bool {
+func (r *Reconciler[T]) isStalled(sb *apiv1.EchelonStatusBase) bool {
 	for _, c := range sb.Conditions {
 		if c.Type == apiv1.ConditionStalled && c.Status == metav1.ConditionTrue {
 			return true
@@ -340,7 +344,7 @@ func setCondition(sb *apiv1.EchelonStatusBase, condType string, st metav1.Condit
 	apimeta.SetStatusCondition(&sb.Conditions, c)
 }
 
-func (r *Reconciler) applyStalledFromErrors(sb *apiv1.EchelonStatusBase, errs []TargetError) {
+func (r *Reconciler[T]) applyStalledFromErrors(sb *apiv1.EchelonStatusBase, errs []TargetError) {
 	if len(errs) == 0 {
 		apimeta.SetStatusCondition(&sb.Conditions, metav1.Condition{
 			Type:    apiv1.ConditionStalled,

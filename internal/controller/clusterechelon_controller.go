@@ -27,7 +27,7 @@ import (
 type ClusterEchelonReconciler struct {
 	client.Client
 	Scheme        *runtime.Scheme
-	Reconciler    *Reconciler
+	Reconciler    *Reconciler[*apiv1.ClusterEchelon]
 	EnqueueEvents <-chan event.GenericEvent
 }
 
@@ -39,7 +39,7 @@ type ClusterEchelonReconciler struct {
 
 // Reconcile implements the controller-runtime Reconciler interface.
 func (r *ClusterEchelonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	return r.Reconciler.AsReconcileFunc(func() client.Object { return &apiv1.ClusterEchelon{} })(ctx, req)
+	return r.Reconciler.AsReconcileFunc(func() *apiv1.ClusterEchelon { return &apiv1.ClusterEchelon{} })(ctx, req)
 }
 
 // SetupWithManager wires the controller into the manager.

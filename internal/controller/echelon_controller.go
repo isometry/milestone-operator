@@ -27,7 +27,7 @@ import (
 type EchelonReconciler struct {
 	client.Client
 	Scheme        *runtime.Scheme
-	Reconciler    *Reconciler
+	Reconciler    *Reconciler[*apiv1.Echelon]
 	EnqueueEvents <-chan event.GenericEvent
 }
 
@@ -38,7 +38,7 @@ type EchelonReconciler struct {
 // Reconcile implements the controller-runtime Reconciler interface by
 // delegating to the generic pipeline.
 func (r *EchelonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	return r.Reconciler.AsReconcileFunc(func() client.Object { return &apiv1.Echelon{} })(ctx, req)
+	return r.Reconciler.AsReconcileFunc(func() *apiv1.Echelon { return &apiv1.Echelon{} })(ctx, req)
 }
 
 // SetupWithManager wires the controller into the manager. EnqueueEvents (fed

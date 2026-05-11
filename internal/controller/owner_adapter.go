@@ -50,13 +50,11 @@ func (e TargetError) Error() string { return e.Err.Error() }
 func (e TargetError) Unwrap() error { return e.Err }
 
 // OwnerAdapter abstracts the differences between Echelon and ClusterEchelon so
-// the reconcile pipeline can serve both with one implementation.
+// the reconcile pipeline can serve both with one implementation. The interface
+// is intentionally non-generic: the typed owner flows through Reconciler[T]
+// directly, and the adapter only exposes owner-agnostic shapes
+// (NormalizedTarget, TargetError, *EchelonStatusBase).
 type OwnerAdapter interface {
-	// Object returns the wrapped resource (used for finalizer mutation and the
-	// status patch). Returning a typed object is fine; callers treat it as
-	// client.Object.
-	Object() client.Object
-
 	// OwnerKey identifies this object in the watcher registry.
 	OwnerKey() watcher.OwnerKey
 
