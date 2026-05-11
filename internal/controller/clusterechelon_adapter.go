@@ -26,7 +26,7 @@ import (
 
 // ClusterEchelonAdapter implements OwnerAdapter for the cluster-scoped CRD.
 // Each NewClusterEchelonAdapter binds a client.Client so namespaceSelector
-// targets can list Namespaces during normalization.
+// members can list Namespaces during normalisation.
 type ClusterEchelonAdapter struct {
 	ClusterEchelon *apiv1.ClusterEchelon
 	Client         client.Client
@@ -47,36 +47,39 @@ func (a *ClusterEchelonAdapter) OwnerKey() watcher.OwnerKey {
 	return watcher.OwnerKey{Kind: "ClusterEchelon", Name: a.ClusterEchelon.Name}
 }
 
-// Targets normalizes spec.targets[]. Per-target failures (discovery or
-// scope/selector mismatches) become TargetErrors that the reconciler maps to
+// Members normalises spec.members. Per-member failures (discovery or
+// scope/selector mismatches) become MemberErrors that the reconciler maps to
 // Stalled reasons; the resolvable subset still flows through the pipeline.
-func (a *ClusterEchelonAdapter) Targets(ctx context.Context, dr discovery.Resolver) ([]NormalizedTarget, []TargetError) {
+// Members are returned sorted by name for deterministic downstream behaviour.
+func (a *ClusterEchelonAdapter) Members(ctx context.Context, dr discovery.Resolver) ([]NormalizedMember, []MemberError) {
 	if dr == nil {
-		return nil, []TargetError{{Reason: apiv1.ReasonDiscoveryFailed, Err: errors.New("nil discovery resolver")}}
+		return nil, []MemberError{{Reason: apiv1.ReasonDiscoveryFailed, Err: errors.New("nil discovery resolver")}}
 	}
 
-	out := make([]NormalizedTarget, 0, len(a.ClusterEchelon.Spec.Targets))
-	var errs []TargetError
+	names := sortedMemberKeys(a.ClusterEchelon.Spec.Members)
+	out := make([]NormalizedMember, 0, len(names))
+	var errs []MemberError
 
-	for i, t := range a.ClusterEchelon.Spec.Targets {
-		gvk, scope, err := dr.Resolve(ctx, t.Group, t.Kind, t.Version)
+	for _, name := range names {
+		m := a.ClusterEchelon.Spec.Members[name]
+		gvk, scope, err := dr.Resolve(ctx, m.Group, m.Kind, m.Version)
 		if err != nil {
-			errs = append(errs, TargetError{
-				Index:  i,
-				Group:  t.Group,
-				Kind:   t.Kind,
+			errs = append(errs, MemberError{
+				Name:   name,
+				Group:  m.Group,
+				Kind:   m.Kind,
 				Reason: apiv1.ReasonGVKNotEstablished,
 				Err:    err,
 			})
 			continue
 		}
 
-		hasNamespaceFilter := len(t.Namespaces) > 0 || t.NamespaceSelector != nil
+		hasNamespaceFilter := len(m.Namespaces) > 0 || m.NamespaceSelector != nil
 
 		// Cluster-scoped resources cannot carry namespace filters.
 		if scope == apimeta.RESTScopeNameRoot && hasNamespaceFilter {
-			errs = append(errs, TargetError{
-				Index:  i,
+			errs = append(errs, MemberError{
+				Name:   name,
 				Group:  gvk.Group,
 				Kind:   gvk.Kind,
 				Reason: apiv1.ReasonNamespaceScopeMismatch,
@@ -86,9 +89,9 @@ func (a *ClusterEchelonAdapter) Targets(ctx context.Context, dr discovery.Resolv
 		}
 
 		// XOR is enforced by CRD CEL but we re-check defensively.
-		if len(t.Namespaces) > 0 && t.NamespaceSelector != nil {
-			errs = append(errs, TargetError{
-				Index:  i,
+		if len(m.Namespaces) > 0 && m.NamespaceSelector != nil {
+			errs = append(errs, MemberError{
+				Name:   name,
 				Group:  gvk.Group,
 				Kind:   gvk.Kind,
 				Reason: apiv1.ReasonNamespaceScopeMismatch,
@@ -97,10 +100,10 @@ func (a *ClusterEchelonAdapter) Targets(ctx context.Context, dr discovery.Resolv
 			continue
 		}
 
-		matcher, merr := a.buildNamespaceMatcher(ctx, t.Namespaces, t.NamespaceSelector)
+		matcher, merr := a.buildNamespaceMatcher(ctx, m.Namespaces, m.NamespaceSelector)
 		if merr != nil {
-			errs = append(errs, TargetError{
-				Index:  i,
+			errs = append(errs, MemberError{
+				Name:   name,
 				Group:  gvk.Group,
 				Kind:   gvk.Kind,
 				Reason: apiv1.ReasonDiscoveryFailed,
@@ -109,10 +112,10 @@ func (a *ClusterEchelonAdapter) Targets(ctx context.Context, dr discovery.Resolv
 			continue
 		}
 
-		sel, err := labelSelectorOrEverything(t.Selector)
+		sel, err := labelSelectorOrEverything(m.Selector)
 		if err != nil {
-			errs = append(errs, TargetError{
-				Index:  i,
+			errs = append(errs, MemberError{
+				Name:   name,
 				Group:  gvk.Group,
 				Kind:   gvk.Kind,
 				Reason: apiv1.ReasonDiscoveryFailed,
@@ -121,13 +124,13 @@ func (a *ClusterEchelonAdapter) Targets(ctx context.Context, dr discovery.Resolv
 			continue
 		}
 
-		out = append(out, NormalizedTarget{
-			Index:            i,
+		out = append(out, NormalizedMember{
+			Name:             name,
 			GVK:              gvk,
 			Scope:            scope,
 			Selector:         sel,
 			NamespaceMatcher: matcher,
-			EmptySetPolicy:   t.EmptySetPolicy,
+			EmptySetPolicy:   m.EmptySetPolicy,
 		})
 	}
 	return out, errs

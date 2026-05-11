@@ -21,12 +21,14 @@ import (
 )
 
 // ClusterEchelonSpec defines the desired state of ClusterEchelon.
+//
+// +kubebuilder:validation:XValidation:rule="self.members.all(k, k.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'))",message="member keys must be RFC-1123 labels"
 type ClusterEchelonSpec struct {
-	// Targets is the set of resource selections this ClusterEchelon aggregates
-	// over. Each target may scope its search via Namespaces or NamespaceSelector.
-	// +kubebuilder:validation:MinItems=1
-	// +listType=atomic
-	Targets []ClusterTargetSpec `json:"targets"`
+	// Members is the set of resource selections this ClusterEchelon aggregates
+	// over, keyed by user-given names. Each member may scope its search via
+	// Namespaces or NamespaceSelector.
+	// +kubebuilder:validation:MinProperties=1
+	Members map[string]ClusterMemberSpec `json:"members"`
 }
 
 // ClusterEchelonStatus is the observed state of ClusterEchelon.
@@ -43,7 +45,7 @@ type ClusterEchelonStatus struct {
 // +kubebuilder:printcolumn:name="Current",type="integer",JSONPath=".status.summary.current"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
-// ClusterEchelon aggregates the kstatus of resources matching its targets
+// ClusterEchelon aggregates the kstatus of resources matching its members
 // across namespaces, exposing a kstatus-compatible Ready condition.
 type ClusterEchelon struct {
 	metav1.TypeMeta   `json:",inline"`

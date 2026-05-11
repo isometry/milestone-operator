@@ -32,4 +32,17 @@ const (
 	keyType           = "type"
 	namePlatform      = "platform"
 	labelTier         = "tier"
+
+	// Test fixture identifiers (member keys, status values, labels) repeated
+	// across multiple test files. Consolidated to satisfy goconst.
+	memberKustomizations = "kustomizations"
+	memberLate           = "late"
+	statusTrue           = "True"
+	testReason           = "Test"
+	labelWave            = "wave"
+	memberWaveA          = "wave-a"
+	memberWaveB          = "wave-b"
+	memberHelmreleases   = "helmreleases"
+	widgetPlural         = "widgets"
+	memberRoles          = "roles"
 )

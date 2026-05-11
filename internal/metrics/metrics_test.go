@@ -88,7 +88,7 @@ func TestRegister_AllMetricFamiliesPresent(t *testing.T) {
 	metrics.DiscoveryCacheSize.Set(0)
 	metrics.ReconcileStageDuration.WithLabelValues(kindEchelon, "discovery").Observe(0)
 	metrics.StatusPatchTotal.WithLabelValues(kindEchelon, "changed").Inc()
-	metrics.TargetResolveErrors.WithLabelValues(kindEchelon, "GVKNotEstablished").Inc()
+	metrics.MemberResolveErrors.WithLabelValues(kindEchelon, "GVKNotEstablished").Inc()
 	metrics.CRDEstablishedEvents.WithLabelValues(groupKustomize, kindKustomization).Inc()
 	metrics.OwnersWoken.WithLabelValues("crd_established").Inc()
 
@@ -107,7 +107,7 @@ func TestRegister_AllMetricFamiliesPresent(t *testing.T) {
 		"echelon_discovery_cache_size",
 		"echelon_reconcile_stage_duration_seconds",
 		"echelon_status_patch_total",
-		"echelon_target_resolve_errors_total",
+		"echelon_member_resolve_errors_total",
 		"echelon_crd_established_events_total",
 		"echelon_owners_woken_total",
 	}

@@ -7,14 +7,16 @@ metadata:
     app.kubernetes.io/name: echelon-operator
     app.kubernetes.io/managed-by: kustomize
 spec:
-  targets:
-    - group: kustomize.toolkit.fluxcd.io
+  members:
+    kustomizations:
+      group: kustomize.toolkit.fluxcd.io
       kind: Kustomization
       selector:
         matchLabels:
           wave: "0"
       emptySetPolicy: NotReady
-    - group: helm.toolkit.fluxcd.io
+    helmreleases:
+      group: helm.toolkit.fluxcd.io
       kind: HelmRelease
       selector:
         matchLabels:

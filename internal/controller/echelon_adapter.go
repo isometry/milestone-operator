@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 
 	apiv1 "github.com/isometry/echelon-operator/api/v1"
 	"github.com/isometry/echelon-operator/internal/discovery"
@@ -43,26 +44,28 @@ func (a *EchelonAdapter) OwnerKey() watcher.OwnerKey {
 	}
 }
 
-// Targets normalizes the spec.targets[] entries; per-target discovery failures
-// are returned as TargetError, not as a fatal error, so the reconciler can
-// proceed with the resolvable subset.
-func (a *EchelonAdapter) Targets(ctx context.Context, dr discovery.Resolver) ([]NormalizedTarget, []TargetError) {
+// Members normalises spec.members; per-member discovery failures are returned
+// as MemberError, not as a fatal error, so the reconciler can proceed with the
+// resolvable subset. Members are returned sorted by name for deterministic
+// downstream behaviour.
+func (a *EchelonAdapter) Members(ctx context.Context, dr discovery.Resolver) ([]NormalizedMember, []MemberError) {
 	if dr == nil {
-		// Defensive: a misconfigured Reconciler would otherwise nil-panic.
-		return nil, []TargetError{{Reason: apiv1.ReasonDiscoveryFailed, Err: errors.New("nil discovery resolver")}}
+		return nil, []MemberError{{Reason: apiv1.ReasonDiscoveryFailed, Err: errors.New("nil discovery resolver")}}
 	}
 	ns := a.Echelon.Namespace
 	matcher := func(target string) bool { return target == ns }
 
-	out := make([]NormalizedTarget, 0, len(a.Echelon.Spec.Targets))
-	var errs []TargetError
-	for i, t := range a.Echelon.Spec.Targets {
-		gvk, scope, err := dr.Resolve(ctx, t.Group, t.Kind, t.Version)
+	names := sortedMemberKeys(a.Echelon.Spec.Members)
+	out := make([]NormalizedMember, 0, len(names))
+	var errs []MemberError
+	for _, name := range names {
+		m := a.Echelon.Spec.Members[name]
+		gvk, scope, err := dr.Resolve(ctx, m.Group, m.Kind, m.Version)
 		if err != nil {
-			errs = append(errs, TargetError{
-				Index:  i,
-				Group:  t.Group,
-				Kind:   t.Kind,
+			errs = append(errs, MemberError{
+				Name:   name,
+				Group:  m.Group,
+				Kind:   m.Kind,
 				Reason: apiv1.ReasonGVKNotEstablished,
 				Err:    err,
 			})
@@ -73,8 +76,8 @@ func (a *EchelonAdapter) Targets(ctx context.Context, dr discovery.Resolver) ([]
 		// produce an empty set after the namespace matcher; surface the
 		// configuration error instead.
 		if scope != apimeta.RESTScopeNameNamespace {
-			errs = append(errs, TargetError{
-				Index:  i,
+			errs = append(errs, MemberError{
+				Name:   name,
 				Group:  gvk.Group,
 				Kind:   gvk.Kind,
 				Reason: apiv1.ReasonNamespaceScopeMismatch,
@@ -82,10 +85,10 @@ func (a *EchelonAdapter) Targets(ctx context.Context, dr discovery.Resolver) ([]
 			})
 			continue
 		}
-		sel, err := labelSelectorOrEverything(t.Selector)
+		sel, err := labelSelectorOrEverything(m.Selector)
 		if err != nil {
-			errs = append(errs, TargetError{
-				Index:  i,
+			errs = append(errs, MemberError{
+				Name:   name,
 				Group:  gvk.Group,
 				Kind:   gvk.Kind,
 				Reason: apiv1.ReasonDiscoveryFailed,
@@ -93,13 +96,13 @@ func (a *EchelonAdapter) Targets(ctx context.Context, dr discovery.Resolver) ([]
 			})
 			continue
 		}
-		out = append(out, NormalizedTarget{
-			Index:            i,
+		out = append(out, NormalizedMember{
+			Name:             name,
 			GVK:              gvk,
 			Scope:            scope,
 			Selector:         sel,
 			NamespaceMatcher: matcher,
-			EmptySetPolicy:   t.EmptySetPolicy,
+			EmptySetPolicy:   m.EmptySetPolicy,
 		})
 	}
 	return out, errs
@@ -120,4 +123,16 @@ func labelSelectorOrEverything(ls *metav1.LabelSelector) (labels.Selector, error
 		return labels.Everything(), nil
 	}
 	return metav1.LabelSelectorAsSelector(ls)
+}
+
+func sortedMemberKeys[V any](m map[string]V) []string {
+	if len(m) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }

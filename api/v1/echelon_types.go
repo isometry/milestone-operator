@@ -21,12 +21,14 @@ import (
 )
 
 // EchelonSpec defines the desired state of Echelon.
+//
+// +kubebuilder:validation:XValidation:rule="self.members.all(k, k.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'))",message="member keys must be RFC-1123 labels"
 type EchelonSpec struct {
-	// Targets is the set of resource selections this Echelon aggregates over.
-	// All resources are scoped to the Echelon's own namespace.
-	// +kubebuilder:validation:MinItems=1
-	// +listType=atomic
-	Targets []TargetSpec `json:"targets"`
+	// Members is the set of resource selections this Echelon aggregates over,
+	// keyed by user-given names. All resources are scoped to the Echelon's
+	// own namespace.
+	// +kubebuilder:validation:MinProperties=1
+	Members map[string]MemberSpec `json:"members"`
 }
 
 // EchelonStatus is the observed state of Echelon.
@@ -43,7 +45,7 @@ type EchelonStatus struct {
 // +kubebuilder:printcolumn:name="Current",type="integer",JSONPath=".status.summary.current"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
-// Echelon aggregates the kstatus of resources matching its targets within its
+// Echelon aggregates the kstatus of resources matching its members within its
 // own namespace, exposing a kstatus-compatible Ready condition.
 type Echelon struct {
 	metav1.TypeMeta   `json:",inline"`

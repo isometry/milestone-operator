@@ -45,7 +45,7 @@ var (
 		Spec: apiextv1.CustomResourceDefinitionSpec{
 			Group: groupTestAsCode,
 			Names: apiextv1.CustomResourceDefinitionNames{
-				Plural:   "widgets",
+				Plural:   widgetPlural,
 				Singular: "widget",
 				Kind:     kindWidget,
 				ListKind: "WidgetList",
@@ -192,7 +192,7 @@ func newWidget(ns, name string, ready string) *unstructured.Unstructured {
 	if ready != "" {
 		_ = unstructured.SetNestedField(u.Object, int64(1), schemaPropStatus, "observedGeneration")
 		_ = unstructured.SetNestedSlice(u.Object, []any{
-			map[string]any{keyType: apiv1.ConditionReady, schemaPropStatus: ready, keyReason: "Test"},
+			map[string]any{keyType: apiv1.ConditionReady, schemaPropStatus: ready, keyReason: testReason},
 		}, schemaPropStatus, "conditions")
 	}
 	return u

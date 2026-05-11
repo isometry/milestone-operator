@@ -15,9 +15,14 @@ proceed.
 | Kind             | Scope        | Use                                                              |
 |------------------|--------------|------------------------------------------------------------------|
 | `Echelon`        | Namespaced   | Aggregate within the Echelon's own namespace                     |
-| `ClusterEchelon` | Cluster-wide | Aggregate across namespaces (per-target `namespaces` selectors)  |
+| `ClusterEchelon` | Cluster-wide | Aggregate across namespaces (per-member `namespaces` selectors)  |
 
-Both CRDs live at `as-code.io/v1`.
+Both CRDs live at `as-code.io/v1`. Each Echelon declares one or more named
+*members* under `spec.members`; the operator aggregates the kstatus of every
+resource matching each member's GVK + selector into a per-member rollup, and
+combines the rollups into the owner's `Ready` condition. Map keys are
+user-chosen RFC-1123 labels and serve as stable identifiers for SSA
+field-ownership and `status.members[name]` lookups.
 
 ### Echelon (minimal)
 
@@ -26,27 +31,30 @@ apiVersion: as-code.io/v1
 kind: Echelon
 metadata: { name: wave-0, namespace: flux-system }
 spec:
-  targets:
-    - group: kustomize.toolkit.fluxcd.io
+  members:
+    kustomizations:
+      group: kustomize.toolkit.fluxcd.io
       kind: Kustomization
       selector: { matchLabels: { wave: "0" } }
       emptySetPolicy: NotReady
 ```
 
-### ClusterEchelon (multi-target, multi-scope)
+### ClusterEchelon (multi-member, multi-scope)
 
 ```yaml
 apiVersion: as-code.io/v1
 kind: ClusterEchelon
 metadata: { name: platform-wave-0 }
 spec:
-  targets:
-    - group: kustomize.toolkit.fluxcd.io
+  members:
+    flux-kustomizations:
+      group: kustomize.toolkit.fluxcd.io
       kind: Kustomization
       namespaces: [flux-system]
       selector: { matchLabels: { wave: "0" } }
       emptySetPolicy: NotReady
-    - group: helm.toolkit.fluxcd.io
+    platform-helmreleases:
+      group: helm.toolkit.fluxcd.io
       kind: HelmRelease
       namespaceSelector: { matchLabels: { tier: platform } }
       selector: { matchLabels: { wave: "0" } }
@@ -55,7 +63,7 @@ spec:
 
 ### `emptySetPolicy`
 
-Per-target. Controls how an empty member set is reported:
+Per-member. Controls how an empty resource set is reported:
 
 | Value      | Meaning                                                                 |
 |------------|-------------------------------------------------------------------------|
@@ -67,7 +75,7 @@ Per-target. Controls how an empty member set is reported:
 
 `Echelon` and `ClusterEchelon` expose three conditions:
 
-- `Ready` — kstatus-compatible aggregate over all targets
+- `Ready` — kstatus-compatible aggregate over all members
 - `Reconciling` — True while the controller is wiring watchers / settling
 - `Stalled` — True for non-transient structural problems (`GVKNotEstablished`, `NamespaceScopeMismatch`, `WatchSetupFailed`, `DiscoveryFailed`)
 
@@ -78,7 +86,7 @@ we *can* observe (typically `Unknown`) — never silently `True`.
 
 | Layer                    | Package                  | Responsibility                                          |
 |--------------------------|--------------------------|---------------------------------------------------------|
-| Per-resource readiness   | `internal/status`        | Wraps `kstatus.Compute`, reduces members → rollup       |
+| Per-resource readiness   | `internal/status`        | Wraps `kstatus.Compute`, reduces resources → rollup     |
 | Discovery TTL cache      | `internal/discovery`     | Resolves group+kind → GVK + scope                       |
 | Dynamic watcher registry | `internal/watcher`       | Refcounted "one informer per GVK" pattern               |
 | Reconciler               | `internal/controller`    | Generic pipeline shared by Echelon and ClusterEchelon   |
@@ -140,7 +148,7 @@ on the FluxCD resource groups. To watch additional kinds, edit
 and re-deploy.
 
 For restricted clusters, replace that ClusterRoleBinding with a narrower role
-covering only the kinds you intend to reference from `spec.targets[]`.
+covering only the kinds you intend to reference from `spec.members.<name>`.
 
 ## Design
 

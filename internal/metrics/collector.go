@@ -12,6 +12,7 @@ package metrics
 
 import (
 	"context"
+	"sort"
 
 	apiv1 "github.com/isometry/echelon-operator/api/v1"
 	"github.com/prometheus/client_golang/prometheus"
@@ -41,8 +42,8 @@ type StateCollector struct {
 
 	statusCondition        *prometheus.Desc
 	observedGeneration     *prometheus.Desc
-	targetMembers          *prometheus.Desc
-	targetReady            *prometheus.Desc
+	memberResources        *prometheus.Desc
+	memberReady            *prometheus.Desc
 	lastEvaluatedTimestamp *prometheus.Desc
 }
 
@@ -63,15 +64,15 @@ func NewStateCollector(ctx context.Context, lister StateLister) *StateCollector 
 			"metadata.generation observed at the last successful reconcile.",
 			[]string{labelOwnerKind, labelNamespace, labelName}, nil,
 		),
-		targetMembers: prometheus.NewDesc(
-			"echelon_target_members",
-			"Per-target member counts by kstatus bucket; status label includes 'total'.",
-			[]string{labelOwnerKind, labelNamespace, labelName, labelTargetGroup, labelTargetKind, labelStatus}, nil,
+		memberResources: prometheus.NewDesc(
+			"echelon_member_resources",
+			"Per-member resource counts by kstatus bucket; status label includes 'total'.",
+			[]string{labelOwnerKind, labelNamespace, labelName, labelMember, labelTargetGroup, labelTargetKind, labelStatus}, nil,
 		),
-		targetReady: prometheus.NewDesc(
-			"echelon_target_ready",
-			"Per-target Ready encoded as 1=True, 0=False, -1=Unknown.",
-			[]string{labelOwnerKind, labelNamespace, labelName, labelTargetGroup, labelTargetKind}, nil,
+		memberReady: prometheus.NewDesc(
+			"echelon_member_ready",
+			"Per-member Ready encoded as 1=True, 0=False, -1=Unknown.",
+			[]string{labelOwnerKind, labelNamespace, labelName, labelMember, labelTargetGroup, labelTargetKind}, nil,
 		),
 		lastEvaluatedTimestamp: prometheus.NewDesc(
 			"echelon_last_evaluated_timestamp_seconds",
@@ -85,8 +86,8 @@ func NewStateCollector(ctx context.Context, lister StateLister) *StateCollector 
 func (c *StateCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.statusCondition
 	ch <- c.observedGeneration
-	ch <- c.targetMembers
-	ch <- c.targetReady
+	ch <- c.memberResources
+	ch <- c.memberReady
 	ch <- c.lastEvaluatedTimestamp
 }
 
@@ -117,18 +118,25 @@ func (c *StateCollector) emit(ch chan<- prometheus.Metric, kind, namespace, name
 		}
 	}
 
-	for _, t := range sb.Targets {
-		ch <- prometheus.MustNewConstMetric(c.targetReady, prometheus.GaugeValue, encodeReady(t.Ready), kind, namespace, name, t.Group, t.Kind)
+	// Iterate sorted member keys so scrapes are deterministic across reconciles.
+	memberNames := make([]string, 0, len(sb.Members))
+	for n := range sb.Members {
+		memberNames = append(memberNames, n)
+	}
+	sort.Strings(memberNames)
+	for _, mname := range memberNames {
+		m := sb.Members[mname]
+		ch <- prometheus.MustNewConstMetric(c.memberReady, prometheus.GaugeValue, encodeReady(m.Ready), kind, namespace, name, mname, m.Group, m.Kind)
 		emit := func(bucket string, v int32) {
-			ch <- prometheus.MustNewConstMetric(c.targetMembers, prometheus.GaugeValue, float64(v), kind, namespace, name, t.Group, t.Kind, bucket)
+			ch <- prometheus.MustNewConstMetric(c.memberResources, prometheus.GaugeValue, float64(v), kind, namespace, name, mname, m.Group, m.Kind, bucket)
 		}
-		emit("total", t.Summary.Total)
-		emit("current", t.Summary.Current)
-		emit("inProgress", t.Summary.InProgress)
-		emit("failed", t.Summary.Failed)
-		emit("notFound", t.Summary.NotFound)
-		emit("terminating", t.Summary.Terminating)
-		emit("unknown", t.Summary.Unknown)
+		emit("total", m.Summary.Total)
+		emit("current", m.Summary.Current)
+		emit("inProgress", m.Summary.InProgress)
+		emit("failed", m.Summary.Failed)
+		emit("notFound", m.Summary.NotFound)
+		emit("terminating", m.Summary.Terminating)
+		emit("unknown", m.Summary.Unknown)
 	}
 }
 

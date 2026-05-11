@@ -85,6 +85,8 @@ func (f *fakeLister) ListClusterEchelons(_ context.Context) []apiv1.ClusterEchel
 	return f.clusterEchelons
 }
 
+const memberName = "kustomizations"
+
 func newReadyEchelon(ns, name string) apiv1.Echelon {
 	now := metav1.NewTime(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	return apiv1.Echelon{
@@ -95,13 +97,13 @@ func newReadyEchelon(ns, name string) apiv1.Echelon {
 				LastEvaluatedTime:  now,
 				Summary:            apiv1.Summary{Total: 5, Current: 5},
 				Conditions: []metav1.Condition{
-					{Type: apiv1.ConditionReady, Status: metav1.ConditionTrue, Reason: apiv1.ReasonAllTargetsReady},
+					{Type: apiv1.ConditionReady, Status: metav1.ConditionTrue, Reason: apiv1.ReasonAllMembersReady},
 					{Type: apiv1.ConditionReconciling, Status: metav1.ConditionFalse},
 					{Type: apiv1.ConditionStalled, Status: metav1.ConditionFalse},
 				},
-				Targets: []apiv1.TargetRollup{
-					{Group: groupKustomize, Version: "v1", Kind: kindKustomization,
-						Ready: metav1.ConditionTrue, Reason: apiv1.ReasonAllMembersReady,
+				Members: map[string]apiv1.MemberRollup{
+					memberName: {Group: groupKustomize, Version: "v1", Kind: kindKustomization,
+						Ready: metav1.ConditionTrue, Reason: apiv1.ReasonAllResourcesReady,
 						Summary: apiv1.Summary{Total: 5, Current: 5}},
 				},
 			},
@@ -123,8 +125,8 @@ func TestStateCollector_EmitsConditionAndGenerationGauges(t *testing.T) {
 	want := map[string]bool{
 		"echelon_status_condition":                 true,
 		"echelon_observed_generation":              true,
-		"echelon_target_members":                   true,
-		"echelon_target_ready":                     true,
+		"echelon_member_resources":                 true,
+		"echelon_member_ready":                     true,
 		"echelon_last_evaluated_timestamp_seconds": true,
 	}
 	have := map[string]bool{}
@@ -159,7 +161,7 @@ func TestStateCollector_StatusConditionGauge(t *testing.T) {
 	}
 }
 
-func TestStateCollector_TargetReadyEncodes(t *testing.T) {
+func TestStateCollector_MemberReadyEncodes(t *testing.T) {
 	cases := []struct {
 		name   string
 		ready  metav1.ConditionStatus
@@ -172,12 +174,14 @@ func TestStateCollector_TargetReadyEncodes(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			ech := newReadyEchelon(nsFluxSystem, "x")
-			ech.Status.Targets[0].Ready = tc.ready
+			rollup := ech.Status.Members[memberName]
+			rollup.Ready = tc.ready
+			ech.Status.Members[memberName] = rollup
 			lister := &fakeLister{echelons: []apiv1.Echelon{ech}}
 			col := metrics.NewStateCollector(t.Context(), lister)
-			v := valueAt(t, col, "echelon_target_ready", map[string]string{
+			v := valueAt(t, col, "echelon_member_ready", map[string]string{
 				keyOwnerKind: kindEchelon, keyNamespace: nsFluxSystem, keyName: "x",
-				keyTargetGroup: groupKustomize, keyTargetKind: kindKustomization,
+				keyMember: memberName, keyTargetGroup: groupKustomize, keyTargetKind: kindKustomization,
 			})
 			if v != tc.expect {
 				t.Errorf("encoded = %v, want %v", v, tc.expect)
@@ -208,9 +212,11 @@ func TestStateCollector_ClusterEchelonHasEmptyNamespaceLabel(t *testing.T) {
 	}
 }
 
-func TestStateCollector_TargetMembersPerStatusBucket(t *testing.T) {
+func TestStateCollector_MemberResourcesPerStatusBucket(t *testing.T) {
 	ech := newReadyEchelon(nsFluxSystem, "wave-0")
-	ech.Status.Targets[0].Summary = apiv1.Summary{Total: 4, Current: 1, InProgress: 2, Failed: 1}
+	rollup := ech.Status.Members[memberName]
+	rollup.Summary = apiv1.Summary{Total: 4, Current: 1, InProgress: 2, Failed: 1}
+	ech.Status.Members[memberName] = rollup
 	col := metrics.NewStateCollector(t.Context(), &fakeLister{echelons: []apiv1.Echelon{ech}})
 
 	cases := map[string]float64{
@@ -220,9 +226,9 @@ func TestStateCollector_TargetMembersPerStatusBucket(t *testing.T) {
 		"total":      4,
 	}
 	for status, want := range cases {
-		got := valueAt(t, col, "echelon_target_members", map[string]string{
+		got := valueAt(t, col, "echelon_member_resources", map[string]string{
 			keyOwnerKind: kindEchelon, keyNamespace: nsFluxSystem, keyName: nameWave0,
-			keyTargetGroup: groupKustomize, keyTargetKind: kindKustomization,
+			keyMember: memberName, keyTargetGroup: groupKustomize, keyTargetKind: kindKustomization,
 			keyStatus: status,
 		})
 		if got != want {

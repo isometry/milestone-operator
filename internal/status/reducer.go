@@ -8,33 +8,34 @@ You may obtain a copy of the License at
     http://www.apache.org/licenses/LICENSE-2.0
 */
 
-// Package status reduces per-resource kstatus into per-target and owner-level
+// Package status reduces per-resource kstatus into per-member and owner-level
 // readiness rollups.
 package status
 
 import (
+	"sort"
 	"strings"
 
 	apiv1 "github.com/isometry/echelon-operator/api/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// Member identifies a single resource and its computed kstatus.
-type Member struct {
+// Resource identifies a single matched resource and its computed kstatus.
+type Resource struct {
 	Group, Version, Kind string
 	Namespace, Name      string
 	Status, Reason       string
 	Message              string
 }
 
-// ReduceTarget reduces members of one target into a TargetRollup. When the
-// member set is empty, the target's EmptySetPolicy controls Ready reporting.
-func ReduceTarget(group, version, kind string, members []Member, policy apiv1.EmptySetPolicy) apiv1.TargetRollup {
-	rollup := apiv1.TargetRollup{Group: group, Version: version, Kind: kind}
+// ReduceMember reduces resources of one member into a MemberRollup. When the
+// resource set is empty, the member's EmptySetPolicy controls Ready reporting.
+func ReduceMember(group, version, kind string, resources []Resource, policy apiv1.EmptySetPolicy) apiv1.MemberRollup {
+	rollup := apiv1.MemberRollup{Group: group, Version: version, Kind: kind}
 
-	for _, m := range members {
+	for _, r := range resources {
 		rollup.Summary.Total++
-		switch m.Status {
+		switch r.Status {
 		case "Current":
 			rollup.Summary.Current++
 		case "InProgress":
@@ -66,32 +67,33 @@ func ReduceTarget(group, version, kind string, members []Member, policy apiv1.Em
 	switch {
 	case rollup.Summary.Failed > 0 || rollup.Summary.NotFound > 0:
 		rollup.Ready = metav1.ConditionFalse
-		rollup.Reason = apiv1.ReasonMembersNotReady
+		rollup.Reason = apiv1.ReasonResourcesNotReady
 	case rollup.Summary.InProgress > 0 || rollup.Summary.Terminating > 0:
 		rollup.Ready = metav1.ConditionUnknown
-		rollup.Reason = apiv1.ReasonMembersInProgress
+		rollup.Reason = apiv1.ReasonResourcesInProgress
 	case rollup.Summary.Unknown > 0:
 		rollup.Ready = metav1.ConditionUnknown
-		rollup.Reason = apiv1.ReasonMembersUnknown
+		rollup.Reason = apiv1.ReasonResourcesUnknown
 	default:
 		rollup.Ready = metav1.ConditionTrue
-		rollup.Reason = apiv1.ReasonAllMembersReady
+		rollup.Reason = apiv1.ReasonAllResourcesReady
 	}
 	return rollup
 }
 
-// ReduceOwner reduces per-target rollups into the owner-level Ready status,
-// reason, and human-readable message.
-func ReduceOwner(rollups []apiv1.TargetRollup) (metav1.ConditionStatus, string, string) {
+// ReduceOwner reduces per-member rollups into the owner-level Ready status,
+// reason, and human-readable message. The not-ready member names are sorted
+// so the message is stable across reconciles (Go map iteration order is not).
+func ReduceOwner(rollups map[string]apiv1.MemberRollup) (metav1.ConditionStatus, string, string) {
 	if len(rollups) == 0 {
-		return metav1.ConditionUnknown, apiv1.ReasonEmptySet, "no targets configured"
+		return metav1.ConditionUnknown, apiv1.ReasonEmptySet, "no members configured"
 	}
 	var failed []string
 	allTrue := true
-	for _, r := range rollups {
+	for name, r := range rollups {
 		switch r.Ready {
 		case metav1.ConditionFalse:
-			failed = append(failed, r.Kind)
+			failed = append(failed, name)
 			allTrue = false
 		case metav1.ConditionTrue:
 		default:
@@ -100,16 +102,19 @@ func ReduceOwner(rollups []apiv1.TargetRollup) (metav1.ConditionStatus, string, 
 	}
 	switch {
 	case len(failed) > 0:
-		return metav1.ConditionFalse, apiv1.ReasonTargetsNotReady, "kinds not ready: " + strings.Join(failed, ", ")
+		sort.Strings(failed)
+		return metav1.ConditionFalse, apiv1.ReasonMembersNotReady, "members not ready: " + strings.Join(failed, ", ")
 	case allTrue:
-		return metav1.ConditionTrue, apiv1.ReasonAllTargetsReady, ""
+		return metav1.ConditionTrue, apiv1.ReasonAllMembersReady, ""
 	default:
-		return metav1.ConditionUnknown, apiv1.ReasonTargetsInProgress, ""
+		return metav1.ConditionUnknown, apiv1.ReasonMembersInProgress, ""
 	}
 }
 
-// SummarizeOwner aggregates per-target Summaries into an owner-level Summary.
-func SummarizeOwner(rollups []apiv1.TargetRollup) apiv1.Summary {
+// SummarizeOwner aggregates per-member Summaries into an owner-level Summary.
+// Order-independent: addition is commutative, map iteration order does not
+// affect the result.
+func SummarizeOwner(rollups map[string]apiv1.MemberRollup) apiv1.Summary {
 	var total apiv1.Summary
 	for _, r := range rollups {
 		total.Total += r.Summary.Total

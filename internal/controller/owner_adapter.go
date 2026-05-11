@@ -23,10 +23,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// NormalizedTarget is the discovery- and selector-resolved view of a single
-// spec.targets[] entry, ready to feed the registry and the lister.
-type NormalizedTarget struct {
-	Index            int
+// NormalizedMember is the discovery- and selector-resolved view of a single
+// spec.members[name] entry, ready to feed the registry and the lister.
+type NormalizedMember struct {
+	Name             string
 	GVK              schema.GroupVersionKind
 	Scope            apimeta.RESTScopeName
 	Selector         labels.Selector
@@ -34,11 +34,11 @@ type NormalizedTarget struct {
 	EmptySetPolicy   apiv1.EmptySetPolicy
 }
 
-// TargetError is a structural failure tied to a single target. The reconciler
+// MemberError is a structural failure tied to a single member. The reconciler
 // surfaces these as Stalled with the carried Reason; reconcile continues for
-// the remaining targets.
-type TargetError struct {
-	Index   int
+// the remaining members.
+type MemberError struct {
+	Name    string
 	Group   string
 	Version string
 	Kind    string
@@ -46,21 +46,23 @@ type TargetError struct {
 	Err     error
 }
 
-func (e TargetError) Error() string { return e.Err.Error() }
-func (e TargetError) Unwrap() error { return e.Err }
+func (e MemberError) Error() string { return e.Err.Error() }
+func (e MemberError) Unwrap() error { return e.Err }
 
 // OwnerAdapter abstracts the differences between Echelon and ClusterEchelon so
 // the reconcile pipeline can serve both with one implementation. The interface
 // is intentionally non-generic: the typed owner flows through Reconciler[T]
 // directly, and the adapter only exposes owner-agnostic shapes
-// (NormalizedTarget, TargetError, *EchelonStatusBase).
+// (NormalizedMember, MemberError, *EchelonStatusBase).
 type OwnerAdapter interface {
 	// OwnerKey identifies this object in the watcher registry.
 	OwnerKey() watcher.OwnerKey
 
-	// Targets normalizes spec.targets[] into NormalizedTarget plus per-target
+	// Members normalises spec.members into NormalizedMember plus per-member
 	// errors that the reconciler should surface as Stalled reasons.
-	Targets(ctx context.Context, dr discovery.Resolver) ([]NormalizedTarget, []TargetError)
+	// Implementations must return members sorted by Name so downstream
+	// iteration is deterministic.
+	Members(ctx context.Context, dr discovery.Resolver) ([]NormalizedMember, []MemberError)
 
 	// Status returns a pointer to the embedded EchelonStatusBase so the
 	// reconciler can mutate it in place before patching.

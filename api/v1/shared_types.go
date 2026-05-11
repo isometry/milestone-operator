@@ -20,26 +20,27 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// EmptySetPolicy controls how a target's Ready is reported when zero resources
+// EmptySetPolicy controls how a member's Ready is reported when zero resources
 // match its selector.
 //
 // +kubebuilder:validation:Enum=Unknown;Ready;NotReady
 type EmptySetPolicy string
 
 const (
-	// EmptySetUnknown reports Ready=Unknown for a target with zero matches.
+	// EmptySetUnknown reports Ready=Unknown for a member with zero matches.
 	// Default; safe for wave gates that should not advance on emptiness.
 	EmptySetUnknown EmptySetPolicy = "Unknown"
-	// EmptySetReady reports Ready=True for a target with zero matches.
+	// EmptySetReady reports Ready=True for a member with zero matches.
 	// Use when a wave should vacuously advance if nothing is selected.
 	EmptySetReady EmptySetPolicy = "Ready"
-	// EmptySetNotReady reports Ready=False for a target with zero matches.
+	// EmptySetNotReady reports Ready=False for a member with zero matches.
 	// Use when emptiness is itself a misconfiguration that should block.
 	EmptySetNotReady EmptySetPolicy = "NotReady"
 )
 
-// TargetSpec selects a set of resources by GVK and label selector.
-type TargetSpec struct {
+// MemberSpec selects a set of resources by GVK and label selector. The map key
+// in spec.members carries the user-given name of this member.
+type MemberSpec struct {
 	// Group is the API group of the target kind. Empty string means the core
 	// Kubernetes group.
 	// +optional
@@ -66,13 +67,13 @@ type TargetSpec struct {
 	EmptySetPolicy EmptySetPolicy `json:"emptySetPolicy,omitempty"`
 }
 
-// ClusterTargetSpec is TargetSpec extended with namespace selection.
+// ClusterMemberSpec is MemberSpec extended with namespace selection.
 // Exactly one of Namespaces or NamespaceSelector may be set; both empty means
 // "all namespaces".
 //
 // +kubebuilder:validation:XValidation:rule="!(has(self.namespaces) && has(self.namespaceSelector))",message="namespaces and namespaceSelector are mutually exclusive"
-type ClusterTargetSpec struct {
-	TargetSpec `json:",inline"`
+type ClusterMemberSpec struct {
+	MemberSpec `json:",inline"`
 
 	// Namespaces is an explicit allow-list of namespaces to search. Mutually
 	// exclusive with NamespaceSelector.
@@ -87,32 +88,32 @@ type ClusterTargetSpec struct {
 }
 
 // Summary holds aggregate kstatus counters for a set of resources. All counters
-// are always populated; a zero value means no members fall in that bucket, not
-// "not yet computed". The bucket names mirror sigs.k8s.io/cli-utils kstatus.
+// are always populated; a zero value means no resources fall in that bucket,
+// not "not yet computed". The bucket names mirror sigs.k8s.io/cli-utils kstatus.
 type Summary struct {
-	// Total is the count of resources currently matched by the target's
+	// Total is the count of resources currently matched by the member's
 	// selector. Total == sum of all the other buckets.
 	Total int32 `json:"total"`
-	// Current counts members whose kstatus is Current (steady-state ready).
+	// Current counts resources whose kstatus is Current (steady-state ready).
 	Current int32 `json:"current"`
-	// InProgress counts members whose kstatus is InProgress (still converging).
+	// InProgress counts resources whose kstatus is InProgress (still converging).
 	InProgress int32 `json:"inProgress"`
-	// Failed counts members whose kstatus is Failed.
+	// Failed counts resources whose kstatus is Failed.
 	Failed int32 `json:"failed"`
-	// NotFound counts members whose kstatus is NotFound (selector matched a
+	// NotFound counts resources whose kstatus is NotFound (selector matched a
 	// name but the resource is absent).
 	NotFound int32 `json:"notFound"`
-	// Terminating counts members whose kstatus is Terminating (deletion in
+	// Terminating counts resources whose kstatus is Terminating (deletion in
 	// progress).
 	Terminating int32 `json:"terminating"`
-	// Unknown counts members whose kstatus could not be determined.
+	// Unknown counts resources whose kstatus could not be determined.
 	Unknown int32 `json:"unknown"`
 }
 
-// TargetRollup is the per-target aggregated readiness reported on the owner.
-// One TargetRollup is produced for every entry in spec.targets, in the same
-// order, regardless of whether discovery succeeded.
-type TargetRollup struct {
+// MemberRollup is the per-member aggregated readiness reported on the owner.
+// One MemberRollup is produced for every entry in spec.members, keyed by the
+// same map key, regardless of whether discovery succeeded.
+type MemberRollup struct {
 	// Group is the API group of the resolved target Kind. Empty for the core
 	// Kubernetes group.
 	// +optional
@@ -124,48 +125,48 @@ type TargetRollup struct {
 	// Kind is the target Kind as declared in the spec.
 	Kind string `json:"kind"`
 
-	// Ready is True when every selected member is Current; False when any
-	// member is Failed or NotFound; Unknown otherwise (or per emptySetPolicy
-	// when no members match).
+	// Ready is True when every selected resource is Current; False when any
+	// resource is Failed or NotFound; Unknown otherwise (or per emptySetPolicy
+	// when no resources match).
 	// +kubebuilder:validation:Enum=True;False;Unknown
 	Ready metav1.ConditionStatus `json:"ready"`
 
 	// Reason is a short machine-readable code summarising why Ready has its
-	// current value (e.g. AllMembersReady, MembersNotReady, EmptySet).
+	// current value (e.g. AllResourcesReady, ResourcesNotReady, EmptySet).
 	// +optional
 	Reason string `json:"reason,omitempty"`
 	// Summary holds the per-kstatus-bucket counts that produced Ready.
 	Summary Summary `json:"summary"`
 }
 
-// MemberStatus identifies an individual matched resource and the kstatus
-// computed for it. Only members whose Status is not Current are surfaced on the
-// owner (see EchelonStatusBase.NotReadyMembers).
-type MemberStatus struct {
-	// Group is the API group of the member resource. Empty for the core group.
+// ResourceStatus identifies an individual matched resource and the kstatus
+// computed for it. Only resources whose Status is not Current are surfaced on
+// the owner (see EchelonStatusBase.NotReadyResources).
+type ResourceStatus struct {
+	// Group is the API group of the resource. Empty for the core group.
 	// +optional
 	Group string `json:"group,omitempty"`
-	// Version is the API version of the member resource.
+	// Version is the API version of the resource.
 	Version string `json:"version"`
-	// Kind is the API Kind of the member resource.
+	// Kind is the API Kind of the resource.
 	Kind string `json:"kind"`
-	// Namespace is the namespace of the member resource. Empty when the
-	// resource is cluster-scoped.
+	// Namespace is the namespace of the resource. Empty when the resource is
+	// cluster-scoped.
 	// +optional
 	Namespace string `json:"namespace,omitempty"`
-	// Name is the name of the member resource.
+	// Name is the name of the resource.
 	Name string `json:"name"`
 
 	// Status is the kstatus computed by sigs.k8s.io/cli-utils for this
-	// member.
+	// resource.
 	// +kubebuilder:validation:Enum=Current;InProgress;Failed;NotFound;Terminating;Unknown
 	Status string `json:"status"`
-	// Reason is the kstatus reason for this member when one was provided by
+	// Reason is the kstatus reason for this resource when one was provided by
 	// sigs.k8s.io/cli-utils.
 	// +optional
 	Reason string `json:"reason,omitempty"`
-	// Message is the kstatus message for this member when one was provided by
-	// sigs.k8s.io/cli-utils.
+	// Message is the kstatus message for this resource when one was provided
+	// by sigs.k8s.io/cli-utils.
 	// +optional
 	Message string `json:"message,omitempty"`
 }
@@ -185,20 +186,20 @@ type EchelonStatusBase struct {
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 
-	// Summary aggregates member counters across all targets.
+	// Summary aggregates resource counters across all members.
 	// +optional
 	Summary Summary `json:"summary,omitempty"`
 
-	// Targets carries per-target rollups in spec order.
+	// Members carries per-member rollups, keyed identically to spec.members.
 	// +optional
-	Targets []TargetRollup `json:"targets,omitempty"`
+	Members map[string]MemberRollup `json:"members,omitempty"`
 
-	// NotReadyMembers lists members whose kstatus is not Current. Capped to
+	// NotReadyResources lists resources whose kstatus is not Current. Capped to
 	// avoid object-size explosions; Truncated indicates the cap was hit.
 	// +optional
-	NotReadyMembers []MemberStatus `json:"notReadyMembers,omitempty"`
+	NotReadyResources []ResourceStatus `json:"notReadyResources,omitempty"`
 
-	// Truncated is true when NotReadyMembers was capped.
+	// Truncated is true when NotReadyResources was capped.
 	// +optional
 	Truncated bool `json:"truncated,omitempty"`
 
@@ -215,14 +216,25 @@ const (
 )
 
 // Reason vocabulary for Ready / Reconciling / Stalled conditions and rollups.
+//
+// Two levels of aggregation share this vocabulary:
+//   - Resource-level (per-member rollup): describes the population of
+//     individual matched resources that contributed to the rollup.
+//   - Member-level (owner-wide): describes the population of per-member
+//     rollups that contributed to the owner Ready.
 const (
-	ReasonAllMembersReady        = "AllMembersReady"
-	ReasonAllTargetsReady        = "AllTargetsReady"
-	ReasonMembersNotReady        = "MembersNotReady"
-	ReasonTargetsNotReady        = "TargetsNotReady"
-	ReasonMembersInProgress      = "MembersInProgress"
-	ReasonMembersUnknown         = "MembersUnknown"
-	ReasonTargetsInProgress      = "TargetsInProgress"
+	// Resource-level reasons (used on MemberRollup).
+	ReasonAllResourcesReady   = "AllResourcesReady"
+	ReasonResourcesNotReady   = "ResourcesNotReady"
+	ReasonResourcesInProgress = "ResourcesInProgress"
+	ReasonResourcesUnknown    = "ResourcesUnknown"
+
+	// Member-level reasons (used on the owner Ready condition).
+	ReasonAllMembersReady   = "AllMembersReady"
+	ReasonMembersNotReady   = "MembersNotReady"
+	ReasonMembersInProgress = "MembersInProgress"
+
+	// Shared / structural.
 	ReasonEmptySet               = "EmptySet"
 	ReasonGVKNotEstablished      = "GVKNotEstablished"
 	ReasonNamespaceScopeMismatch = "NamespaceScopeMismatch"

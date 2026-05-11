@@ -96,11 +96,11 @@ func createNamespace(t *testing.T, name string) {
 }
 
 // createEchelon creates an Echelon in ns and returns the live object.
-func createEchelon(t *testing.T, ns, name string, targets []apiv1.TargetSpec) *apiv1.Echelon {
+func createEchelon(t *testing.T, ns, name string, members map[string]apiv1.MemberSpec) *apiv1.Echelon {
 	t.Helper()
 	ech := &apiv1.Echelon{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name},
-		Spec:       apiv1.EchelonSpec{Targets: targets},
+		Spec:       apiv1.EchelonSpec{Members: members},
 	}
 	if err := envtestClient.Create(t.Context(), ech); err != nil {
 		t.Fatalf("create echelon: %v", err)
@@ -108,7 +108,7 @@ func createEchelon(t *testing.T, ns, name string, targets []apiv1.TargetSpec) *a
 	return ech
 }
 
-// createWidget creates a Widget in ns. ready is one of "True", "False", "" (no
+// createWidget creates a Widget in ns. ready is one of statusTrue, "False", "" (no
 // status — kstatus reports Current).
 func createWidget(t *testing.T, ns, name, ready string) *unstructured.Unstructured {
 	t.Helper()
@@ -119,7 +119,7 @@ func createWidget(t *testing.T, ns, name, ready string) *unstructured.Unstructur
 	if ready != "" {
 		_ = unstructured.SetNestedField(w.Object, int64(1), schemaPropStatus, "observedGeneration")
 		_ = unstructured.SetNestedSlice(w.Object, []any{
-			map[string]any{keyType: apiv1.ConditionReady, schemaPropStatus: ready, keyReason: "Test"},
+			map[string]any{keyType: apiv1.ConditionReady, schemaPropStatus: ready, keyReason: testReason},
 		}, schemaPropStatus, "conditions")
 		if err := envtestClient.Status().Update(t.Context(), w); err != nil {
 			t.Fatalf("update widget status: %v", err)
@@ -172,10 +172,10 @@ func stalled(ech *apiv1.Echelon) metav1.ConditionStatus {
 // 1. Happy path: an Echelon with one all-Current Widget member converges to Ready=True.
 func TestEnvtest_HappyPath_AllCurrent(t *testing.T) {
 	fix := newEnvFixture(t)
-	createWidget(t, fix.namespace, "w1", "True")
+	createWidget(t, fix.namespace, "w1", statusTrue)
 
-	ech := createEchelon(t, fix.namespace, "happy", []apiv1.TargetSpec{
-		{Group: groupTestAsCode, Kind: kindWidget, EmptySetPolicy: apiv1.EmptySetUnknown},
+	ech := createEchelon(t, fix.namespace, "happy", map[string]apiv1.MemberSpec{
+		widgetPlural: {Group: groupTestAsCode, Kind: kindWidget, EmptySetPolicy: apiv1.EmptySetUnknown},
 	})
 
 	// First reconcile adds the finalizer; second reconcile starts the informer.
@@ -199,8 +199,8 @@ func TestEnvtest_HappyPath_AllCurrent(t *testing.T) {
 // 2. Empty selector with NotReady policy yields Ready=False.
 func TestEnvtest_EmptySet_NotReadyPolicy(t *testing.T) {
 	fix := newEnvFixture(t)
-	ech := createEchelon(t, fix.namespace, "empty", []apiv1.TargetSpec{
-		{Group: groupTestAsCode, Kind: kindWidget, EmptySetPolicy: apiv1.EmptySetNotReady},
+	ech := createEchelon(t, fix.namespace, "empty", map[string]apiv1.MemberSpec{
+		widgetPlural: {Group: groupTestAsCode, Kind: kindWidget, EmptySetPolicy: apiv1.EmptySetNotReady},
 	})
 
 	for range 3 {
@@ -221,8 +221,8 @@ func TestEnvtest_EmptySet_NotReadyPolicy(t *testing.T) {
 func TestEnvtest_LateCRD_StalledThenConverges(t *testing.T) {
 	fix := newEnvFixture(t)
 
-	ech := createEchelon(t, fix.namespace, "late", []apiv1.TargetSpec{
-		{Group: "late.test.as-code.io", Kind: kindLate, EmptySetPolicy: apiv1.EmptySetUnknown},
+	ech := createEchelon(t, fix.namespace, memberLate, map[string]apiv1.MemberSpec{
+		"lates": {Group: "late.test.as-code.io", Kind: kindLate, EmptySetPolicy: apiv1.EmptySetUnknown},
 	})
 
 	// Initial reconcile: should set Stalled=True.
@@ -240,7 +240,7 @@ func TestEnvtest_LateCRD_StalledThenConverges(t *testing.T) {
 		Spec: apiextv1.CustomResourceDefinitionSpec{
 			Group: "late.test.as-code.io",
 			Names: apiextv1.CustomResourceDefinitionNames{
-				Plural: "lates", Singular: "late", Kind: kindLate, ListKind: "LateList",
+				Plural: "lates", Singular: memberLate, Kind: kindLate, ListKind: "LateList",
 			},
 			Scope: apiextv1.NamespaceScoped,
 			Versions: []apiextv1.CustomResourceDefinitionVersion{{
@@ -271,13 +271,13 @@ func TestEnvtest_LateCRD_StalledThenConverges(t *testing.T) {
 	})
 }
 
-// 4. Subscription diff: removing a target from spec.targets[] tears the
+// 4. Subscription diff: removing a member from spec.members tears the
 // informer down (registry GVKCount drops back).
 func TestEnvtest_SubscriptionDiff_RemovesInformer(t *testing.T) {
 	fix := newEnvFixture(t)
 
-	ech := createEchelon(t, fix.namespace, "diff", []apiv1.TargetSpec{
-		{Group: groupTestAsCode, Kind: kindWidget, EmptySetPolicy: apiv1.EmptySetUnknown},
+	ech := createEchelon(t, fix.namespace, "diff", map[string]apiv1.MemberSpec{
+		widgetPlural: {Group: groupTestAsCode, Kind: kindWidget, EmptySetPolicy: apiv1.EmptySetUnknown},
 	})
 	for range 3 {
 		_, _ = fix.reconciler.ReconcileObject(t.Context(), refresh(t, ech))
@@ -286,8 +286,8 @@ func TestEnvtest_SubscriptionDiff_RemovesInformer(t *testing.T) {
 		t.Fatalf("after subscribe GVKCount=%d, want 1", got)
 	}
 
-	// Edit spec to remove all targets requires MinItems=1 in CRD validation,
-	// so we instead delete the Echelon, which triggers the finalizer cleanup.
+	// Removing all members requires MinProperties=1 in CRD validation, so we
+	// instead delete the Echelon, which triggers the finalizer cleanup.
 	if err := envtestClient.Delete(t.Context(), refresh(t, ech)); err != nil {
 		t.Fatalf("delete echelon: %v", err)
 	}
@@ -302,6 +302,118 @@ func TestEnvtest_SubscriptionDiff_RemovesInformer(t *testing.T) {
 	}
 	if got := fix.registry.GVKCount(); got != 0 {
 		t.Fatalf("after delete GVKCount=%d, want 0", got)
+	}
+}
+
+// 5. CRD-level validation: an empty members map must be rejected on Create.
+func TestEnvtest_EmptyMembersMap_RejectedByCEL(t *testing.T) {
+	fix := newEnvFixture(t)
+
+	ech := &apiv1.Echelon{
+		ObjectMeta: metav1.ObjectMeta{Namespace: fix.namespace, Name: "empty-map"},
+		Spec:       apiv1.EchelonSpec{Members: map[string]apiv1.MemberSpec{}},
+	}
+	err := envtestClient.Create(t.Context(), ech)
+	if err == nil {
+		t.Fatalf("expected validation error for empty members map; got nil")
+	}
+	if !apierrors.IsInvalid(err) && !strings.Contains(err.Error(), "minProperties") && !strings.Contains(err.Error(), "Invalid") {
+		t.Errorf("expected Invalid/minProperties error, got %v", err)
+	}
+}
+
+// 6. CRD-level validation: a member key that violates the RFC-1123 label
+// regex must be rejected by the spec-level CEL XValidation.
+func TestEnvtest_InvalidMemberKey_RejectedByCEL(t *testing.T) {
+	fix := newEnvFixture(t)
+
+	ech := &apiv1.Echelon{
+		ObjectMeta: metav1.ObjectMeta{Namespace: fix.namespace, Name: "bad-key"},
+		Spec: apiv1.EchelonSpec{Members: map[string]apiv1.MemberSpec{
+			"BadKey_WithCaps": {Group: groupTestAsCode, Kind: kindWidget},
+		}},
+	}
+	err := envtestClient.Create(t.Context(), ech)
+	if err == nil {
+		t.Fatalf("expected CEL validation error for invalid key; got nil")
+	}
+	if !apierrors.IsInvalid(err) {
+		t.Errorf("expected Invalid error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "member keys") && !strings.Contains(err.Error(), "RFC-1123") {
+		t.Errorf("expected CEL message mentioning member-key rule, got %v", err)
+	}
+}
+
+// 7. Map-shape motivating case: two members with the *same* GVK but distinct
+// selectors. The registry must hold a single informer (one GVK), and each
+// member should converge to its own rollup with the expected resource count.
+func TestEnvtest_TwoMembersSameGVK_DistinctSelectors(t *testing.T) {
+	fix := newEnvFixture(t)
+
+	// Two widgets, distinct labels.
+	wA := newWidget(fix.namespace, "alpha", statusTrue)
+	wA.SetLabels(map[string]string{labelWave: "a"})
+	if err := envtestClient.Create(t.Context(), wA); err != nil {
+		t.Fatalf("create widget alpha: %v", err)
+	}
+	_ = unstructured.SetNestedField(wA.Object, int64(1), schemaPropStatus, "observedGeneration")
+	_ = unstructured.SetNestedSlice(wA.Object, []any{
+		map[string]any{keyType: apiv1.ConditionReady, schemaPropStatus: statusTrue, keyReason: testReason},
+	}, schemaPropStatus, "conditions")
+	if err := envtestClient.Status().Update(t.Context(), wA); err != nil {
+		t.Fatalf("status alpha: %v", err)
+	}
+
+	wB := newWidget(fix.namespace, "beta", statusTrue)
+	wB.SetLabels(map[string]string{labelWave: "b"})
+	if err := envtestClient.Create(t.Context(), wB); err != nil {
+		t.Fatalf("create widget beta: %v", err)
+	}
+	_ = unstructured.SetNestedField(wB.Object, int64(1), schemaPropStatus, "observedGeneration")
+	_ = unstructured.SetNestedSlice(wB.Object, []any{
+		map[string]any{keyType: apiv1.ConditionReady, schemaPropStatus: statusTrue, keyReason: testReason},
+	}, schemaPropStatus, "conditions")
+	if err := envtestClient.Status().Update(t.Context(), wB); err != nil {
+		t.Fatalf("status beta: %v", err)
+	}
+
+	ech := createEchelon(t, fix.namespace, "shared-gvk", map[string]apiv1.MemberSpec{
+		memberWaveA: {Group: groupTestAsCode, Kind: kindWidget,
+			Selector:       &metav1.LabelSelector{MatchLabels: map[string]string{labelWave: "a"}},
+			EmptySetPolicy: apiv1.EmptySetUnknown},
+		memberWaveB: {Group: groupTestAsCode, Kind: kindWidget,
+			Selector:       &metav1.LabelSelector{MatchLabels: map[string]string{labelWave: "b"}},
+			EmptySetPolicy: apiv1.EmptySetUnknown},
+	})
+
+	for range 3 {
+		_, _ = fix.reconciler.ReconcileObject(t.Context(), refresh(t, ech))
+	}
+	time.Sleep(informerWarmup)
+
+	reconcileToConvergence(t, fix, client.ObjectKeyFromObject(ech), func(e *apiv1.Echelon) error {
+		if ready(e) != metav1.ConditionTrue {
+			return fmt.Errorf("Ready=%s", ready(e))
+		}
+		if len(e.Status.Members) != 2 {
+			return fmt.Errorf("Members len=%d", len(e.Status.Members))
+		}
+		for _, name := range []string{"wave-a", "wave-b"} {
+			rollup, ok := e.Status.Members[name]
+			if !ok {
+				return fmt.Errorf("Members[%q] missing", name)
+			}
+			if rollup.Summary.Total != 1 || rollup.Summary.Current != 1 {
+				return fmt.Errorf("Members[%q].Summary = %+v", name, rollup.Summary)
+			}
+		}
+		return nil
+	})
+
+	// Exactly one informer for the Widget GVK, shared across the two members.
+	if got := fix.registry.GVKCount(); got != 1 {
+		t.Errorf("GVKCount = %d, want 1 (one informer per GVK regardless of member count)", got)
 	}
 }
 

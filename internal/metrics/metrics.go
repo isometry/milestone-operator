@@ -40,6 +40,7 @@ const (
 	labelStatus      = "status"
 	labelTargetGroup = "target_group"
 	labelTargetKind  = "target_kind"
+	labelMember      = "member"
 )
 
 var (
@@ -117,11 +118,11 @@ var (
 		Help:      "Status patch outcomes (changed, unchanged, error).",
 	}, []string{labelController, labelResult})
 
-	// TargetResolveErrors counts per-target resolution errors by reason.
-	TargetResolveErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
+	// MemberResolveErrors counts per-member resolution errors by reason.
+	MemberResolveErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: ns,
-		Name:      "target_resolve_errors_total",
-		Help:      "Per-target resolution errors, labelled by reason.",
+		Name:      "member_resolve_errors_total",
+		Help:      "Per-member resolution errors, labelled by reason.",
 	}, []string{labelController, labelReason})
 
 	// CRDEstablishedEvents counts CRD Established=True transitions observed by
@@ -153,7 +154,7 @@ func All() []prometheus.Collector {
 		DiscoveryCacheSize,
 		ReconcileStageDuration,
 		StatusPatchTotal,
-		TargetResolveErrors,
+		MemberResolveErrors,
 		CRDEstablishedEvents,
 		OwnersWoken,
 	}

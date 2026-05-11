@@ -36,7 +36,7 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          ClusterEchelon aggregates the kstatus of resources matching its targets
+          ClusterEchelon aggregates the kstatus of resources matching its members
           across namespaces, exposing a kstatus-compatible Ready condition.
         properties:
           apiVersion:
@@ -59,13 +59,10 @@ spec:
           spec:
             description: ClusterEchelonSpec defines the desired state of ClusterEchelon.
             properties:
-              targets:
-                description: |-
-                  Targets is the set of resource selections this ClusterEchelon aggregates
-                  over. Each target may scope its search via Namespaces or NamespaceSelector.
-                items:
+              members:
+                additionalProperties:
                   description: |-
-                    ClusterTargetSpec is TargetSpec extended with namespace selection.
+                    ClusterMemberSpec is MemberSpec extended with namespace selection.
                     Exactly one of Namespaces or NamespaceSelector may be set; both empty means
                     "all namespaces".
                   properties:
@@ -204,12 +201,18 @@ spec:
                   x-kubernetes-validations:
                   - message: namespaces and namespaceSelector are mutually exclusive
                     rule: '!(has(self.namespaces) && has(self.namespaceSelector))'
-                minItems: 1
-                type: array
-                x-kubernetes-list-type: atomic
+                description: |-
+                  Members is the set of resource selections this ClusterEchelon aggregates
+                  over, keyed by user-given names. Each member may scope its search via
+                  Namespaces or NamespaceSelector.
+                minProperties: 1
+                type: object
             required:
-            - targets
+            - members
             type: object
+            x-kubernetes-validations:
+            - message: member keys must be RFC-1123 labels
+              rule: self.members.all(k, k.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'))
           status:
             description: ClusterEchelonStatus is the observed state of ClusterEchelon.
             properties:
@@ -278,125 +281,12 @@ spec:
                   evaluation.
                 format: date-time
                 type: string
-              notReadyMembers:
-                description: |-
-                  NotReadyMembers lists members whose kstatus is not Current. Capped to
-                  avoid object-size explosions; Truncated indicates the cap was hit.
-                items:
+              members:
+                additionalProperties:
                   description: |-
-                    MemberStatus identifies an individual matched resource and the kstatus
-                    computed for it. Only members whose Status is not Current are surfaced on the
-                    owner (see EchelonStatusBase.NotReadyMembers).
-                  properties:
-                    group:
-                      description: Group is the API group of the member resource.
-                        Empty for the core group.
-                      type: string
-                    kind:
-                      description: Kind is the API Kind of the member resource.
-                      type: string
-                    message:
-                      description: |-
-                        Message is the kstatus message for this member when one was provided by
-                        sigs.k8s.io/cli-utils.
-                      type: string
-                    name:
-                      description: Name is the name of the member resource.
-                      type: string
-                    namespace:
-                      description: |-
-                        Namespace is the namespace of the member resource. Empty when the
-                        resource is cluster-scoped.
-                      type: string
-                    reason:
-                      description: |-
-                        Reason is the kstatus reason for this member when one was provided by
-                        sigs.k8s.io/cli-utils.
-                      type: string
-                    status:
-                      description: |-
-                        Status is the kstatus computed by sigs.k8s.io/cli-utils for this
-                        member.
-                      enum:
-                      - Current
-                      - InProgress
-                      - Failed
-                      - NotFound
-                      - Terminating
-                      - Unknown
-                      type: string
-                    version:
-                      description: Version is the API version of the member resource.
-                      type: string
-                  required:
-                  - kind
-                  - name
-                  - status
-                  - version
-                  type: object
-                type: array
-              observedGeneration:
-                description: |-
-                  ObservedGeneration mirrors metadata.generation at the time of the last
-                  successful reconcile.
-                format: int64
-                type: integer
-              summary:
-                description: Summary aggregates member counters across all targets.
-                properties:
-                  current:
-                    description: Current counts members whose kstatus is Current (steady-state
-                      ready).
-                    format: int32
-                    type: integer
-                  failed:
-                    description: Failed counts members whose kstatus is Failed.
-                    format: int32
-                    type: integer
-                  inProgress:
-                    description: InProgress counts members whose kstatus is InProgress
-                      (still converging).
-                    format: int32
-                    type: integer
-                  notFound:
-                    description: |-
-                      NotFound counts members whose kstatus is NotFound (selector matched a
-                      name but the resource is absent).
-                    format: int32
-                    type: integer
-                  terminating:
-                    description: |-
-                      Terminating counts members whose kstatus is Terminating (deletion in
-                      progress).
-                    format: int32
-                    type: integer
-                  total:
-                    description: |-
-                      Total is the count of resources currently matched by the target's
-                      selector. Total == sum of all the other buckets.
-                    format: int32
-                    type: integer
-                  unknown:
-                    description: Unknown counts members whose kstatus could not be
-                      determined.
-                    format: int32
-                    type: integer
-                required:
-                - current
-                - failed
-                - inProgress
-                - notFound
-                - terminating
-                - total
-                - unknown
-                type: object
-              targets:
-                description: Targets carries per-target rollups in spec order.
-                items:
-                  description: |-
-                    TargetRollup is the per-target aggregated readiness reported on the owner.
-                    One TargetRollup is produced for every entry in spec.targets, in the same
-                    order, regardless of whether discovery succeeded.
+                    MemberRollup is the per-member aggregated readiness reported on the owner.
+                    One MemberRollup is produced for every entry in spec.members, keyed by the
+                    same map key, regardless of whether discovery succeeded.
                   properties:
                     group:
                       description: |-
@@ -408,9 +298,9 @@ spec:
                       type: string
                     ready:
                       description: |-
-                        Ready is True when every selected member is Current; False when any
-                        member is Failed or NotFound; Unknown otherwise (or per emptySetPolicy
-                        when no members match).
+                        Ready is True when every selected resource is Current; False when any
+                        resource is Failed or NotFound; Unknown otherwise (or per emptySetPolicy
+                        when no resources match).
                       enum:
                       - "True"
                       - "False"
@@ -419,46 +309,46 @@ spec:
                     reason:
                       description: |-
                         Reason is a short machine-readable code summarising why Ready has its
-                        current value (e.g. AllMembersReady, MembersNotReady, EmptySet).
+                        current value (e.g. AllResourcesReady, ResourcesNotReady, EmptySet).
                       type: string
                     summary:
                       description: Summary holds the per-kstatus-bucket counts that
                         produced Ready.
                       properties:
                         current:
-                          description: Current counts members whose kstatus is Current
+                          description: Current counts resources whose kstatus is Current
                             (steady-state ready).
                           format: int32
                           type: integer
                         failed:
-                          description: Failed counts members whose kstatus is Failed.
+                          description: Failed counts resources whose kstatus is Failed.
                           format: int32
                           type: integer
                         inProgress:
-                          description: InProgress counts members whose kstatus is
+                          description: InProgress counts resources whose kstatus is
                             InProgress (still converging).
                           format: int32
                           type: integer
                         notFound:
                           description: |-
-                            NotFound counts members whose kstatus is NotFound (selector matched a
+                            NotFound counts resources whose kstatus is NotFound (selector matched a
                             name but the resource is absent).
                           format: int32
                           type: integer
                         terminating:
                           description: |-
-                            Terminating counts members whose kstatus is Terminating (deletion in
+                            Terminating counts resources whose kstatus is Terminating (deletion in
                             progress).
                           format: int32
                           type: integer
                         total:
                           description: |-
-                            Total is the count of resources currently matched by the target's
+                            Total is the count of resources currently matched by the member's
                             selector. Total == sum of all the other buckets.
                           format: int32
                           type: integer
                         unknown:
-                          description: Unknown counts members whose kstatus could
+                          description: Unknown counts resources whose kstatus could
                             not be determined.
                           format: int32
                           type: integer
@@ -481,9 +371,123 @@ spec:
                   - ready
                   - summary
                   type: object
+                description: Members carries per-member rollups, keyed identically
+                  to spec.members.
+                type: object
+              notReadyResources:
+                description: |-
+                  NotReadyResources lists resources whose kstatus is not Current. Capped to
+                  avoid object-size explosions; Truncated indicates the cap was hit.
+                items:
+                  description: |-
+                    ResourceStatus identifies an individual matched resource and the kstatus
+                    computed for it. Only resources whose Status is not Current are surfaced on
+                    the owner (see EchelonStatusBase.NotReadyResources).
+                  properties:
+                    group:
+                      description: Group is the API group of the resource. Empty for
+                        the core group.
+                      type: string
+                    kind:
+                      description: Kind is the API Kind of the resource.
+                      type: string
+                    message:
+                      description: |-
+                        Message is the kstatus message for this resource when one was provided
+                        by sigs.k8s.io/cli-utils.
+                      type: string
+                    name:
+                      description: Name is the name of the resource.
+                      type: string
+                    namespace:
+                      description: |-
+                        Namespace is the namespace of the resource. Empty when the resource is
+                        cluster-scoped.
+                      type: string
+                    reason:
+                      description: |-
+                        Reason is the kstatus reason for this resource when one was provided by
+                        sigs.k8s.io/cli-utils.
+                      type: string
+                    status:
+                      description: |-
+                        Status is the kstatus computed by sigs.k8s.io/cli-utils for this
+                        resource.
+                      enum:
+                      - Current
+                      - InProgress
+                      - Failed
+                      - NotFound
+                      - Terminating
+                      - Unknown
+                      type: string
+                    version:
+                      description: Version is the API version of the resource.
+                      type: string
+                  required:
+                  - kind
+                  - name
+                  - status
+                  - version
+                  type: object
                 type: array
+              observedGeneration:
+                description: |-
+                  ObservedGeneration mirrors metadata.generation at the time of the last
+                  successful reconcile.
+                format: int64
+                type: integer
+              summary:
+                description: Summary aggregates resource counters across all members.
+                properties:
+                  current:
+                    description: Current counts resources whose kstatus is Current
+                      (steady-state ready).
+                    format: int32
+                    type: integer
+                  failed:
+                    description: Failed counts resources whose kstatus is Failed.
+                    format: int32
+                    type: integer
+                  inProgress:
+                    description: InProgress counts resources whose kstatus is InProgress
+                      (still converging).
+                    format: int32
+                    type: integer
+                  notFound:
+                    description: |-
+                      NotFound counts resources whose kstatus is NotFound (selector matched a
+                      name but the resource is absent).
+                    format: int32
+                    type: integer
+                  terminating:
+                    description: |-
+                      Terminating counts resources whose kstatus is Terminating (deletion in
+                      progress).
+                    format: int32
+                    type: integer
+                  total:
+                    description: |-
+                      Total is the count of resources currently matched by the member's
+                      selector. Total == sum of all the other buckets.
+                    format: int32
+                    type: integer
+                  unknown:
+                    description: Unknown counts resources whose kstatus could not
+                      be determined.
+                    format: int32
+                    type: integer
+                required:
+                - current
+                - failed
+                - inProgress
+                - notFound
+                - terminating
+                - total
+                - unknown
+                type: object
               truncated:
-                description: Truncated is true when NotReadyMembers was capped.
+                description: Truncated is true when NotReadyResources was capped.
                 type: boolean
             type: object
         required:

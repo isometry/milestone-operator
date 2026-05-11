@@ -83,7 +83,7 @@ func (w *CRDWatcher) wakeEchelons(ctx context.Context, group, kind string) error
 	}
 	for i := range list.Items {
 		e := &list.Items[i]
-		if !ownsKind(e.Spec.Targets, group, kind) {
+		if !ownsKind(e.Spec.Members, group, kind) {
 			continue
 		}
 		w.EchelonEvents <- event.GenericEvent{Object: e}
@@ -99,7 +99,7 @@ func (w *CRDWatcher) wakeClusterEchelons(ctx context.Context, group, kind string
 	}
 	for i := range list.Items {
 		ce := &list.Items[i]
-		if !ownsClusterKind(ce.Spec.Targets, group, kind) {
+		if !ownsClusterKind(ce.Spec.Members, group, kind) {
 			continue
 		}
 		w.CEchelonEvents <- event.GenericEvent{Object: ce}
@@ -125,18 +125,18 @@ func crdEstablished(crd *apiextv1.CustomResourceDefinition) bool {
 	return false
 }
 
-func ownsKind(targets []apiv1.TargetSpec, group, kind string) bool {
-	for _, t := range targets {
-		if t.Group == group && t.Kind == kind {
+func ownsKind(members map[string]apiv1.MemberSpec, group, kind string) bool {
+	for _, m := range members {
+		if m.Group == group && m.Kind == kind {
 			return true
 		}
 	}
 	return false
 }
 
-func ownsClusterKind(targets []apiv1.ClusterTargetSpec, group, kind string) bool {
-	for _, t := range targets {
-		if t.Group == group && t.Kind == kind {
+func ownsClusterKind(members map[string]apiv1.ClusterMemberSpec, group, kind string) bool {
+	for _, m := range members {
+		if m.Group == group && m.Kind == kind {
 			return true
 		}
 	}

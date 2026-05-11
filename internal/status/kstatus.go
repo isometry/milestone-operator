@@ -16,10 +16,10 @@ import (
 )
 
 // Compute computes the kstatus of an unstructured resource and lifts it into
-// a Member ready for reduction. Errors and nil results are reported as Unknown.
-func Compute(u *unstructured.Unstructured) Member {
+// a Resource ready for reduction. Errors and nil results are reported as Unknown.
+func Compute(u *unstructured.Unstructured) Resource {
 	gvk := u.GroupVersionKind()
-	m := Member{
+	r := Resource{
 		Group:     gvk.Group,
 		Version:   gvk.Version,
 		Kind:      gvk.Kind,
@@ -28,15 +28,15 @@ func Compute(u *unstructured.Unstructured) Member {
 	}
 	res, err := kstatus.Compute(u)
 	if err != nil {
-		m.Status = "Unknown"
-		m.Message = err.Error()
-		return m
+		r.Status = "Unknown"
+		r.Message = err.Error()
+		return r
 	}
 	if res == nil {
-		m.Status = "Unknown"
-		return m
+		r.Status = "Unknown"
+		return r
 	}
-	m.Status = res.Status.String()
-	m.Message = res.Message
-	return m
+	r.Status = res.Status.String()
+	r.Message = res.Message
+	return r
 }

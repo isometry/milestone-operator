@@ -56,100 +56,132 @@ func newDisc() discovery.Resolver {
 			},
 		}},
 		resources: map[string]*metav1.APIResourceList{
-			gvKustomizeV1: {APIResources: []metav1.APIResource{{Name: "kustomizations", Kind: kindKustomization, Namespaced: true}}},
+			gvKustomizeV1: {APIResources: []metav1.APIResource{{Name: memberKustomizations, Kind: kindKustomization, Namespaced: true}}},
 			gvRBACv1:      {APIResources: []metav1.APIResource{{Name: "clusterroles", Kind: kindClusterRole, Namespaced: false}}},
 		},
 	}
 	return discovery.NewResolver(fd, time.Hour)
 }
 
-func TestEchelonAdapter_Targets_NamespaceMatcherIsOwnNamespace(t *testing.T) {
+func TestEchelonAdapter_Members_NamespaceMatcherIsOwnNamespace(t *testing.T) {
 	ech := &apiv1.Echelon{
 		ObjectMeta: metav1.ObjectMeta{Namespace: nsFluxSystem, Name: "wave-0"},
-		Spec: apiv1.EchelonSpec{Targets: []apiv1.TargetSpec{
-			{Group: groupKustomize, Kind: kindKustomization, EmptySetPolicy: apiv1.EmptySetUnknown},
+		Spec: apiv1.EchelonSpec{Members: map[string]apiv1.MemberSpec{
+			memberKustomizations: {Group: groupKustomize, Kind: kindKustomization, EmptySetPolicy: apiv1.EmptySetUnknown},
 		}},
 	}
 	a := controller.NewEchelonAdapter(ech)
-	targets, errs := a.Targets(t.Context(), newDisc())
+	members, errs := a.Members(t.Context(), newDisc())
 	if len(errs) != 0 {
 		t.Fatalf("unexpected errs: %v", errs)
 	}
-	if len(targets) != 1 {
-		t.Fatalf("targets len = %d, want 1", len(targets))
+	if len(members) != 1 {
+		t.Fatalf("members len = %d, want 1", len(members))
 	}
-	tgt := targets[0]
-	if tgt.GVK.Kind != kindKustomization || tgt.GVK.Version != "v1" {
-		t.Errorf("GVK = %v", tgt.GVK)
+	m := members[0]
+	if m.Name != memberKustomizations {
+		t.Errorf("Name = %q, want kustomizations", m.Name)
 	}
-	if tgt.NamespaceMatcher == nil {
+	if m.GVK.Kind != kindKustomization || m.GVK.Version != "v1" {
+		t.Errorf("GVK = %v", m.GVK)
+	}
+	if m.NamespaceMatcher == nil {
 		t.Fatalf("NamespaceMatcher should be non-nil for Echelon")
 	}
-	if !tgt.NamespaceMatcher(nsFluxSystem) {
+	if !m.NamespaceMatcher(nsFluxSystem) {
 		t.Errorf("matcher should accept own namespace")
 	}
-	if tgt.NamespaceMatcher("other") {
+	if m.NamespaceMatcher("other") {
 		t.Errorf("matcher should reject foreign namespace")
 	}
 }
 
-// TestEchelonAdapter_Targets_ClusterScopedKind_IsScopeMismatch guards the
+// TestEchelonAdapter_Members_ClusterScopedKind_IsScopeMismatch guards the
 // asymmetric scope contract: an Echelon (namespaced) can only target
 // namespaced resources. Pointing one at a cluster-scoped kind must be
-// surfaced as a TargetError rather than silently starting an informer whose
+// surfaced as a MemberError rather than silently starting an informer whose
 // namespace matcher will filter everything out.
-func TestEchelonAdapter_Targets_ClusterScopedKind_IsScopeMismatch(t *testing.T) {
+func TestEchelonAdapter_Members_ClusterScopedKind_IsScopeMismatch(t *testing.T) {
 	ech := &apiv1.Echelon{
 		ObjectMeta: metav1.ObjectMeta{Namespace: nsFluxSystem, Name: "x"},
-		Spec: apiv1.EchelonSpec{Targets: []apiv1.TargetSpec{
-			{Group: groupRBAC, Kind: kindClusterRole},
+		Spec: apiv1.EchelonSpec{Members: map[string]apiv1.MemberSpec{
+			memberRoles: {Group: groupRBAC, Kind: kindClusterRole},
 		}},
 	}
-	targets, errs := controller.NewEchelonAdapter(ech).Targets(t.Context(), newDisc())
-	if len(targets) != 0 {
-		t.Errorf("scope mismatch should drop the target; got %d", len(targets))
+	members, errs := controller.NewEchelonAdapter(ech).Members(t.Context(), newDisc())
+	if len(members) != 0 {
+		t.Errorf("scope mismatch should drop the member; got %d", len(members))
 	}
 	if len(errs) != 1 || errs[0].Reason != apiv1.ReasonNamespaceScopeMismatch {
 		t.Errorf("errs = %+v, want one ReasonNamespaceScopeMismatch", errs)
 	}
+	if errs[0].Name != memberRoles {
+		t.Errorf("err Name = %q, want roles", errs[0].Name)
+	}
 }
 
-func TestEchelonAdapter_Targets_DiscoveryFailureReportsTargetError(t *testing.T) {
+func TestEchelonAdapter_Members_DiscoveryFailureReportsMemberError(t *testing.T) {
 	ech := &apiv1.Echelon{
 		ObjectMeta: metav1.ObjectMeta{Namespace: nsFluxSystem, Name: "x"},
-		Spec: apiv1.EchelonSpec{Targets: []apiv1.TargetSpec{
-			{Group: "missing.io", Kind: kindLate},
+		Spec: apiv1.EchelonSpec{Members: map[string]apiv1.MemberSpec{
+			memberLate: {Group: "missing.io", Kind: kindLate},
 		}},
 	}
 	a := controller.NewEchelonAdapter(ech)
-	targets, errs := a.Targets(t.Context(), newDisc())
-	if len(targets) != 0 {
-		t.Errorf("targets should be empty when discovery fails")
+	members, errs := a.Members(t.Context(), newDisc())
+	if len(members) != 0 {
+		t.Errorf("members should be empty when discovery fails")
 	}
 	if len(errs) != 1 || errs[0].Reason != apiv1.ReasonGVKNotEstablished {
 		t.Errorf("errs = %+v, want one ReasonGVKNotEstablished", errs)
 	}
+	if errs[0].Name != memberLate {
+		t.Errorf("err Name = %q, want late", errs[0].Name)
+	}
 }
 
-func TestClusterEchelonAdapter_Targets_NamespaceListMatcher(t *testing.T) {
+func TestEchelonAdapter_Members_SortedByKey(t *testing.T) {
+	ech := &apiv1.Echelon{
+		ObjectMeta: metav1.ObjectMeta{Namespace: nsFluxSystem, Name: "x"},
+		Spec: apiv1.EchelonSpec{Members: map[string]apiv1.MemberSpec{
+			"zeta":  {Group: groupKustomize, Kind: kindKustomization},
+			"alpha": {Group: groupKustomize, Kind: kindKustomization},
+			"mid":   {Group: groupKustomize, Kind: kindKustomization},
+		}},
+	}
+	members, errs := controller.NewEchelonAdapter(ech).Members(t.Context(), newDisc())
+	if len(errs) != 0 {
+		t.Fatalf("unexpected errs: %v", errs)
+	}
+	want := []string{"alpha", "mid", "zeta"}
+	for i, m := range members {
+		if m.Name != want[i] {
+			t.Errorf("members[%d].Name = %q, want %q", i, m.Name, want[i])
+		}
+	}
+}
+
+func TestClusterEchelonAdapter_Members_NamespaceListMatcher(t *testing.T) {
 	ce := &apiv1.ClusterEchelon{
 		ObjectMeta: metav1.ObjectMeta{Name: namePlatform},
-		Spec: apiv1.ClusterEchelonSpec{Targets: []apiv1.ClusterTargetSpec{{
-			TargetSpec: apiv1.TargetSpec{Group: groupKustomize, Kind: kindKustomization},
-			Namespaces: []string{nsFluxSystem, "team-a"},
-		}}},
+		Spec: apiv1.ClusterEchelonSpec{Members: map[string]apiv1.ClusterMemberSpec{
+			memberKustomizations: {
+				MemberSpec: apiv1.MemberSpec{Group: groupKustomize, Kind: kindKustomization},
+				Namespaces: []string{nsFluxSystem, "team-a"},
+			},
+		}},
 	}
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).Build()
 	factory := controller.NewClusterEchelonAdapterFactory(cl)
 	a := factory(ce)
-	targets, errs := a.Targets(t.Context(), newDisc())
+	members, errs := a.Members(t.Context(), newDisc())
 	if len(errs) != 0 {
 		t.Fatalf("unexpected errs: %v", errs)
 	}
-	if len(targets) != 1 {
-		t.Fatalf("targets len = %d, want 1", len(targets))
+	if len(members) != 1 {
+		t.Fatalf("members len = %d, want 1", len(members))
 	}
-	m := targets[0].NamespaceMatcher
+	m := members[0].NamespaceMatcher
 	if !m(nsFluxSystem) || !m("team-a") {
 		t.Errorf("matcher should accept listed namespaces")
 	}
@@ -158,23 +190,25 @@ func TestClusterEchelonAdapter_Targets_NamespaceListMatcher(t *testing.T) {
 	}
 }
 
-func TestClusterEchelonAdapter_Targets_NamespaceSelectorListsNamespaces(t *testing.T) {
+func TestClusterEchelonAdapter_Members_NamespaceSelectorListsNamespaces(t *testing.T) {
 	ns1 := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-a", Labels: map[string]string{labelTier: namePlatform}}}
 	ns2 := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-b", Labels: map[string]string{labelTier: "data"}}}
 	ce := &apiv1.ClusterEchelon{
 		ObjectMeta: metav1.ObjectMeta{Name: namePlatform},
-		Spec: apiv1.ClusterEchelonSpec{Targets: []apiv1.ClusterTargetSpec{{
-			TargetSpec:        apiv1.TargetSpec{Group: groupKustomize, Kind: kindKustomization},
-			NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{labelTier: namePlatform}},
-		}}},
+		Spec: apiv1.ClusterEchelonSpec{Members: map[string]apiv1.ClusterMemberSpec{
+			memberKustomizations: {
+				MemberSpec:        apiv1.MemberSpec{Group: groupKustomize, Kind: kindKustomization},
+				NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{labelTier: namePlatform}},
+			},
+		}},
 	}
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(ns1, ns2).Build()
 	factory := controller.NewClusterEchelonAdapterFactory(cl)
-	targets, errs := factory(ce).Targets(t.Context(), newDisc())
+	members, errs := factory(ce).Members(t.Context(), newDisc())
 	if len(errs) != 0 {
 		t.Fatalf("errs: %v", errs)
 	}
-	m := targets[0].NamespaceMatcher
+	m := members[0].NamespaceMatcher
 	if !m("team-a") {
 		t.Errorf("matcher should accept team-a (label match)")
 	}
@@ -183,38 +217,42 @@ func TestClusterEchelonAdapter_Targets_NamespaceSelectorListsNamespaces(t *testi
 	}
 }
 
-func TestClusterEchelonAdapter_Targets_ClusterScopedKindWithNamespaces_IsScopeMismatch(t *testing.T) {
+func TestClusterEchelonAdapter_Members_ClusterScopedKindWithNamespaces_IsScopeMismatch(t *testing.T) {
 	ce := &apiv1.ClusterEchelon{
 		ObjectMeta: metav1.ObjectMeta{Name: "x"},
-		Spec: apiv1.ClusterEchelonSpec{Targets: []apiv1.ClusterTargetSpec{{
-			TargetSpec: apiv1.TargetSpec{Group: groupRBAC, Kind: kindClusterRole},
-			Namespaces: []string{nsFluxSystem},
-		}}},
+		Spec: apiv1.ClusterEchelonSpec{Members: map[string]apiv1.ClusterMemberSpec{
+			memberRoles: {
+				MemberSpec: apiv1.MemberSpec{Group: groupRBAC, Kind: kindClusterRole},
+				Namespaces: []string{nsFluxSystem},
+			},
+		}},
 	}
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).Build()
 	factory := controller.NewClusterEchelonAdapterFactory(cl)
-	targets, errs := factory(ce).Targets(t.Context(), newDisc())
-	if len(targets) != 0 {
-		t.Errorf("scope mismatch should drop the target; got %d", len(targets))
+	members, errs := factory(ce).Members(t.Context(), newDisc())
+	if len(members) != 0 {
+		t.Errorf("scope mismatch should drop the member; got %d", len(members))
 	}
 	if len(errs) != 1 || errs[0].Reason != apiv1.ReasonNamespaceScopeMismatch {
 		t.Errorf("errs = %+v, want one ReasonNamespaceScopeMismatch", errs)
 	}
 }
 
-func TestClusterEchelonAdapter_Targets_NoNamespaceFilter_AllNamespaces(t *testing.T) {
+func TestClusterEchelonAdapter_Members_NoNamespaceFilter_AllNamespaces(t *testing.T) {
 	ce := &apiv1.ClusterEchelon{
 		ObjectMeta: metav1.ObjectMeta{Name: "global"},
-		Spec: apiv1.ClusterEchelonSpec{Targets: []apiv1.ClusterTargetSpec{{
-			TargetSpec: apiv1.TargetSpec{Group: groupKustomize, Kind: kindKustomization},
-		}}},
+		Spec: apiv1.ClusterEchelonSpec{Members: map[string]apiv1.ClusterMemberSpec{
+			memberKustomizations: {
+				MemberSpec: apiv1.MemberSpec{Group: groupKustomize, Kind: kindKustomization},
+			},
+		}},
 	}
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).Build()
-	targets, errs := controller.NewClusterEchelonAdapterFactory(cl)(ce).Targets(t.Context(), newDisc())
+	members, errs := controller.NewClusterEchelonAdapterFactory(cl)(ce).Members(t.Context(), newDisc())
 	if len(errs) != 0 {
 		t.Fatalf("errs: %v", errs)
 	}
-	if targets[0].NamespaceMatcher != nil {
+	if members[0].NamespaceMatcher != nil {
 		t.Errorf("nil matcher expected when no namespace filter (means all namespaces)")
 	}
 }
@@ -222,20 +260,20 @@ func TestClusterEchelonAdapter_Targets_NoNamespaceFilter_AllNamespaces(t *testin
 func TestEchelonAdapter_PassesScopeFromDiscovery(t *testing.T) {
 	ech := &apiv1.Echelon{
 		ObjectMeta: metav1.ObjectMeta{Namespace: nsFluxSystem, Name: "x"},
-		Spec: apiv1.EchelonSpec{Targets: []apiv1.TargetSpec{
-			{Group: groupKustomize, Kind: kindKustomization},
+		Spec: apiv1.EchelonSpec{Members: map[string]apiv1.MemberSpec{
+			"k": {Group: groupKustomize, Kind: kindKustomization},
 		}},
 	}
-	targets, _ := controller.NewEchelonAdapter(ech).Targets(t.Context(), newDisc())
-	if targets[0].Scope != apimeta.RESTScopeNameNamespace {
-		t.Errorf("scope = %v, want Namespaced", targets[0].Scope)
+	members, _ := controller.NewEchelonAdapter(ech).Members(t.Context(), newDisc())
+	if members[0].Scope != apimeta.RESTScopeNameNamespace {
+		t.Errorf("scope = %v, want Namespaced", members[0].Scope)
 	}
 }
 
 // Sanity: the discovery resolver is required.
-func TestEchelonAdapter_NilResolverIsTargetError(t *testing.T) {
+func TestEchelonAdapter_NilResolverIsMemberError(t *testing.T) {
 	ech := &apiv1.Echelon{ObjectMeta: metav1.ObjectMeta{Namespace: "x", Name: "x"}}
-	_, errs := controller.NewEchelonAdapter(ech).Targets(t.Context(), nil)
+	_, errs := controller.NewEchelonAdapter(ech).Members(t.Context(), nil)
 	if len(errs) == 0 || errs[0].Reason != apiv1.ReasonDiscoveryFailed {
 		t.Errorf("expected DiscoveryFailed; got %+v", errs)
 	}
@@ -245,13 +283,13 @@ func TestEchelonAdapter_NilResolverIsTargetError(t *testing.T) {
 func TestEchelonAdapter_GVK(t *testing.T) {
 	ech := &apiv1.Echelon{
 		ObjectMeta: metav1.ObjectMeta{Namespace: nsFluxSystem, Name: "x"},
-		Spec: apiv1.EchelonSpec{Targets: []apiv1.TargetSpec{
-			{Group: groupKustomize, Kind: kindKustomization},
+		Spec: apiv1.EchelonSpec{Members: map[string]apiv1.MemberSpec{
+			"k": {Group: groupKustomize, Kind: kindKustomization},
 		}},
 	}
-	targets, _ := controller.NewEchelonAdapter(ech).Targets(t.Context(), newDisc())
+	members, _ := controller.NewEchelonAdapter(ech).Members(t.Context(), newDisc())
 	wantGVK := schema.GroupVersionKind{Group: groupKustomize, Version: "v1", Kind: kindKustomization}
-	if targets[0].GVK != wantGVK {
-		t.Errorf("GVK = %v, want %v", targets[0].GVK, wantGVK)
+	if members[0].GVK != wantGVK {
+		t.Errorf("GVK = %v, want %v", members[0].GVK, wantGVK)
 	}
 }

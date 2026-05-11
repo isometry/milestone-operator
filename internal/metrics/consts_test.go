@@ -26,4 +26,5 @@ const (
 	keyStatus      = "status"
 	keyTargetGroup = "target_group"
 	keyTargetKind  = "target_kind"
+	keyMember      = "member"
 )

@@ -3,7 +3,7 @@
 # administrators can replace it with a narrower role for restricted
 # environments.
 #
-# Rule of thumb: every group/kind that may appear under spec.targets[].group/kind
+# Rule of thumb: every group/kind that may appear under spec.members.<name>.group/kind
 # must be reachable by these rules. Add or remove groups to suit your
 # deployment.
 apiVersion: rbac.authorization.k8s.io/v1

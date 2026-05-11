@@ -14,6 +14,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 	"time"
 
@@ -40,13 +41,12 @@ import (
 // also wakes us on Established=True, so this is just a safety net.
 const stalledRequeue = 30 * time.Second
 
-// defaultMemberCap caps NotReadyMembers to keep the status object below the
+// defaultResourceCap caps NotReadyResources to keep the status object below the
 // 1MiB etcd limit even on huge selectors.
-const defaultMemberCap = 50
+const defaultResourceCap = 50
 
-// defaultStalledErrorCap caps the per-target errors enumerated in the Stalled
-// condition message. Beyond this we append a "... N more" suffix. Mirrors
-// defaultMemberCap's role: bound the worst-case condition size.
+// defaultStalledErrorCap caps the per-member errors enumerated in the Stalled
+// condition message. Beyond this we append a "... N more" suffix.
 const defaultStalledErrorCap = 50
 
 // Reconciler is the GVK-agnostic reconcile pipeline shared by Echelon and
@@ -63,10 +63,10 @@ type Reconciler[T client.Object] struct {
 	NewAdapter func(T) OwnerAdapter
 	Controller string
 
-	// Now, MemberCap and StalledErrorCap have sensible defaults; injectable
+	// Now, ResourceCap and StalledErrorCap have sensible defaults; injectable
 	// for tests.
 	Now             func() time.Time
-	MemberCap       int
+	ResourceCap     int
 	StalledErrorCap int
 }
 
@@ -95,30 +95,30 @@ func (r *Reconciler[T]) ReconcileObject(ctx context.Context, obj T) (ctrl.Result
 	log.V(1).Info("reconciling", "generation", obj.GetGeneration())
 	prior := *adapter.Status().DeepCopy()
 
-	targets, targetErrs := func() ([]NormalizedTarget, []TargetError) {
+	members, memberErrs := func() ([]NormalizedMember, []MemberError) {
 		defer r.observe(metrics.StageDiscovery)()
-		return adapter.Targets(ctx, r.Resolver)
+		return adapter.Members(ctx, r.Resolver)
 	}()
-	for _, te := range targetErrs {
-		metrics.TargetResolveErrors.WithLabelValues(r.Controller, te.Reason).Inc()
-		log.V(1).Info("target discovery failed",
-			"index", te.Index, "group", te.Group, "kind", te.Kind,
-			"reason", te.Reason, "err", te.Err)
+	for _, me := range memberErrs {
+		metrics.MemberResolveErrors.WithLabelValues(r.Controller, me.Reason).Inc()
+		log.V(1).Info("member discovery failed",
+			"name", me.Name, "group", me.Group, "kind", me.Kind,
+			"reason", me.Reason, "err", me.Err)
 	}
-	log.V(1).Info("discovery resolved", "targets", len(targets), "errors", len(targetErrs))
+	log.V(1).Info("discovery resolved", "members", len(members), "errors", len(memberErrs))
 
-	subscribeErrs := r.reconcileSubscriptions(ownerKey, targets)
+	subscribeErrs := r.reconcileSubscriptions(ownerKey, members)
 	for _, se := range subscribeErrs {
 		log.V(1).Info("subscription failed",
-			"index", se.Index, "group", se.Group, "version", se.Version, "kind", se.Kind,
+			"name", se.Name, "group", se.Group, "version", se.Version, "kind", se.Kind,
 			"reason", se.Reason, "err", se.Err)
 	}
-	targetErrs = append(targetErrs, subscribeErrs...)
+	memberErrs = append(memberErrs, subscribeErrs...)
 
-	rollups, notReady := r.evaluateTargets(targets)
+	rollups, notReady := r.evaluateMembers(members)
 	log.V(1).Info("evaluated", "rollups", len(rollups), "notReady", len(notReady))
 
-	r.applyStatus(adapter.Status(), obj.GetGeneration(), rollups, notReady, targetErrs)
+	r.applyStatus(adapter.Status(), obj.GetGeneration(), rollups, notReady, memberErrs)
 
 	if !statusEqualIgnoringTimestamp(prior, *adapter.Status()) {
 		adapter.Status().LastEvaluatedTime = metav1.NewTime(r.now())
@@ -169,32 +169,33 @@ func (r *Reconciler[T]) finalize(ctx context.Context, obj T, ownerKey watcher.Ow
 	return ctrl.Result{}, nil
 }
 
-func (r *Reconciler[T]) reconcileSubscriptions(owner watcher.OwnerKey, desired []NormalizedTarget) []TargetError {
+func (r *Reconciler[T]) reconcileSubscriptions(owner watcher.OwnerKey, desired []NormalizedMember) []MemberError {
 	defer r.observe(metrics.StageSubscriptions)()
 
-	desiredSet := make(map[schema.GroupVersionKind]NormalizedTarget, len(desired))
-	for _, t := range desired {
-		desiredSet[t.GVK] = t
+	// One informer per unique GVK across members; refcounted by ownerKey.
+	desiredGVKs := make(map[schema.GroupVersionKind]struct{}, len(desired))
+	for _, m := range desired {
+		desiredGVKs[m.GVK] = struct{}{}
 	}
 	for _, gvk := range r.Registry.GVKsByOwner(owner) {
-		if _, ok := desiredSet[gvk]; !ok {
+		if _, ok := desiredGVKs[gvk]; !ok {
 			r.Registry.Unsubscribe(gvk, owner)
 		}
 	}
 
-	var errs []TargetError
-	for _, t := range desired {
+	var errs []MemberError
+	for _, m := range desired {
 		sub := watcher.Subscriber{
 			Owner:            owner,
-			Selector:         t.Selector,
-			NamespaceMatcher: t.NamespaceMatcher,
+			Selector:         m.Selector,
+			NamespaceMatcher: m.NamespaceMatcher,
 		}
-		if err := r.Registry.Subscribe(t.GVK, t.Scope, sub); err != nil {
-			errs = append(errs, TargetError{
-				Index:   t.Index,
-				Group:   t.GVK.Group,
-				Version: t.GVK.Version,
-				Kind:    t.GVK.Kind,
+		if err := r.Registry.Subscribe(m.GVK, m.Scope, sub); err != nil {
+			errs = append(errs, MemberError{
+				Name:    m.Name,
+				Group:   m.GVK.Group,
+				Version: m.GVK.Version,
+				Kind:    m.GVK.Kind,
 				Reason:  apiv1.ReasonWatchSetupFailed,
 				Err:     err,
 			})
@@ -203,35 +204,35 @@ func (r *Reconciler[T]) reconcileSubscriptions(owner watcher.OwnerKey, desired [
 	return errs
 }
 
-func (r *Reconciler[T]) evaluateTargets(targets []NormalizedTarget) ([]apiv1.TargetRollup, []apiv1.MemberStatus) {
-	rollups := make([]apiv1.TargetRollup, 0, len(targets))
-	// Stay nil until we actually have not-ready members: an empty-but-allocated
+func (r *Reconciler[T]) evaluateMembers(members []NormalizedMember) (map[string]apiv1.MemberRollup, []apiv1.ResourceStatus) {
+	rollups := make(map[string]apiv1.MemberRollup, len(members))
+	// Stay nil until we actually have not-ready resources: an empty-but-allocated
 	// slice would round-trip through status DeepCopy as != nil and trigger
 	// spurious patches against equal prior state.
-	var notReady []apiv1.MemberStatus //nolint:prealloc
-	for _, t := range targets {
-		members := r.listAndCompute(t)
-		var rollup apiv1.TargetRollup
+	var notReady []apiv1.ResourceStatus //nolint:prealloc
+	for _, m := range members {
+		resources := r.listAndCompute(m)
+		var rollup apiv1.MemberRollup
 		func() {
 			defer r.observe(metrics.StageReduce)()
-			rollup = status.ReduceTarget(t.GVK.Group, t.GVK.Version, t.GVK.Kind, members, t.EmptySetPolicy)
+			rollup = status.ReduceMember(m.GVK.Group, m.GVK.Version, m.GVK.Kind, resources, m.EmptySetPolicy)
 		}()
-		rollups = append(rollups, rollup)
-		notReady = append(notReady, notReadyMembersOf(members)...)
+		rollups[m.Name] = rollup
+		notReady = append(notReady, notReadyResourcesOf(resources)...)
 	}
 	return rollups, notReady
 }
 
-func (r *Reconciler[T]) listAndCompute(t NormalizedTarget) []status.Member {
+func (r *Reconciler[T]) listAndCompute(m NormalizedMember) []status.Resource {
 	objs, err := func() ([]*unstructured.Unstructured, error) {
 		defer r.observe(metrics.StageList)()
-		o, err := r.Registry.List(t.GVK)
+		o, err := r.Registry.List(m.GVK)
 		if err != nil {
 			return nil, err
 		}
 		out := make([]*unstructured.Unstructured, 0, len(o))
 		for _, u := range o {
-			if !targetAdmits(t, u.GetNamespace(), u.GetLabels()) {
+			if !memberAdmits(m, u.GetNamespace(), u.GetLabels()) {
 				continue
 			}
 			out = append(out, u)
@@ -242,18 +243,18 @@ func (r *Reconciler[T]) listAndCompute(t NormalizedTarget) []status.Member {
 		return nil
 	}
 	defer r.observe(metrics.StageCompute)()
-	members := make([]status.Member, 0, len(objs))
+	resources := make([]status.Resource, 0, len(objs))
 	for _, u := range objs {
-		members = append(members, status.Compute(u))
+		resources = append(resources, status.Compute(u))
 	}
-	return members
+	return resources
 }
 
-func (r *Reconciler[T]) applyStatus(sb *apiv1.EchelonStatusBase, generation int64, rollups []apiv1.TargetRollup, notReady []apiv1.MemberStatus, errs []TargetError) {
+func (r *Reconciler[T]) applyStatus(sb *apiv1.EchelonStatusBase, generation int64, rollups map[string]apiv1.MemberRollup, notReady []apiv1.ResourceStatus, errs []MemberError) {
 	sb.ObservedGeneration = generation
-	sb.Targets = rollups
+	sb.Members = rollups
 	sb.Summary = status.SummarizeOwner(rollups)
-	sb.NotReadyMembers, sb.Truncated = capMembers(notReady, r.memberCap())
+	sb.NotReadyResources, sb.Truncated = capResources(notReady, r.resourceCap())
 
 	readyStatus, readyReason, readyMessage := status.ReduceOwner(rollups)
 	setCondition(sb, apiv1.ConditionReady, readyStatus, readyReason, readyMessage)
@@ -277,11 +278,11 @@ func (r *Reconciler[T]) now() time.Time {
 	return r.Now()
 }
 
-func (r *Reconciler[T]) memberCap() int {
-	if r.MemberCap <= 0 {
-		return defaultMemberCap
+func (r *Reconciler[T]) resourceCap() int {
+	if r.ResourceCap <= 0 {
+		return defaultResourceCap
 	}
-	return r.MemberCap
+	return r.ResourceCap
 }
 
 func (r *Reconciler[T]) stalledErrorCap() int {
@@ -302,23 +303,23 @@ func (r *Reconciler[T]) isStalled(sb *apiv1.EchelonStatusBase) bool {
 
 // --- helpers (pure) ---
 
-func targetAdmits(t NormalizedTarget, namespace string, lbls map[string]string) bool {
-	if t.NamespaceMatcher != nil && !t.NamespaceMatcher(namespace) {
+func memberAdmits(m NormalizedMember, namespace string, lbls map[string]string) bool {
+	if m.NamespaceMatcher != nil && !m.NamespaceMatcher(namespace) {
 		return false
 	}
-	if t.Selector != nil && !t.Selector.Matches(labels.Set(lbls)) {
+	if m.Selector != nil && !m.Selector.Matches(labels.Set(lbls)) {
 		return false
 	}
 	return true
 }
 
-func notReadyMembersOf(members []status.Member) []apiv1.MemberStatus {
-	out := make([]apiv1.MemberStatus, 0)
-	for _, m := range members {
+func notReadyResourcesOf(resources []status.Resource) []apiv1.ResourceStatus {
+	out := make([]apiv1.ResourceStatus, 0)
+	for _, m := range resources {
 		if m.Status == "Current" {
 			continue
 		}
-		out = append(out, apiv1.MemberStatus{
+		out = append(out, apiv1.ResourceStatus{
 			Group:     m.Group,
 			Version:   m.Version,
 			Kind:      m.Kind,
@@ -332,7 +333,7 @@ func notReadyMembersOf(members []status.Member) []apiv1.MemberStatus {
 	return out
 }
 
-func capMembers(in []apiv1.MemberStatus, cap int) ([]apiv1.MemberStatus, bool) {
+func capResources(in []apiv1.ResourceStatus, cap int) ([]apiv1.ResourceStatus, bool) {
 	if len(in) <= cap {
 		return in, false
 	}
@@ -344,7 +345,7 @@ func setCondition(sb *apiv1.EchelonStatusBase, condType string, st metav1.Condit
 	apimeta.SetStatusCondition(&sb.Conditions, c)
 }
 
-func (r *Reconciler[T]) applyStalledFromErrors(sb *apiv1.EchelonStatusBase, errs []TargetError) {
+func (r *Reconciler[T]) applyStalledFromErrors(sb *apiv1.EchelonStatusBase, errs []MemberError) {
 	if len(errs) == 0 {
 		apimeta.SetStatusCondition(&sb.Conditions, metav1.Condition{
 			Type:    apiv1.ConditionStalled,
@@ -354,16 +355,20 @@ func (r *Reconciler[T]) applyStalledFromErrors(sb *apiv1.EchelonStatusBase, errs
 		})
 		return
 	}
-	// Use the first reason; message lists offenders for visibility. Cap the
-	// enumeration so a pathological owner can't exceed condition-message
-	// limits; the overflow count is surfaced explicitly.
-	primary := errs[0].Reason
+	// Stable ordering: errors come from the adapter sorted by member name, so
+	// the primary reason and the enumerated message survive reconciles
+	// unchanged when the same errors recur. Sort defensively.
+	sorted := make([]MemberError, len(errs))
+	copy(sorted, errs)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
+
+	primary := sorted[0].Reason
 	cap := r.stalledErrorCap()
-	visible := errs
+	visible := sorted
 	overflow := 0
-	if len(errs) > cap {
-		visible = errs[:cap]
-		overflow = len(errs) - cap
+	if len(sorted) > cap {
+		visible = sorted[:cap]
+		overflow = len(sorted) - cap
 	}
 	parts := make([]string, 0, len(visible))
 	for _, e := range visible {

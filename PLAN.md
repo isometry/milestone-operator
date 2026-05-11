@@ -11,8 +11,8 @@ condition to decide when a wave has settled and the next wave may proceed.
 
 Two CRDs:
 
-- `Echelon` (namespaced) — targets resources within its own namespace.
-- `ClusterEchelon` (cluster-scoped) — targets resources across namespaces, with per-target
+- `Echelon` (namespaced) — aggregates resources within its own namespace.
+- `ClusterEchelon` (cluster-scoped) — aggregates resources across namespaces, with per-member
   namespace selection.
 
 Built with operator-sdk **v1.42.2** (Kubebuilder v4) and Go **1.26.3**. New repository,
@@ -22,12 +22,12 @@ no existing code.
 
 | Topic | Decision |
 | --- | --- |
-| Spec shape | `spec.targets[]` from day one, no per-target cap (multi-GVK supported) |
-| Empty-set semantics | `emptySetPolicy: Unknown\|Ready\|NotReady` **per target** (default `Unknown`) |
+| Spec shape | `spec.members` is a `map[string]MemberSpec` keyed by user-chosen RFC-1123 labels — per-key SSA ownership, no required `name` field, no positional dependency. Minimum 1 entry via `MinProperties=1`. |
+| Empty-set semantics | `emptySetPolicy: Unknown\|Ready\|NotReady` **per member** (default `Unknown`) |
 | API ident | `as-code.io/v1` (commit to strong interfaces from day one; iterate locally pre-release) |
-| `status.members` verbosity | Only non-Current members (capped, e.g. 50) + aggregate `summary` counters; `truncated` flag |
+| `status.notReadyResources` verbosity | Only non-Current resources (capped, e.g. 50) + aggregate `summary` counters; `truncated` flag |
 | Missing CRD handling | `Stalled=True, reason=GVKNotEstablished` + watch `apiextensions.k8s.io/v1.CustomResourceDefinition` to wake on `Established=True` |
-| ClusterEchelon scoping | `namespaces` and `namespaceSelector` are **per-target** and mutually exclusive (CRD CEL validation) |
+| ClusterEchelon scoping | `namespaces` and `namespaceSelector` are **per-member** and mutually exclusive (CRD CEL validation) |
 | Watcher architecture | Shared, refcounted registry; one cluster-scoped dynamic informer per GVK |
 | Per-resource readiness | `sigs.k8s.io/cli-utils/pkg/kstatus/status.Compute` (strict — no condition-fallback) |
 | Conditions | `Ready`, `Reconciling`, `Stalled` |
@@ -43,7 +43,7 @@ no existing code.
 // +kubebuilder:validation:Enum=Unknown;Ready;NotReady
 type EmptySetPolicy string
 
-type TargetSpec struct {
+type MemberSpec struct {
     Group          string                `json:"group,omitempty"`
     Version        string                `json:"version,omitempty"` // empty → resolved via discovery
     Kind           string                `json:"kind"`
@@ -52,12 +52,15 @@ type TargetSpec struct {
     // Future-additive: a new optional `Filter`/`CEL` field can be added without breaking v1.
 }
 
-type ClusterTargetSpec struct {
-    TargetSpec        `json:",inline"`
+type ClusterMemberSpec struct {
+    MemberSpec        `json:",inline"`
     Namespaces        []string              `json:"namespaces,omitempty"`
     NamespaceSelector *metav1.LabelSelector `json:"namespaceSelector,omitempty"`
 }
-// CRD-level CEL: !(has(self.namespaces) && has(self.namespaceSelector))
+// CRD-level CEL on ClusterMemberSpec (per-entry, under additionalProperties):
+//   !(has(self.namespaces) && has(self.namespaceSelector))
+// CRD-level CEL on EchelonSpec / ClusterEchelonSpec (map-key shape):
+//   self.members.all(k, k.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'))
 
 type Summary struct {
     Total       int `json:"total"`
@@ -69,7 +72,7 @@ type Summary struct {
     Unknown     int `json:"unknown"`
 }
 
-type TargetRollup struct {
+type MemberRollup struct {
     Group   string `json:"group,omitempty"`
     Version string `json:"version,omitempty"`
     Kind    string `json:"kind"`
@@ -78,7 +81,7 @@ type TargetRollup struct {
     Summary Summary `json:"summary"`
 }
 
-type MemberStatus struct {
+type ResourceStatus struct {
     Group     string `json:"group,omitempty"`
     Version   string `json:"version"`
     Kind      string `json:"kind"`
@@ -90,15 +93,19 @@ type MemberStatus struct {
 }
 
 type EchelonStatusBase struct {
-    ObservedGeneration int64              `json:"observedGeneration,omitempty"`
-    Conditions         []metav1.Condition `json:"conditions,omitempty"`
-    Summary            Summary            `json:"summary,omitempty"`
-    Targets            []TargetRollup     `json:"targets,omitempty"`
-    NotReadyMembers    []MemberStatus     `json:"notReadyMembers,omitempty"`
-    Truncated          bool               `json:"truncated,omitempty"`
-    LastEvaluatedTime  metav1.Time        `json:"lastEvaluatedTime,omitempty"`
+    ObservedGeneration int64                    `json:"observedGeneration,omitempty"`
+    Conditions         []metav1.Condition       `json:"conditions,omitempty"`
+    Summary            Summary                  `json:"summary,omitempty"`
+    Members            map[string]MemberRollup  `json:"members,omitempty"`   // keyed by spec.members keys
+    NotReadyResources  []ResourceStatus         `json:"notReadyResources,omitempty"`
+    Truncated          bool                     `json:"truncated,omitempty"`
+    LastEvaluatedTime  metav1.Time              `json:"lastEvaluatedTime,omitempty"`
 }
 ```
+
+`spec.members` is a `map[string]MemberSpec` (OpenAPI `type: object,
+additionalProperties: ...`). Per-key SSA ownership, key-addressed JSON-Patch
+paths, no required `name` field. Status `members` mirrors the same keys.
 
 ### `Echelon` (namespaced)
 
@@ -107,8 +114,9 @@ apiVersion: as-code.io/v1
 kind: Echelon
 metadata: { name: wave-0, namespace: flux-system }
 spec:
-  targets:
-    - kind: Kustomization
+  members:
+    kustomizations:
+      kind: Kustomization
       group: kustomize.toolkit.fluxcd.io
       selector: { matchLabels: { wave: "0" } }
       emptySetPolicy: NotReady
@@ -121,13 +129,15 @@ apiVersion: as-code.io/v1
 kind: ClusterEchelon
 metadata: { name: platform-wave-0 }
 spec:
-  targets:
-    - kind: Kustomization
+  members:
+    flux-kustomizations:
+      kind: Kustomization
       group: kustomize.toolkit.fluxcd.io
       namespaces: [flux-system]
       selector: { matchLabels: { wave: "0" } }
       emptySetPolicy: NotReady
-    - kind: HelmRelease
+    platform-helmreleases:
+      kind: HelmRelease
       group: helm.toolkit.fluxcd.io
       namespaceSelector: { matchLabels: { tier: platform } }
       selector: { matchLabels: { wave: "0" } }
@@ -136,10 +146,15 @@ spec:
 
 ### Reasons vocabulary (locked)
 
-`AllMembersReady`, `AllTargetsReady`, `MembersNotReady`, `TargetsNotReady`,
-`MembersInProgress`, `MembersUnknown`, `TargetsInProgress`, `EmptySet`,
-`GVKNotEstablished`, `NamespaceScopeMismatch`, `DiscoveryFailed`, `WatchSetupFailed`,
-`Reconciling`.
+Two levels, distinguished by noun:
+
+- **Resource-level** (on `MemberRollup.Reason`): `AllResourcesReady`,
+  `ResourcesNotReady`, `ResourcesInProgress`, `ResourcesUnknown`,
+  `EmptySet`.
+- **Member-level** (on the owner `Ready` condition): `AllMembersReady`,
+  `MembersNotReady`, `MembersInProgress`.
+- **Structural / shared**: `GVKNotEstablished`, `NamespaceScopeMismatch`,
+  `DiscoveryFailed`, `WatchSetupFailed`, `Reconciling`.
 
 ## Architecture
 
@@ -169,11 +184,11 @@ echelon-operator/
 │   ├── discovery/resolver.go            # group+kind → version+scope, TTL cache
 │   ├── status/
 │   │   ├── kstatus.go                   # wrapper around cli-utils kstatus.Compute
-│   │   └── reducer.go                   # per-target + Echelon-level reductions
+│   │   └── reducer.go                   # per-member + Echelon-level reductions
 │   └── metrics/
 │       ├── metrics.go                   # collectors, registration on controller-runtime registry
 │       ├── pipeline.go                  # stage timing + counters used by reconciler
-│       └── collector.go                 # custom collector: lister-backed gauges for status/targets
+│       └── collector.go                 # custom collector: lister-backed gauges for status/members
 ├── config/                              # kubebuilder kustomize (CRDs incl. CEL, RBAC, manager, samples)
 │   ├── prometheus/                      # ServiceMonitor + PrometheusRule (alerts)
 │   └── grafana/                         # sample dashboard JSON
@@ -229,7 +244,8 @@ group/kind and enqueues them. No polling.
 ### OwnerAdapter
 
 ```go
-type NormalizedTarget struct {
+type NormalizedMember struct {
+    Name             string             // map key from spec.members
     GVK              schema.GroupVersionKind
     Scope            apimeta.RESTScopeName
     Selector         labels.Selector
@@ -238,10 +254,11 @@ type NormalizedTarget struct {
 }
 
 type OwnerAdapter interface {
-    Object() client.Object
     OwnerKey() OwnerKey
-    Targets(ctx context.Context, dr discovery.Resolver) ([]NormalizedTarget, []TargetError)
-    PatchStatus(ctx context.Context, c client.Client, status v1.EchelonStatusBase) error
+    // Members returns sorted-by-Name for deterministic downstream behaviour.
+    Members(ctx context.Context, dr discovery.Resolver) ([]NormalizedMember, []MemberError)
+    Status() *v1.EchelonStatusBase
+    PatchStatus(ctx context.Context, c client.Client) error
 }
 ```
 
@@ -271,8 +288,8 @@ All metrics use the `echelon_` prefix. Cardinality notes inline.
 | --- | --- | --- | --- |
 | `echelon_status_condition` | gauge (1/0) | `owner_kind, namespace, name, type, status` | `type ∈ {Ready,Reconciling,Stalled}`, `status ∈ {True,False,Unknown}`. kube-state-metrics convention; one series active per (object, type). |
 | `echelon_observed_generation` | gauge | `owner_kind, namespace, name` | Detect stuck reconciles vs `metadata.generation`. |
-| `echelon_target_members` | gauge | `owner_kind, namespace, name, target_group, target_kind, status` | `status ∈ {current,inProgress,failed,notFound,terminating,unknown,total}`. Bounded by Echelons × targets × 7. |
-| `echelon_target_ready` | gauge (1/0/-1) | `owner_kind, namespace, name, target_group, target_kind` | Per-target rollup readiness. `-1` = Unknown for True/False/Unknown encoding. |
+| `echelon_member_resources` | gauge | `owner_kind, namespace, name, member, target_group, target_kind, status` | `status ∈ {current,inProgress,failed,notFound,terminating,unknown,total}`. Bounded by Echelons × members × 7. |
+| `echelon_member_ready` | gauge (1/0/-1) | `owner_kind, namespace, name, member, target_group, target_kind` | Per-member rollup readiness. `-1` = Unknown for True/False/Unknown encoding. |
 | `echelon_last_evaluated_timestamp_seconds` | gauge | `owner_kind, namespace, name` | Detect frozen reconcile loops. |
 
 **Watcher / registry (in-line updates):**
@@ -299,7 +316,7 @@ All metrics use the `echelon_` prefix. Cardinality notes inline.
 | --- | --- | --- | --- |
 | `echelon_reconcile_stage_duration_seconds` | histogram | `controller, stage` | `stage ∈ {discovery,subscriptions,list,compute,reduce,patch}`. Surfaces slow stages without per-object cardinality. |
 | `echelon_status_patch_total` | counter | `controller, result` | `result ∈ {changed,unchanged,error}`. Verifies idempotency in production. |
-| `echelon_target_resolve_errors_total` | counter | `controller, reason` | `reason ∈ {GVKNotEstablished,DiscoveryFailed,NamespaceScopeMismatch,WatchSetupFailed}`. |
+| `echelon_member_resolve_errors_total` | counter | `controller, reason` | `reason ∈ {GVKNotEstablished,DiscoveryFailed,NamespaceScopeMismatch,WatchSetupFailed}`. |
 
 **CRD watcher:**
 
@@ -310,10 +327,12 @@ All metrics use the `echelon_` prefix. Cardinality notes inline.
 
 ### Cardinality budget
 
-Worst case for the collector: `Echelons × targets × 7 status buckets`. With
-typical deployment-wave usage (≤20 Echelons × ≤10 targets × 7 = 1,400 series)
-this is well within Prometheus comfort. No high-cardinality labels (no member
-names, no resource UIDs, no namespaces from the watched resources themselves).
+Worst case for the collector: `Echelons × members × 7 status buckets`. With
+typical deployment-wave usage (≤20 Echelons × ≤10 members × 7 = 1,400 series)
+this is well within Prometheus comfort. No high-cardinality labels (no
+individual resource UIDs, no namespaces from the watched resources themselves).
+Member-key cardinality is bounded by the RFC-1123 validation rule and by the
+operator's own per-Echelon entry count.
 
 ### Shipped artefacts
 
@@ -332,7 +351,7 @@ names, no resource UIDs, no namespaces from the watched resources themselves).
 
 Unit tests for the custom collector (fake client + table-driven scrape
 assertions). One envtest scenario verifies metrics surface on `/metrics`
-end-to-end (create Echelon, mutate members, assert metric values via
+end-to-end (create Echelon, mutate resources, assert metric values via
 `prometheus/client_golang/prometheus/testutil`).
 
 ## Reconcile pipeline (per object)
@@ -341,48 +360,49 @@ end-to-end (create Echelon, mutate members, assert metric values via
 1. Fetch; if deletionTimestamp → run finalizer (UnsubscribeAll), remove finalizer, return.
 2. Ensure finalizer present.
 3. Begin reconcile (Reconciling=True; deferred Reconciling=False on success path).
-4. Adapter.Targets() — discovery resolution; collect per-target errors as TargetError so the
-   reconcile continues for the resolvable subset.
-5. Reconcile subscriptions:
-     desired       := { gvk : NormalizedTarget }
+4. Adapter.Members() — discovery resolution sorted-by-key; collect per-member errors as
+   MemberError so the reconcile continues for the resolvable subset.
+5. Reconcile subscriptions (one informer per unique GVK across members):
+     desiredGVKs   := { gvk for each NormalizedMember }
      toSubscribe   := desired \ current
      toUnsubscribe := current \ desired
-6. For each resolvable target:
+6. For each resolvable member:
      a. registry.List(gvk)
      b. Filter: NamespaceMatcher → Selector
-     c. status/kstatus.Compute per member (strict)
-     d. status/reducer.Target(rollup, summary) applying emptySetPolicy
-7. status/reducer.Echelon → conditions {Ready, Reconciling=false, Stalled}
-8. Build EchelonStatusBase; cap NotReadyMembers at 50, set Truncated.
+     c. status/kstatus.Compute per resource (strict)
+     d. status/reducer.Member(rollup, summary) applying emptySetPolicy → map[name]MemberRollup
+7. status/reducer.Owner(rollups) → conditions {Ready, Reconciling=false, Stalled}
+   (sorts by member name internally for stable Stalled message rendering)
+8. Build EchelonStatusBase; cap NotReadyResources at 50, set Truncated.
 9. Adapter.PatchStatus — server-side apply with stable field manager; skip when hash
    unchanged to avoid resourceVersion churn (echelon_status_patch_total{result}).
 10. Return; requeue only when Stalled with retryable reason and budget remaining.
 ```
 
 Each numbered stage from steps 4–9 is wrapped by `metrics.ObserveStage(ctx, "stage")`
-emitting `echelon_reconcile_stage_duration_seconds{stage}`. Per-target resolution
-errors increment `echelon_target_resolve_errors_total{reason}`. The custom collector
+emitting `echelon_reconcile_stage_duration_seconds{stage}`. Per-member resolution
+errors increment `echelon_member_resolve_errors_total{reason}`. The custom collector
 walks the Echelon and ClusterEchelon caches at scrape time — independent of the
 reconcile loop — so object-state metrics never go stale on operator restart.
 
 ### Reduction rules
 
-Per-target:
+Per-member (resource-level rollup):
 
 ```
 total == 0                                  → apply emptySetPolicy (reason=EmptySet)
-failed > 0  || notFound > 0                 → False, MembersNotReady
+failed > 0  || notFound > 0                 → False, ResourcesNotReady
 inProgress > 0 || terminating > 0 || unknown > 0
-                                            → Unknown, MembersInProgress
-current == total                            → True,  AllMembersReady
+                                            → Unknown, ResourcesInProgress
+current == total                            → True,  AllResourcesReady
 ```
 
-Echelon (rollup over per-target):
+Echelon (owner-level rollup over per-member):
 
 ```
-all True   → True,    AllTargetsReady
-any False  → False,   TargetsNotReady (message lists offending kinds)
-otherwise  → Unknown, TargetsInProgress
+all True   → True,    AllMembersReady
+any False  → False,   MembersNotReady (message lists offending member names, sorted)
+otherwise  → Unknown, MembersInProgress
 ```
 
 `Stalled` is independent of `Ready`. When set, `Ready` reflects what we *can* observe
@@ -447,15 +467,15 @@ Expect 100% coverage of `status/reducer.go`, `watcher/subscriber_index.go`, and
 `metrics/collector.go` — these are the load-bearing pure functions.
 
 **Envtest integration suites** (`test/envtest/`):
-1. Empty selector + each `emptySetPolicy` value yields the expected `Ready` per target.
-2. Members transition Current→InProgress→Failed; status converges within seconds (use `Eventually`).
-3. ClusterEchelon with `namespaces:[a,b]` and another target using `namespaceSelector` — both scopes match correctly.
+1. Empty selector + each `emptySetPolicy` value yields the expected `Ready` per member.
+2. Resources transition Current→InProgress→Failed; status converges within seconds (use `Eventually`).
+3. ClusterEchelon with `namespaces:[a,b]` on one member and `namespaceSelector` on another — both scopes match correctly.
 4. Echelon references not-yet-installed CRD: starts `Stalled=GVKNotEstablished`; install CRD; converges to Ready=Unknown→True without manual nudge.
-5. Spec edit removes a target → registry Unsubscribes → informer torn down at refcount=0 (verify via registry introspection helper exposed for tests).
+5. Spec edit removes a member → registry Unsubscribes → informer torn down at refcount=0 (verify via registry introspection helper exposed for tests).
 6. Echelon deletion runs finalizer → all subscriptions released; deleted object disappears.
 7. Status patch idempotency: with no underlying change, no resourceVersion bump after second reconcile.
-8. Two Echelons referencing the same GVK with different selectors share a single informer (verify via registry introspection).
-9. `/metrics` endpoint exposes the documented metric families with expected values: create an Echelon with N members in known kstatus states, then assert `echelon_status_condition`, `echelon_target_members`, `echelon_informers`, `echelon_subscribers` via `prometheus/client_golang/prometheus/testutil.ToFloat64` / `CollectAndCompare`.
+8. Two members on one Echelon referencing the same GVK with different selectors share a single informer (verify via registry introspection).
+9. `/metrics` endpoint exposes the documented metric families with expected values: create an Echelon with N members in known kstatus states, then assert `echelon_status_condition`, `echelon_member_resources`, `echelon_informers`, `echelon_subscribers` via `prometheus/client_golang/prometheus/testutil.ToFloat64` / `CollectAndCompare`.
 ```bash
 go test ./test/envtest/... -race -count=1 -timeout=10m
 ```
@@ -463,7 +483,7 @@ go test ./test/envtest/... -race -count=1 -timeout=10m
 **Manual smoke (optional, post-MVP)**
 - `kind create cluster && make install deploy`
 - Apply FluxCD CRDs + a sample Echelon; observe `kubectl get echelon -o yaml`
-  reflecting member transitions live.
+  reflecting resource transitions live.
 
 ## v1 compatibility discipline
 
@@ -476,8 +496,8 @@ the schema and reduction rules are revised in-tree until we tag v1.0.0, after wh
 - New conditions / reasons can be added freely (consumers must tolerate unknowns).
 - New `EmptySetPolicy` enum values are *not* backwards-compatible for strict clients;
   treat the existing three as final.
-- New optional fields like a future `spec.targets[].filter` or `spec.targets[].cel` are
-  additive and acceptable post-v1.
+- New optional fields like a future `spec.members[<name>].filter` or
+  `spec.members[<name>].cel` are additive and acceptable post-v1.
 
 ## Out of scope (MVP)
 
@@ -486,5 +506,5 @@ the schema and reduction rules are revised in-tree until we tag v1.0.0, after wh
 - kwok-driven or real-cluster e2e suites
 - Admission webhooks (CEL on the CRD covers cross-field validation)
 - Bespoke per-kind status evaluators beyond what `kstatus.Compute` provides
-- Cross-cluster targets
+- Cross-cluster members
 - Helm chart packaging
