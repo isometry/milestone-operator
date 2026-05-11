@@ -27,11 +27,46 @@ type OwnerKey struct {
 	Name      string
 }
 
-// Subscriber represents one Echelon's subscription to a single GVK.
+// Matcher pairs a label selector with a namespace filter; an object is admitted
+// when both predicates return true. A nil Selector admits any labels; a nil
+// Namespaces admits any namespace.
+type Matcher struct {
+	Selector   labels.Selector
+	Namespaces func(namespace string) bool
+}
+
+// Admit reports whether obj passes this Matcher.
+func (m Matcher) Admit(obj client.Object) bool {
+	if m.Namespaces != nil && !m.Namespaces(obj.GetNamespace()) {
+		return false
+	}
+	if m.Selector != nil && !m.Selector.Matches(labels.Set(obj.GetLabels())) {
+		return false
+	}
+	return true
+}
+
+// Subscriber is one owner's subscription to a single GVK. An owner may have
+// multiple spec.members entries that share a GVK with disjoint selectors; all
+// of them live on Matchers so a single informer event can wake the owner once
+// regardless of which member admitted the object.
 type Subscriber struct {
-	Owner            OwnerKey
-	Selector         labels.Selector
-	NamespaceMatcher func(namespace string) bool
+	Owner    OwnerKey
+	Matchers []Matcher
+}
+
+// Match reports whether any of s.Matchers admits obj. A Subscriber with no
+// matchers admits everything (preserves prior nil-selector semantics).
+func (s Subscriber) Match(obj client.Object) bool {
+	if len(s.Matchers) == 0 {
+		return true
+	}
+	for _, m := range s.Matchers {
+		if m.Admit(obj) {
+			return true
+		}
+	}
+	return false
 }
 
 // SubscriberIndex maps GVKs to their interested Echelons and supports the
@@ -50,7 +85,9 @@ func NewSubscriberIndex() *SubscriberIndex {
 	}
 }
 
-// Add inserts or replaces sub for sub.Owner under gvk.
+// Add replaces sub.Owner's entire matcher set for gvk. The atomic unit is "all
+// matchers an owner declares for this GVK in one reconcile"; callers must pass
+// the full set every time, not deltas.
 func (s *SubscriberIndex) Add(gvk schema.GroupVersionKind, sub Subscriber) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -82,8 +119,9 @@ func (s *SubscriberIndex) Remove(gvk schema.GroupVersionKind, owner OwnerKey) {
 	}
 }
 
-// Subscribers returns the owners whose Selector and NamespaceMatcher both
-// admit obj.
+// Subscribers returns the distinct owners whose Subscriber admits obj. Each
+// owner appears at most once even when multiple matchers within its Subscriber
+// would all admit obj.
 func (s *SubscriberIndex) Subscribers(gvk schema.GroupVersionKind, obj client.Object) []OwnerKey {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -93,7 +131,7 @@ func (s *SubscriberIndex) Subscribers(gvk schema.GroupVersionKind, obj client.Ob
 	}
 	out := make([]OwnerKey, 0, len(subs))
 	for _, sub := range subs {
-		if !matches(sub, obj) {
+		if !sub.Match(obj) {
 			continue
 		}
 		out = append(out, sub.Owner)
@@ -121,14 +159,4 @@ func (s *SubscriberIndex) GVKsByOwner(owner OwnerKey) []schema.GroupVersionKind 
 		out = append(out, g)
 	}
 	return out
-}
-
-func matches(sub Subscriber, obj client.Object) bool {
-	if sub.NamespaceMatcher != nil && !sub.NamespaceMatcher(obj.GetNamespace()) {
-		return false
-	}
-	if sub.Selector != nil && !sub.Selector.Matches(labels.Set(obj.GetLabels())) {
-		return false
-	}
-	return true
 }

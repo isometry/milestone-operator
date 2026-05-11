@@ -38,6 +38,15 @@ func makeObj(ns, name string, lbls map[string]string) *unstructured.Unstructured
 	return u
 }
 
+// subWith constructs a Subscriber with a single Matcher in its Matchers slice.
+// Keeps test call-sites concise for the common single-matcher case.
+func subWith(owner watcher.OwnerKey, sel labels.Selector, ns func(string) bool) watcher.Subscriber {
+	return watcher.Subscriber{
+		Owner:    owner,
+		Matchers: []watcher.Matcher{{Selector: sel, Namespaces: ns}},
+	}
+}
+
 func ownerKeys(in []watcher.OwnerKey) []string {
 	out := make([]string, len(in))
 	for i, k := range in {
@@ -49,19 +58,19 @@ func ownerKeys(in []watcher.OwnerKey) []string {
 
 func TestSubscriberIndex_Subscribers_LabelSelector(t *testing.T) {
 	idx := watcher.NewSubscriberIndex()
-	wave0 := watcher.Subscriber{
-		Owner:    watcher.OwnerKey{Kind: kindEchelon, Namespace: nsFluxSystem, Name: nameWave0},
-		Selector: mustSelector(t, map[string]string{labelWave: "0"}),
-	}
-	wave1 := watcher.Subscriber{
-		Owner:    watcher.OwnerKey{Kind: kindEchelon, Namespace: nsFluxSystem, Name: "wave-1"},
-		Selector: mustSelector(t, map[string]string{labelWave: "1"}),
-	}
+	wave0 := subWith(
+		watcher.OwnerKey{Kind: kindEchelon, Namespace: nsFluxSystem, Name: nameWave0},
+		mustSelector(t, map[string]string{labelWave: "0"}), nil,
+	)
+	wave1 := subWith(
+		watcher.OwnerKey{Kind: kindEchelon, Namespace: nsFluxSystem, Name: "wave-1"},
+		mustSelector(t, map[string]string{labelWave: "1"}), nil,
+	)
 	idx.Add(kustomizationGVK, wave0)
 	idx.Add(kustomizationGVK, wave1)
 
 	got := idx.Subscribers(kustomizationGVK, makeObj(nsFluxSystem, "k1", map[string]string{labelWave: "0"}))
-	want := []string{"Echelon/flux-system/wave-0"}
+	want := []string{echelonFluxSystemWave0Key}
 	if !equal(ownerKeys(got), want) {
 		t.Errorf("subscribers = %v, want %v", ownerKeys(got), want)
 	}
@@ -80,15 +89,15 @@ func TestSubscriberIndex_Subscribers_LabelSelector(t *testing.T) {
 
 func TestSubscriberIndex_Subscribers_NamespaceMatcher(t *testing.T) {
 	idx := watcher.NewSubscriberIndex()
-	teamA := watcher.Subscriber{
-		Owner:            watcher.OwnerKey{Kind: "ClusterEchelon", Name: "platform-wave"},
-		Selector:         labels.Everything(),
-		NamespaceMatcher: func(ns string) bool { return ns == "team-a" },
-	}
-	all := watcher.Subscriber{
-		Owner:    watcher.OwnerKey{Kind: "ClusterEchelon", Name: "global-wave"},
-		Selector: labels.Everything(),
-	}
+	teamA := subWith(
+		watcher.OwnerKey{Kind: "ClusterEchelon", Name: "platform-wave"},
+		labels.Everything(),
+		func(ns string) bool { return ns == "team-a" },
+	)
+	all := subWith(
+		watcher.OwnerKey{Kind: "ClusterEchelon", Name: "global-wave"},
+		labels.Everything(), nil,
+	)
 	idx.Add(kustomizationGVK, teamA)
 	idx.Add(kustomizationGVK, all)
 
@@ -103,22 +112,23 @@ func TestSubscriberIndex_Subscribers_NamespaceMatcher(t *testing.T) {
 	}
 }
 
-func TestSubscriberIndex_NilSelectorMatchesAll(t *testing.T) {
+func TestSubscriberIndex_NoMatchers_MatchesAll(t *testing.T) {
 	idx := watcher.NewSubscriberIndex()
 	idx.Add(kustomizationGVK, watcher.Subscriber{
 		Owner: watcher.OwnerKey{Kind: kindEchelon, Namespace: nsFluxSystem, Name: "all"},
-		// Selector intentionally nil ⇒ should match everything.
+		// Matchers intentionally empty ⇒ should match everything (preserves
+		// prior nil-selector semantics).
 	})
 	got := idx.Subscribers(kustomizationGVK, makeObj(nsFluxSystem, "anything", map[string]string{"any": "label"}))
 	if len(got) != 1 {
-		t.Errorf("nil selector should match everything, got %v", ownerKeys(got))
+		t.Errorf("empty matchers should match everything, got %v", ownerKeys(got))
 	}
 }
 
 func TestSubscriberIndex_Remove(t *testing.T) {
 	idx := watcher.NewSubscriberIndex()
 	owner := watcher.OwnerKey{Kind: kindEchelon, Namespace: nsFluxSystem, Name: nameWave0}
-	idx.Add(kustomizationGVK, watcher.Subscriber{Owner: owner, Selector: labels.Everything()})
+	idx.Add(kustomizationGVK, subWith(owner, labels.Everything(), nil))
 	if c := idx.SubscriberCount(kustomizationGVK); c != 1 {
 		t.Errorf("count after Add = %d, want 1", c)
 	}
@@ -132,21 +142,71 @@ func TestSubscriberIndex_Remove(t *testing.T) {
 	}
 }
 
-func TestSubscriberIndex_AddReplacesExistingForSameOwner(t *testing.T) {
+// TestSubscriberIndex_AddReplacesMatcherSet pins the atomicity invariant:
+// Add({A}) followed by Add({B}) yields exactly {B}, not A∪B. The reconciler
+// passes the *full* matcher set on every Subscribe, so anything else would
+// silently retain stale matchers from previous reconciles.
+func TestSubscriberIndex_AddReplacesMatcherSet(t *testing.T) {
 	idx := watcher.NewSubscriberIndex()
 	owner := watcher.OwnerKey{Kind: kindEchelon, Namespace: nsFluxSystem, Name: nameWave0}
-	idx.Add(kustomizationGVK, watcher.Subscriber{Owner: owner, Selector: mustSelector(t, map[string]string{labelWave: "0"})})
-	idx.Add(kustomizationGVK, watcher.Subscriber{Owner: owner, Selector: mustSelector(t, map[string]string{labelWave: "1"})})
+	idx.Add(kustomizationGVK, subWith(owner, mustSelector(t, map[string]string{labelWave: "0"}), nil))
+	idx.Add(kustomizationGVK, subWith(owner, mustSelector(t, map[string]string{labelWave: "1"}), nil))
 	if c := idx.SubscriberCount(kustomizationGVK); c != 1 {
 		t.Errorf("count after re-Add = %d, want 1", c)
 	}
 	got := idx.Subscribers(kustomizationGVK, makeObj(nsFluxSystem, "k1", map[string]string{labelWave: "1"}))
 	if len(got) != 1 {
-		t.Errorf("re-Add should update selector, got %v", ownerKeys(got))
+		t.Errorf("re-Add should keep new matcher, got %v", ownerKeys(got))
 	}
 	got = idx.Subscribers(kustomizationGVK, makeObj(nsFluxSystem, "k0", map[string]string{labelWave: "0"}))
 	if len(got) != 0 {
-		t.Errorf("after re-Add wave=0 should not match, got %v", ownerKeys(got))
+		t.Errorf("re-Add should discard old matcher, got %v", ownerKeys(got))
+	}
+}
+
+// TestSubscriberIndex_MultipleMatchers_SameOwnerGVK covers the same-GVK
+// members case: one owner declares two label selectors for the same GVK and
+// objects admitted by either selector must enqueue the owner.
+func TestSubscriberIndex_MultipleMatchers_SameOwnerGVK(t *testing.T) {
+	idx := watcher.NewSubscriberIndex()
+	owner := watcher.OwnerKey{Kind: kindEchelon, Namespace: nsFluxSystem, Name: nameWave0}
+	idx.Add(kustomizationGVK, watcher.Subscriber{
+		Owner: owner,
+		Matchers: []watcher.Matcher{
+			{Selector: mustSelector(t, map[string]string{labelWave: "0"})},
+			{Selector: mustSelector(t, map[string]string{labelWave: "1"})},
+		},
+	})
+
+	for _, wave := range []string{"0", "1"} {
+		got := idx.Subscribers(kustomizationGVK, makeObj(nsFluxSystem, "k-"+wave, map[string]string{labelWave: wave}))
+		if !equal(ownerKeys(got), []string{echelonFluxSystemWave0Key}) {
+			t.Errorf("wave=%s: subscribers = %v, want wave-0", wave, ownerKeys(got))
+		}
+	}
+
+	got := idx.Subscribers(kustomizationGVK, makeObj(nsFluxSystem, "k-2", map[string]string{labelWave: "2"}))
+	if len(got) != 0 {
+		t.Errorf("wave=2 should not match, got %v", ownerKeys(got))
+	}
+}
+
+// TestSubscriberIndex_MultipleMatchers_OwnerReturnedOnce covers the dedupe
+// invariant: even when an object would be admitted by every Matcher on a
+// Subscriber, the owner is enqueued exactly once.
+func TestSubscriberIndex_MultipleMatchers_OwnerReturnedOnce(t *testing.T) {
+	idx := watcher.NewSubscriberIndex()
+	owner := watcher.OwnerKey{Kind: kindEchelon, Namespace: nsFluxSystem, Name: nameWave0}
+	idx.Add(kustomizationGVK, watcher.Subscriber{
+		Owner: owner,
+		Matchers: []watcher.Matcher{
+			{Selector: labels.Everything()},
+			{Selector: labels.Everything()},
+		},
+	})
+	got := idx.Subscribers(kustomizationGVK, makeObj(nsFluxSystem, "k1", nil))
+	if !equal(ownerKeys(got), []string{echelonFluxSystemWave0Key}) {
+		t.Errorf("owner should appear once, got %v", ownerKeys(got))
 	}
 }
 
@@ -154,8 +214,8 @@ func TestSubscriberIndex_GVKsByOwner(t *testing.T) {
 	idx := watcher.NewSubscriberIndex()
 	owner := watcher.OwnerKey{Kind: kindEchelon, Namespace: nsFluxSystem, Name: "multi"}
 	helmGVK := schema.GroupVersionKind{Group: groupHelmToolkit, Version: "v2", Kind: kindHelmRelease}
-	idx.Add(kustomizationGVK, watcher.Subscriber{Owner: owner, Selector: labels.Everything()})
-	idx.Add(helmGVK, watcher.Subscriber{Owner: owner, Selector: labels.Everything()})
+	idx.Add(kustomizationGVK, subWith(owner, labels.Everything(), nil))
+	idx.Add(helmGVK, subWith(owner, labels.Everything(), nil))
 
 	gvks := idx.GVKsByOwner(owner)
 	if len(gvks) != 2 {
@@ -177,7 +237,7 @@ func TestSubscriberIndex_Concurrent(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			owner := watcher.OwnerKey{Kind: kindEchelon, Namespace: nsFluxSystem, Name: nameOf(i)}
-			idx.Add(kustomizationGVK, watcher.Subscriber{Owner: owner, Selector: labels.Everything()})
+			idx.Add(kustomizationGVK, subWith(owner, labels.Everything(), nil))
 			_ = idx.Subscribers(kustomizationGVK, makeObj(nsFluxSystem, "k", nil))
 			idx.Remove(kustomizationGVK, owner)
 		}(i)

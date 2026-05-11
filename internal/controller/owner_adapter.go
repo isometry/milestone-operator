@@ -76,7 +76,7 @@ type OwnerAdapter interface {
 // RegistryAPI is the subset of *watcher.Registry the reconciler depends on.
 // Defining it as an interface keeps the reconciler unit-testable with a fake.
 type RegistryAPI interface {
-	Subscribe(gvk schema.GroupVersionKind, scope apimeta.RESTScopeName, sub watcher.Subscriber) error
+	Subscribe(ctx context.Context, gvk schema.GroupVersionKind, scope apimeta.RESTScopeName, sub watcher.Subscriber) error
 	Unsubscribe(gvk schema.GroupVersionKind, owner watcher.OwnerKey)
 	UnsubscribeAll(owner watcher.OwnerKey)
 	List(gvk schema.GroupVersionKind) ([]*unstructured.Unstructured, error)

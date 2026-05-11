@@ -107,7 +107,7 @@ func (r *Reconciler[T]) ReconcileObject(ctx context.Context, obj T) (ctrl.Result
 	}
 	log.V(1).Info("discovery resolved", "members", len(members), "errors", len(memberErrs))
 
-	subscribeErrs := r.reconcileSubscriptions(ownerKey, members)
+	subscribeErrs := r.reconcileSubscriptions(ctx, ownerKey, members)
 	for _, se := range subscribeErrs {
 		log.V(1).Info("subscription failed",
 			"name", se.Name, "group", se.Group, "version", se.Version, "kind", se.Kind,
@@ -169,36 +169,61 @@ func (r *Reconciler[T]) finalize(ctx context.Context, obj T, ownerKey watcher.Ow
 	return ctrl.Result{}, nil
 }
 
-func (r *Reconciler[T]) reconcileSubscriptions(owner watcher.OwnerKey, desired []NormalizedMember) []MemberError {
+func (r *Reconciler[T]) reconcileSubscriptions(ctx context.Context, owner watcher.OwnerKey, desired []NormalizedMember) []MemberError {
 	defer r.observe(metrics.StageSubscriptions)()
 
-	// One informer per unique GVK across members; refcounted by ownerKey.
-	desiredGVKs := make(map[schema.GroupVersionKind]struct{}, len(desired))
-	for _, m := range desired {
-		desiredGVKs[m.GVK] = struct{}{}
+	// Group desired members by GVK so each owner/GVK pair becomes one
+	// Subscribe call carrying every matcher the owner declared for that GVK.
+	// Without this, two members on the same GVK with different selectors
+	// would overwrite each other's matcher in the registry and the loser
+	// would stop receiving events.
+	type group struct {
+		scope    apimeta.RESTScopeName
+		matchers []watcher.Matcher
+		members  []NormalizedMember
 	}
+	gvkOrder := make([]schema.GroupVersionKind, 0, len(desired))
+	groups := make(map[schema.GroupVersionKind]*group, len(desired))
+	for _, m := range desired {
+		g, ok := groups[m.GVK]
+		if !ok {
+			g = &group{scope: m.Scope}
+			groups[m.GVK] = g
+			gvkOrder = append(gvkOrder, m.GVK)
+		}
+		g.matchers = append(g.matchers, watcher.Matcher{
+			Selector:   m.Selector,
+			Namespaces: m.NamespaceMatcher,
+		})
+		g.members = append(g.members, m)
+	}
+
+	// One informer per unique GVK across members; refcounted by ownerKey.
 	for _, gvk := range r.Registry.GVKsByOwner(owner) {
-		if _, ok := desiredGVKs[gvk]; !ok {
+		if _, ok := groups[gvk]; !ok {
 			r.Registry.Unsubscribe(gvk, owner)
 		}
 	}
 
 	var errs []MemberError
-	for _, m := range desired {
-		sub := watcher.Subscriber{
-			Owner:            owner,
-			Selector:         m.Selector,
-			NamespaceMatcher: m.NamespaceMatcher,
-		}
-		if err := r.Registry.Subscribe(m.GVK, m.Scope, sub); err != nil {
-			errs = append(errs, MemberError{
-				Name:    m.Name,
-				Group:   m.GVK.Group,
-				Version: m.GVK.Version,
-				Kind:    m.GVK.Kind,
-				Reason:  apiv1.ReasonWatchSetupFailed,
-				Err:     err,
-			})
+	for _, gvk := range gvkOrder {
+		g := groups[gvk]
+		sub := watcher.Subscriber{Owner: owner, Matchers: g.matchers}
+		if err := r.Registry.Subscribe(ctx, gvk, g.scope, sub); err != nil {
+			// One informer failure prevents every member in this GVK group
+			// from receiving events. Surface a per-member error so each
+			// member's rollup carries WatchSetupFailed, not a misleading
+			// empty-set rollup.
+			for _, m := range g.members {
+				errs = append(errs, MemberError{
+					Name:    m.Name,
+					Group:   gvk.Group,
+					Version: gvk.Version,
+					Kind:    gvk.Kind,
+					Reason:  apiv1.ReasonWatchSetupFailed,
+					Err:     err,
+				})
+			}
 		}
 	}
 	return errs

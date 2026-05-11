@@ -54,7 +54,7 @@ func newFakeRegistry() *fakeRegistry {
 	}
 }
 
-func (r *fakeRegistry) Subscribe(gvk schema.GroupVersionKind, _ apimeta.RESTScopeName, sub watcher.Subscriber) error {
+func (r *fakeRegistry) Subscribe(_ context.Context, gvk schema.GroupVersionKind, _ apimeta.RESTScopeName, sub watcher.Subscriber) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if err := r.subscribeErr[gvk]; err != nil {

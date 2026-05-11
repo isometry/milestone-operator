@@ -17,4 +17,8 @@ const (
 	nameWave0        = "wave-0"
 	groupHelmToolkit = "helm.toolkit.fluxcd.io"
 	kindHelmRelease  = "HelmRelease"
+
+	// echelonFluxSystemWave0Key is the canonical owner-key string for
+	// nsFluxSystem/nameWave0 produced by ownerKeys().
+	echelonFluxSystemWave0Key = "Echelon/flux-system/wave-0"
 )

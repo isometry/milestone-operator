@@ -11,9 +11,11 @@ You may obtain a copy of the License at
 package watcher
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/isometry/echelon-operator/internal/metrics"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -21,6 +23,12 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+// DefaultSyncTimeout caps how long Subscribe will wait for the per-GVK
+// informer cache to populate before returning a WatchSetupFailed error. The
+// reconciler runs subscriptions sequentially per GVK, so this is also the
+// effective per-GVK budget within a single reconcile.
+const DefaultSyncTimeout = 30 * time.Second
 
 // EventType identifies the kind of informer event being dispatched.
 type EventType int
@@ -54,10 +62,13 @@ type InformerEntry interface {
 	List() ([]*unstructured.Unstructured, error)
 }
 
-// InformerFactory creates per-GVK informers. Abstracted so tests can fake the
-// underlying dynamic informer machinery.
+// InformerFactory creates per-GVK informers. Start must block until the
+// informer's cache reports HasSynced or ctx is cancelled; on failure it must
+// stop any internal goroutines and return an error so the Registry does not
+// register a half-initialised entry. The Registry derives ctx with a sync
+// deadline before calling Start.
 type InformerFactory interface {
-	Start(gvk schema.GroupVersionKind, scope apimeta.RESTScopeName, handler InformerEventHandler) (InformerEntry, error)
+	Start(ctx context.Context, gvk schema.GroupVersionKind, scope apimeta.RESTScopeName, handler InformerEventHandler) (InformerEntry, error)
 }
 
 // EnqueueFunc enqueues a single owner for reconciliation.
@@ -77,6 +88,10 @@ type Registry struct {
 	factory InformerFactory
 	enqueue EnqueueFunc
 	index   *SubscriberIndex
+
+	// SyncTimeout overrides DefaultSyncTimeout. Zero means use the default.
+	// Envtest sets a smaller value to keep test runtimes tight.
+	SyncTimeout time.Duration
 
 	mu        sync.Mutex
 	informers map[schema.GroupVersionKind]InformerEntry
@@ -99,15 +114,18 @@ func NewRegistry(factory InformerFactory, enqueue EnqueueFunc) *Registry {
 	}
 }
 
-// Subscribe registers sub for gvk, starting the per-GVK informer if this is
-// the first subscriber. Idempotent: re-subscribing the same Owner replaces the
-// previous Subscriber (selector update) without changing refcounts.
+// Subscribe registers sub for gvk, starting the per-GVK informer (and waiting
+// for its cache to sync) on the first subscriber. Re-subscribing the same
+// Owner replaces the previous matcher set without changing refcounts.
 //
-// The slow factory.Start call runs without holding r.mu — concurrent Subscribes
-// for unrelated GVKs proceed in parallel, and concurrent Subscribes for the
-// same GVK wait on a single shared start (one informer per GVK invariant
-// preserved).
-func (r *Registry) Subscribe(gvk schema.GroupVersionKind, scope apimeta.RESTScopeName, sub Subscriber) error {
+// factory.Start runs without holding r.mu — concurrent Subscribes for
+// unrelated GVKs proceed in parallel; concurrent Subscribes for the same GVK
+// share a single in-flight Start (one informer per GVK).
+func (r *Registry) Subscribe(ctx context.Context, gvk schema.GroupVersionKind, scope apimeta.RESTScopeName, sub Subscriber) error {
+	timeout := r.SyncTimeout
+	if timeout <= 0 {
+		timeout = DefaultSyncTimeout
+	}
 	for {
 		r.mu.Lock()
 		if _, running := r.informers[gvk]; running {
@@ -117,7 +135,11 @@ func (r *Registry) Subscribe(gvk schema.GroupVersionKind, scope apimeta.RESTScop
 		}
 		if inflight, ok := r.starting[gvk]; ok {
 			r.mu.Unlock()
-			<-inflight.done
+			select {
+			case <-inflight.done:
+			case <-ctx.Done():
+				return fmt.Errorf("watcher: subscribe %s cancelled: %w", gvk, ctx.Err())
+			}
 			if inflight.err != nil {
 				metrics.SubscribeTotal.WithLabelValues(gvk.Group, gvk.Version, gvk.Kind, metrics.SubscribeError).Inc()
 				return fmt.Errorf("watcher: start informer for %s: %w", gvk, inflight.err)
@@ -131,7 +153,9 @@ func (r *Registry) Subscribe(gvk schema.GroupVersionKind, scope apimeta.RESTScop
 		r.starting[gvk] = inflight
 		r.mu.Unlock()
 
-		entry, err := r.factory.Start(gvk, scope, r.dispatch(gvk))
+		startCtx, cancel := context.WithTimeout(ctx, timeout)
+		entry, err := r.factory.Start(startCtx, gvk, scope, r.dispatch(gvk))
+		cancel()
 
 		r.mu.Lock()
 		delete(r.starting, gvk)

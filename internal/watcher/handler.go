@@ -11,6 +11,7 @@ You may obtain a copy of the License at
 package watcher
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -37,9 +38,12 @@ func NewDynamicFactory(client dynamic.Interface, mapper apimeta.RESTMapper, resy
 	return &DynamicFactory{client: client, mapper: mapper, resyncPeriod: resync}
 }
 
-// Start creates and runs an informer for the given GVK. The returned
-// InformerEntry's Stop closes the underlying watch goroutines.
-func (f *DynamicFactory) Start(gvk schema.GroupVersionKind, _ apimeta.RESTScopeName, handler InformerEventHandler) (InformerEntry, error) {
+// Start creates and runs an informer for the given GVK, blocking until the
+// cache has reported HasSynced or ctx is cancelled (the Registry derives ctx
+// with a sync-timeout deadline). Returning before sync would let the caller
+// observe an empty cache and report Ready=True for a member whose resources
+// simply hadn't loaded yet.
+func (f *DynamicFactory) Start(ctx context.Context, gvk schema.GroupVersionKind, _ apimeta.RESTScopeName, handler InformerEventHandler) (InformerEntry, error) {
 	mapping, err := f.mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
 	if err != nil {
 		return nil, fmt.Errorf("REST mapping for %s: %w", gvk, err)
@@ -54,6 +58,11 @@ func (f *DynamicFactory) Start(gvk schema.GroupVersionKind, _ apimeta.RESTScopeN
 
 	stopCh := make(chan struct{})
 	infFactory.Start(stopCh)
+
+	if !cache.WaitForCacheSync(ctx.Done(), gen.Informer().HasSynced) {
+		close(stopCh)
+		return nil, fmt.Errorf("informer sync for %s: %w", gvk, ctx.Err())
+	}
 
 	return &dynamicEntry{
 		gvk:    gvk,
