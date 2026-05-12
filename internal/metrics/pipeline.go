@@ -12,7 +12,7 @@ package metrics
 
 import "github.com/prometheus/client_golang/prometheus"
 
-// Stage labels used in echelon_reconcile_stage_duration_seconds.
+// Stage labels used in milestone_reconcile_stage_duration_seconds.
 const (
 	StageDiscovery     = "discovery"
 	StageSubscriptions = "subscriptions"
@@ -22,20 +22,20 @@ const (
 	StagePatch         = "patch"
 )
 
-// Patch result labels used in echelon_status_patch_total.
+// Patch result labels used in milestone_status_patch_total.
 const (
 	PatchChanged   = "changed"
 	PatchUnchanged = "unchanged"
 	PatchError     = "error"
 )
 
-// Subscribe result labels used in echelon_subscribe_total.
+// Subscribe result labels used in milestone_subscribe_total.
 const (
 	SubscribeOK    = "ok"
 	SubscribeError = "error"
 )
 
-// Discovery result labels used in echelon_discovery_resolve_total.
+// Discovery result labels used in milestone_discovery_resolve_total.
 const (
 	DiscoveryHit            = "hit"
 	DiscoveryMiss           = "miss"
@@ -43,7 +43,7 @@ const (
 	DiscoveryError          = "error"
 )
 
-// Informer event labels used in echelon_informer_events_total.
+// Informer event labels used in milestone_informer_events_total.
 const (
 	EventAdd    = "add"
 	EventUpdate = "update"
@@ -53,7 +53,7 @@ const (
 // ObserveStage starts a timer for a named reconcile stage. Defer the returned
 // closure to record the elapsed time:
 //
-//	defer metrics.ObserveStage("Echelon", metrics.StageDiscovery)()
+//	defer metrics.ObserveStage("Milestone", metrics.StageDiscovery)()
 func ObserveStage(controller, stage string) func() {
 	t := prometheus.NewTimer(ReconcileStageDuration.WithLabelValues(controller, stage))
 	return func() { t.ObserveDuration() }

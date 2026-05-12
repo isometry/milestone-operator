@@ -20,16 +20,15 @@ resources:
 - metrics_reader_role.yaml
 # For each CRD, "Admin", "Editor" and "Viewer" roles are scaffolded by
 # default, aiding admins in cluster management. Those roles are
-# not used by the echelon-operator itself. You can comment the following lines
+# not used by the milestone-operator itself. You can comment the following lines
 # if you do not want those helpers be installed with your Project.
-- clusterechelon_admin_role.yaml
-- clusterechelon_editor_role.yaml
-- clusterechelon_viewer_role.yaml
-- echelon_admin_role.yaml
-- echelon_editor_role.yaml
-- echelon_viewer_role.yaml
+- clustermilestone_admin_role.yaml
+- clustermilestone_editor_role.yaml
+- clustermilestone_viewer_role.yaml
+- milestone_admin_role.yaml
+- milestone_editor_role.yaml
+- milestone_viewer_role.yaml
 # Permissive ClusterRole granting list/watch on common GitOps resource groups
 # the operator's dynamic informers need. Replace with a narrower role for
 # restricted clusters.
 - dynamic_watch_role.yaml
-

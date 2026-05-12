@@ -15,7 +15,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/isometry/echelon-operator/internal/watcher"
+	"github.com/isometry/milestone-operator/internal/watcher"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
@@ -59,24 +59,24 @@ func ownerKeys(in []watcher.OwnerKey) []string {
 func TestSubscriberIndex_Subscribers_LabelSelector(t *testing.T) {
 	idx := watcher.NewSubscriberIndex()
 	wave0 := subWith(
-		watcher.OwnerKey{Kind: kindEchelon, Namespace: nsFluxSystem, Name: nameWave0},
+		watcher.OwnerKey{Kind: kindMilestone, Namespace: nsFluxSystem, Name: nameWave0},
 		mustSelector(t, map[string]string{labelWave: "0"}), nil,
 	)
 	wave1 := subWith(
-		watcher.OwnerKey{Kind: kindEchelon, Namespace: nsFluxSystem, Name: "wave-1"},
+		watcher.OwnerKey{Kind: kindMilestone, Namespace: nsFluxSystem, Name: "wave-1"},
 		mustSelector(t, map[string]string{labelWave: "1"}), nil,
 	)
 	idx.Add(kustomizationGVK, wave0)
 	idx.Add(kustomizationGVK, wave1)
 
 	got := idx.Subscribers(kustomizationGVK, makeObj(nsFluxSystem, "k1", map[string]string{labelWave: "0"}))
-	want := []string{echelonFluxSystemWave0Key}
+	want := []string{milestoneFluxSystemWave0Key}
 	if !equal(ownerKeys(got), want) {
 		t.Errorf("subscribers = %v, want %v", ownerKeys(got), want)
 	}
 
 	got = idx.Subscribers(kustomizationGVK, makeObj(nsFluxSystem, "k2", map[string]string{labelWave: "1"}))
-	want = []string{"Echelon/flux-system/wave-1"}
+	want = []string{"Milestone/flux-system/wave-1"}
 	if !equal(ownerKeys(got), want) {
 		t.Errorf("subscribers = %v, want %v", ownerKeys(got), want)
 	}
@@ -90,24 +90,24 @@ func TestSubscriberIndex_Subscribers_LabelSelector(t *testing.T) {
 func TestSubscriberIndex_Subscribers_NamespaceMatcher(t *testing.T) {
 	idx := watcher.NewSubscriberIndex()
 	teamA := subWith(
-		watcher.OwnerKey{Kind: "ClusterEchelon", Name: "platform-wave"},
+		watcher.OwnerKey{Kind: "ClusterMilestone", Name: "platform-wave"},
 		labels.Everything(),
 		func(ns string) bool { return ns == "team-a" },
 	)
 	all := subWith(
-		watcher.OwnerKey{Kind: "ClusterEchelon", Name: "global-wave"},
+		watcher.OwnerKey{Kind: "ClusterMilestone", Name: "global-wave"},
 		labels.Everything(), nil,
 	)
 	idx.Add(kustomizationGVK, teamA)
 	idx.Add(kustomizationGVK, all)
 
 	got := idx.Subscribers(kustomizationGVK, makeObj("team-a", "k1", nil))
-	if !equal(ownerKeys(got), []string{"ClusterEchelon//global-wave", "ClusterEchelon//platform-wave"}) {
+	if !equal(ownerKeys(got), []string{"ClusterMilestone//global-wave", "ClusterMilestone//platform-wave"}) {
 		t.Errorf("subscribers (team-a) = %v", ownerKeys(got))
 	}
 
 	got = idx.Subscribers(kustomizationGVK, makeObj("team-b", "k2", nil))
-	if !equal(ownerKeys(got), []string{"ClusterEchelon//global-wave"}) {
+	if !equal(ownerKeys(got), []string{"ClusterMilestone//global-wave"}) {
 		t.Errorf("subscribers (team-b) = %v", ownerKeys(got))
 	}
 }
@@ -115,7 +115,7 @@ func TestSubscriberIndex_Subscribers_NamespaceMatcher(t *testing.T) {
 func TestSubscriberIndex_NoMatchers_MatchesAll(t *testing.T) {
 	idx := watcher.NewSubscriberIndex()
 	idx.Add(kustomizationGVK, watcher.Subscriber{
-		Owner: watcher.OwnerKey{Kind: kindEchelon, Namespace: nsFluxSystem, Name: "all"},
+		Owner: watcher.OwnerKey{Kind: kindMilestone, Namespace: nsFluxSystem, Name: "all"},
 		// Matchers intentionally empty ⇒ should match everything (preserves
 		// prior nil-selector semantics).
 	})
@@ -127,7 +127,7 @@ func TestSubscriberIndex_NoMatchers_MatchesAll(t *testing.T) {
 
 func TestSubscriberIndex_Remove(t *testing.T) {
 	idx := watcher.NewSubscriberIndex()
-	owner := watcher.OwnerKey{Kind: kindEchelon, Namespace: nsFluxSystem, Name: nameWave0}
+	owner := watcher.OwnerKey{Kind: kindMilestone, Namespace: nsFluxSystem, Name: nameWave0}
 	idx.Add(kustomizationGVK, subWith(owner, labels.Everything(), nil))
 	if c := idx.SubscriberCount(kustomizationGVK); c != 1 {
 		t.Errorf("count after Add = %d, want 1", c)
@@ -148,7 +148,7 @@ func TestSubscriberIndex_Remove(t *testing.T) {
 // silently retain stale matchers from previous reconciles.
 func TestSubscriberIndex_AddReplacesMatcherSet(t *testing.T) {
 	idx := watcher.NewSubscriberIndex()
-	owner := watcher.OwnerKey{Kind: kindEchelon, Namespace: nsFluxSystem, Name: nameWave0}
+	owner := watcher.OwnerKey{Kind: kindMilestone, Namespace: nsFluxSystem, Name: nameWave0}
 	idx.Add(kustomizationGVK, subWith(owner, mustSelector(t, map[string]string{labelWave: "0"}), nil))
 	idx.Add(kustomizationGVK, subWith(owner, mustSelector(t, map[string]string{labelWave: "1"}), nil))
 	if c := idx.SubscriberCount(kustomizationGVK); c != 1 {
@@ -169,7 +169,7 @@ func TestSubscriberIndex_AddReplacesMatcherSet(t *testing.T) {
 // objects admitted by either selector must enqueue the owner.
 func TestSubscriberIndex_MultipleMatchers_SameOwnerGVK(t *testing.T) {
 	idx := watcher.NewSubscriberIndex()
-	owner := watcher.OwnerKey{Kind: kindEchelon, Namespace: nsFluxSystem, Name: nameWave0}
+	owner := watcher.OwnerKey{Kind: kindMilestone, Namespace: nsFluxSystem, Name: nameWave0}
 	idx.Add(kustomizationGVK, watcher.Subscriber{
 		Owner: owner,
 		Matchers: []watcher.Matcher{
@@ -180,7 +180,7 @@ func TestSubscriberIndex_MultipleMatchers_SameOwnerGVK(t *testing.T) {
 
 	for _, wave := range []string{"0", "1"} {
 		got := idx.Subscribers(kustomizationGVK, makeObj(nsFluxSystem, "k-"+wave, map[string]string{labelWave: wave}))
-		if !equal(ownerKeys(got), []string{echelonFluxSystemWave0Key}) {
+		if !equal(ownerKeys(got), []string{milestoneFluxSystemWave0Key}) {
 			t.Errorf("wave=%s: subscribers = %v, want wave-0", wave, ownerKeys(got))
 		}
 	}
@@ -196,7 +196,7 @@ func TestSubscriberIndex_MultipleMatchers_SameOwnerGVK(t *testing.T) {
 // Subscriber, the owner is enqueued exactly once.
 func TestSubscriberIndex_MultipleMatchers_OwnerReturnedOnce(t *testing.T) {
 	idx := watcher.NewSubscriberIndex()
-	owner := watcher.OwnerKey{Kind: kindEchelon, Namespace: nsFluxSystem, Name: nameWave0}
+	owner := watcher.OwnerKey{Kind: kindMilestone, Namespace: nsFluxSystem, Name: nameWave0}
 	idx.Add(kustomizationGVK, watcher.Subscriber{
 		Owner: owner,
 		Matchers: []watcher.Matcher{
@@ -205,14 +205,14 @@ func TestSubscriberIndex_MultipleMatchers_OwnerReturnedOnce(t *testing.T) {
 		},
 	})
 	got := idx.Subscribers(kustomizationGVK, makeObj(nsFluxSystem, "k1", nil))
-	if !equal(ownerKeys(got), []string{echelonFluxSystemWave0Key}) {
+	if !equal(ownerKeys(got), []string{milestoneFluxSystemWave0Key}) {
 		t.Errorf("owner should appear once, got %v", ownerKeys(got))
 	}
 }
 
 func TestSubscriberIndex_GVKsByOwner(t *testing.T) {
 	idx := watcher.NewSubscriberIndex()
-	owner := watcher.OwnerKey{Kind: kindEchelon, Namespace: nsFluxSystem, Name: "multi"}
+	owner := watcher.OwnerKey{Kind: kindMilestone, Namespace: nsFluxSystem, Name: "multi"}
 	helmGVK := schema.GroupVersionKind{Group: groupHelmToolkit, Version: "v2", Kind: kindHelmRelease}
 	idx.Add(kustomizationGVK, subWith(owner, labels.Everything(), nil))
 	idx.Add(helmGVK, subWith(owner, labels.Everything(), nil))
@@ -236,7 +236,7 @@ func TestSubscriberIndex_Concurrent(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			owner := watcher.OwnerKey{Kind: kindEchelon, Namespace: nsFluxSystem, Name: nameOf(i)}
+			owner := watcher.OwnerKey{Kind: kindMilestone, Namespace: nsFluxSystem, Name: nameOf(i)}
 			idx.Add(kustomizationGVK, subWith(owner, labels.Everything(), nil))
 			_ = idx.Subscribers(kustomizationGVK, makeObj(nsFluxSystem, "k", nil))
 			idx.Remove(kustomizationGVK, owner)

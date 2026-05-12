@@ -17,10 +17,10 @@ import (
 	"testing"
 	"time"
 
-	apiv1 "github.com/isometry/echelon-operator/api/v1"
-	"github.com/isometry/echelon-operator/internal/controller"
-	"github.com/isometry/echelon-operator/internal/discovery"
-	"github.com/isometry/echelon-operator/internal/watcher"
+	apiv1 "github.com/isometry/milestone-operator/api/v1"
+	"github.com/isometry/milestone-operator/internal/controller"
+	"github.com/isometry/milestone-operator/internal/discovery"
+	"github.com/isometry/milestone-operator/internal/watcher"
 	corev1 "k8s.io/api/core/v1"
 	apiextv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -45,7 +45,7 @@ type envFixture struct {
 	t          *testing.T
 	registry   *watcher.Registry
 	resolver   discovery.Resolver
-	reconciler *controller.Reconciler[*apiv1.Echelon]
+	reconciler *controller.Reconciler[*apiv1.Milestone]
 	mapper     *restmapper.DeferredDiscoveryRESTMapper
 	namespace  string
 }
@@ -76,12 +76,12 @@ func newEnvFixture(t *testing.T) *envFixture {
 
 	registry := watcher.NewRegistry(dynFactory, func(watcher.OwnerKey) {})
 
-	rec := &controller.Reconciler[*apiv1.Echelon]{
+	rec := &controller.Reconciler[*apiv1.Milestone]{
 		Client:     envtestClient,
 		Registry:   registry,
 		Resolver:   resolver,
-		NewAdapter: controller.NewEchelonAdapter,
-		Controller: kindEchelon,
+		NewAdapter: controller.NewMilestoneAdapter,
+		Controller: kindMilestone,
 	}
 	return &envFixture{t: t, registry: registry, resolver: resolver, reconciler: rec, mapper: mapper, namespace: ns}
 }
@@ -94,17 +94,17 @@ func createNamespace(t *testing.T, name string) {
 	}
 }
 
-// createEchelon creates an Echelon in ns and returns the live object.
-func createEchelon(t *testing.T, ns, name string, members map[string]apiv1.MemberSpec) *apiv1.Echelon {
+// createMilestone creates a Milestone in ns and returns the live object.
+func createMilestone(t *testing.T, ns, name string, deps []apiv1.DependencyRef) *apiv1.Milestone {
 	t.Helper()
-	ech := &apiv1.Echelon{
+	m := &apiv1.Milestone{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name},
-		Spec:       apiv1.EchelonSpec{Members: members},
+		Spec:       apiv1.MilestoneSpec{DependsOn: deps},
 	}
-	if err := envtestClient.Create(t.Context(), ech); err != nil {
-		t.Fatalf("create echelon: %v", err)
+	if err := envtestClient.Create(t.Context(), m); err != nil {
+		t.Fatalf("create milestone: %v", err)
 	}
-	return ech
+	return m
 }
 
 // createWidget creates a Widget in ns. ready is one of statusTrue, "False", "" (no
@@ -129,20 +129,20 @@ func createWidget(t *testing.T, ns, name, ready string) *unstructured.Unstructur
 
 // reconcileToConvergence reconciles repeatedly until the predicate returns
 // nil, or the deadline expires.
-func reconcileToConvergence(t *testing.T, fix *envFixture, key client.ObjectKey, predicate func(*apiv1.Echelon) error) {
+func reconcileToConvergence(t *testing.T, fix *envFixture, key client.ObjectKey, predicate func(*apiv1.Milestone) error) {
 	t.Helper()
 	deadline := time.Now().Add(convergenceMaxDur)
 	for time.Now().Before(deadline) {
-		ech := &apiv1.Echelon{}
-		if err := envtestClient.Get(t.Context(), key, ech); err != nil {
-			t.Fatalf("get echelon: %v", err)
+		m := &apiv1.Milestone{}
+		if err := envtestClient.Get(t.Context(), key, m); err != nil {
+			t.Fatalf("get milestone: %v", err)
 		}
-		if _, err := fix.reconciler.ReconcileObject(t.Context(), ech); err != nil {
+		if _, err := fix.reconciler.ReconcileObject(t.Context(), m); err != nil {
 			t.Fatalf("reconcile: %v", err)
 		}
 		// Re-fetch to read current status.
-		_ = envtestClient.Get(t.Context(), key, ech)
-		if err := predicate(ech); err == nil {
+		_ = envtestClient.Get(t.Context(), key, m)
+		if err := predicate(m); err == nil {
 			return
 		}
 		time.Sleep(convergencePoll)
@@ -150,8 +150,8 @@ func reconcileToConvergence(t *testing.T, fix *envFixture, key client.ObjectKey,
 	t.Fatalf("did not converge within %s", convergenceMaxDur)
 }
 
-func ready(ech *apiv1.Echelon) metav1.ConditionStatus {
-	for _, c := range ech.Status.Conditions {
+func ready(m *apiv1.Milestone) metav1.ConditionStatus {
+	for _, c := range m.Status.Conditions {
 		if c.Type == apiv1.ConditionReady {
 			return c.Status
 		}
@@ -159,8 +159,8 @@ func ready(ech *apiv1.Echelon) metav1.ConditionStatus {
 	return ""
 }
 
-func stalled(ech *apiv1.Echelon) metav1.ConditionStatus {
-	for _, c := range ech.Status.Conditions {
+func stalled(m *apiv1.Milestone) metav1.ConditionStatus {
+	for _, c := range m.Status.Conditions {
 		if c.Type == apiv1.ConditionStalled {
 			return c.Status
 		}
@@ -168,24 +168,36 @@ func stalled(ech *apiv1.Echelon) metav1.ConditionStatus {
 	return ""
 }
 
-// 1. Happy path: an Echelon with one all-Current Widget member converges to Ready=True.
+func depStatusByName(m *apiv1.Milestone, name string) (apiv1.DependencyStatus, bool) {
+	for i := range m.Status.DependsOn {
+		if m.Status.DependsOn[i].Name == name {
+			return m.Status.DependsOn[i], true
+		}
+	}
+	return apiv1.DependencyStatus{}, false
+}
+
+// 1. Happy path: a Milestone with one all-Current Widget dependency
+// converges to Ready=True.
 func TestEnvtest_HappyPath_AllCurrent(t *testing.T) {
 	fix := newEnvFixture(t)
 	createWidget(t, fix.namespace, "w1", statusTrue)
 
-	ech := createEchelon(t, fix.namespace, "happy", map[string]apiv1.MemberSpec{
-		widgetPlural: {Group: groupTestAsCode, Kind: kindWidget, EmptySetPolicy: apiv1.EmptySetUnknown},
-	})
+	m := createMilestone(t, fix.namespace, "happy", []apiv1.DependencyRef{{
+		Name:           widgetPlural,
+		EmptySetPolicy: apiv1.EmptySetUnknown,
+		Target:         apiv1.TargetSpec{Group: groupTestAsCode, Kind: kindWidget},
+	}})
 
 	// First reconcile adds the finalizer; second reconcile starts the informer.
 	// Informers need a moment to sync; we then loop until Ready=True or timeout.
 	for i := range 3 {
-		_, err := fix.reconciler.ReconcileObject(t.Context(), refresh(t, ech))
+		_, err := fix.reconciler.ReconcileObject(t.Context(), refresh(t, m))
 		if err != nil {
 			t.Fatalf("reconcile %d: %v", i, err)
 		}
 	}
-	reconcileToConvergence(t, fix, client.ObjectKeyFromObject(ech), func(e *apiv1.Echelon) error {
+	reconcileToConvergence(t, fix, client.ObjectKeyFromObject(m), func(e *apiv1.Milestone) error {
 		if ready(e) != metav1.ConditionTrue {
 			return fmt.Errorf("Ready=%s", ready(e))
 		}
@@ -196,14 +208,16 @@ func TestEnvtest_HappyPath_AllCurrent(t *testing.T) {
 // 2. Empty selector with NotReady policy yields Ready=False.
 func TestEnvtest_EmptySet_NotReadyPolicy(t *testing.T) {
 	fix := newEnvFixture(t)
-	ech := createEchelon(t, fix.namespace, "empty", map[string]apiv1.MemberSpec{
-		widgetPlural: {Group: groupTestAsCode, Kind: kindWidget, EmptySetPolicy: apiv1.EmptySetNotReady},
-	})
+	m := createMilestone(t, fix.namespace, "empty", []apiv1.DependencyRef{{
+		Name:           widgetPlural,
+		EmptySetPolicy: apiv1.EmptySetNotReady,
+		Target:         apiv1.TargetSpec{Group: groupTestAsCode, Kind: kindWidget},
+	}})
 
 	for range 3 {
-		_, _ = fix.reconciler.ReconcileObject(t.Context(), refresh(t, ech))
+		_, _ = fix.reconciler.ReconcileObject(t.Context(), refresh(t, m))
 	}
-	reconcileToConvergence(t, fix, client.ObjectKeyFromObject(ech), func(e *apiv1.Echelon) error {
+	reconcileToConvergence(t, fix, client.ObjectKeyFromObject(m), func(e *apiv1.Milestone) error {
 		if ready(e) != metav1.ConditionFalse {
 			return fmt.Errorf("Ready=%s", ready(e))
 		}
@@ -211,31 +225,33 @@ func TestEnvtest_EmptySet_NotReadyPolicy(t *testing.T) {
 	})
 }
 
-// 3. Late CRD: an Echelon referencing an unknown kind starts Stalled, then
+// 3. Late CRD: a Milestone referencing an unknown kind starts Stalled, then
 // converges after the CRD is installed.
 func TestEnvtest_LateCRD_StalledThenConverges(t *testing.T) {
 	fix := newEnvFixture(t)
 
-	ech := createEchelon(t, fix.namespace, memberLate, map[string]apiv1.MemberSpec{
-		"lates": {Group: "late.test.as-code.io", Kind: kindLate, EmptySetPolicy: apiv1.EmptySetUnknown},
-	})
+	m := createMilestone(t, fix.namespace, depLate, []apiv1.DependencyRef{{
+		Name:           "lates",
+		EmptySetPolicy: apiv1.EmptySetUnknown,
+		Target:         apiv1.TargetSpec{Group: "late.test.milestone.as-code.io", Kind: kindLate},
+	}})
 
 	// Initial reconcile: should set Stalled=True.
-	_, _ = fix.reconciler.ReconcileObject(t.Context(), refresh(t, ech))
-	_, _ = fix.reconciler.ReconcileObject(t.Context(), refresh(t, ech)) // post-finalizer
+	_, _ = fix.reconciler.ReconcileObject(t.Context(), refresh(t, m))
+	_, _ = fix.reconciler.ReconcileObject(t.Context(), refresh(t, m)) // post-finalizer
 
-	got := refresh(t, ech)
+	got := refresh(t, m)
 	if stalled(got) != metav1.ConditionTrue {
 		t.Fatalf("Stalled=%s, want True before CRD install; conds=%+v", stalled(got), got.Status.Conditions)
 	}
 
 	// Install the late CRD.
 	lateCRD := &apiextv1.CustomResourceDefinition{
-		ObjectMeta: metav1.ObjectMeta{Name: "lates.late.test.as-code.io"},
+		ObjectMeta: metav1.ObjectMeta{Name: "lates.late.test.milestone.as-code.io"},
 		Spec: apiextv1.CustomResourceDefinitionSpec{
-			Group: "late.test.as-code.io",
+			Group: "late.test.milestone.as-code.io",
 			Names: apiextv1.CustomResourceDefinitionNames{
-				Plural: "lates", Singular: memberLate, Kind: kindLate, ListKind: "LateList",
+				Plural: "lates", Singular: depLate, Kind: kindLate, ListKind: "LateList",
 			},
 			Scope: apiextv1.NamespaceScoped,
 			Versions: []apiextv1.CustomResourceDefinitionVersion{{
@@ -249,7 +265,7 @@ func TestEnvtest_LateCRD_StalledThenConverges(t *testing.T) {
 	if err := envtestClient.Create(t.Context(), lateCRD); err != nil && !apierrors.IsAlreadyExists(err) {
 		t.Fatalf("create late CRD: %v", err)
 	}
-	if err := waitForCRDEstablished(t.Context(), envtestClient, "lates.late.test.as-code.io", 10*time.Second); err != nil {
+	if err := waitForCRDEstablished(t.Context(), envtestClient, "lates.late.test.milestone.as-code.io", 10*time.Second); err != nil {
 		t.Fatalf("wait CRD established: %v", err)
 	}
 
@@ -258,7 +274,7 @@ func TestEnvtest_LateCRD_StalledThenConverges(t *testing.T) {
 	fix.resolver.Invalidate()
 	fix.mapper.Reset()
 
-	reconcileToConvergence(t, fix, client.ObjectKeyFromObject(ech), func(e *apiv1.Echelon) error {
+	reconcileToConvergence(t, fix, client.ObjectKeyFromObject(m), func(e *apiv1.Milestone) error {
 		if stalled(e) == metav1.ConditionTrue {
 			return errors.New("still stalled")
 		}
@@ -266,29 +282,31 @@ func TestEnvtest_LateCRD_StalledThenConverges(t *testing.T) {
 	})
 }
 
-// 4. Subscription diff: removing a member from spec.members tears the
-// informer down (registry GVKCount drops back).
+// 4. Subscription diff: deleting a Milestone tears the informer down
+// (registry GVKCount drops back to zero via the finalizer cleanup).
 func TestEnvtest_SubscriptionDiff_RemovesInformer(t *testing.T) {
 	fix := newEnvFixture(t)
 
-	ech := createEchelon(t, fix.namespace, "diff", map[string]apiv1.MemberSpec{
-		widgetPlural: {Group: groupTestAsCode, Kind: kindWidget, EmptySetPolicy: apiv1.EmptySetUnknown},
-	})
+	m := createMilestone(t, fix.namespace, "diff", []apiv1.DependencyRef{{
+		Name:           widgetPlural,
+		EmptySetPolicy: apiv1.EmptySetUnknown,
+		Target:         apiv1.TargetSpec{Group: groupTestAsCode, Kind: kindWidget},
+	}})
 	for range 3 {
-		_, _ = fix.reconciler.ReconcileObject(t.Context(), refresh(t, ech))
+		_, _ = fix.reconciler.ReconcileObject(t.Context(), refresh(t, m))
 	}
 	if got := fix.registry.GVKCount(); got != 1 {
 		t.Fatalf("after subscribe GVKCount=%d, want 1", got)
 	}
 
-	// Removing all members requires MinProperties=1 in CRD validation, so we
-	// instead delete the Echelon, which triggers the finalizer cleanup.
-	if err := envtestClient.Delete(t.Context(), refresh(t, ech)); err != nil {
-		t.Fatalf("delete echelon: %v", err)
+	// Removing all dependencies requires MinItems=1 in CRD validation, so we
+	// instead delete the Milestone, which triggers the finalizer cleanup.
+	if err := envtestClient.Delete(t.Context(), refresh(t, m)); err != nil {
+		t.Fatalf("delete milestone: %v", err)
 	}
 	for range 3 {
-		curr := &apiv1.Echelon{}
-		if err := envtestClient.Get(t.Context(), client.ObjectKeyFromObject(ech), curr); err != nil {
+		curr := &apiv1.Milestone{}
+		if err := envtestClient.Get(t.Context(), client.ObjectKeyFromObject(m), curr); err != nil {
 			break // gone
 		}
 		if _, err := fix.reconciler.ReconcileObject(t.Context(), curr); err != nil {
@@ -300,50 +318,48 @@ func TestEnvtest_SubscriptionDiff_RemovesInformer(t *testing.T) {
 	}
 }
 
-// 5. CRD-level validation: an empty members map must be rejected on Create.
-func TestEnvtest_EmptyMembersMap_RejectedByCEL(t *testing.T) {
+// 5. CRD-level validation: an empty dependsOn list must be rejected on Create.
+func TestEnvtest_EmptyDependsOn_RejectedByCRD(t *testing.T) {
 	fix := newEnvFixture(t)
 
-	ech := &apiv1.Echelon{
-		ObjectMeta: metav1.ObjectMeta{Namespace: fix.namespace, Name: "empty-map"},
-		Spec:       apiv1.EchelonSpec{Members: map[string]apiv1.MemberSpec{}},
+	m := &apiv1.Milestone{
+		ObjectMeta: metav1.ObjectMeta{Namespace: fix.namespace, Name: "empty-list"},
+		Spec:       apiv1.MilestoneSpec{DependsOn: []apiv1.DependencyRef{}},
 	}
-	err := envtestClient.Create(t.Context(), ech)
+	err := envtestClient.Create(t.Context(), m)
 	if err == nil {
-		t.Fatalf("expected validation error for empty members map; got nil")
+		t.Fatalf("expected validation error for empty dependsOn list; got nil")
 	}
-	if !apierrors.IsInvalid(err) && !strings.Contains(err.Error(), "minProperties") && !strings.Contains(err.Error(), "Invalid") {
-		t.Errorf("expected Invalid/minProperties error, got %v", err)
+	if !apierrors.IsInvalid(err) && !strings.Contains(err.Error(), "minItems") && !strings.Contains(err.Error(), "Invalid") {
+		t.Errorf("expected Invalid/minItems error, got %v", err)
 	}
 }
 
-// 6. CRD-level validation: a member key that violates the RFC-1123 label
-// regex must be rejected by the spec-level CEL XValidation.
-func TestEnvtest_InvalidMemberKey_RejectedByCEL(t *testing.T) {
+// 6. CRD-level validation: a dependency name that violates the RFC-1123
+// label regex must be rejected by the field-level pattern marker.
+func TestEnvtest_InvalidDependencyName_RejectedByCRD(t *testing.T) {
 	fix := newEnvFixture(t)
 
-	ech := &apiv1.Echelon{
-		ObjectMeta: metav1.ObjectMeta{Namespace: fix.namespace, Name: "bad-key"},
-		Spec: apiv1.EchelonSpec{Members: map[string]apiv1.MemberSpec{
-			"BadKey_WithCaps": {Group: groupTestAsCode, Kind: kindWidget},
-		}},
+	m := &apiv1.Milestone{
+		ObjectMeta: metav1.ObjectMeta{Namespace: fix.namespace, Name: "bad-name"},
+		Spec: apiv1.MilestoneSpec{DependsOn: []apiv1.DependencyRef{{
+			Name:   "BadName_WithCaps",
+			Target: apiv1.TargetSpec{Group: groupTestAsCode, Kind: kindWidget},
+		}}},
 	}
-	err := envtestClient.Create(t.Context(), ech)
+	err := envtestClient.Create(t.Context(), m)
 	if err == nil {
-		t.Fatalf("expected CEL validation error for invalid key; got nil")
+		t.Fatalf("expected validation error for invalid name; got nil")
 	}
 	if !apierrors.IsInvalid(err) {
 		t.Errorf("expected Invalid error, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "member keys") && !strings.Contains(err.Error(), "RFC-1123") {
-		t.Errorf("expected CEL message mentioning member-key rule, got %v", err)
-	}
 }
 
-// 7. Map-shape motivating case: two members with the *same* GVK but distinct
-// selectors. The registry must hold a single informer (one GVK), and each
-// member should converge to its own rollup with the expected resource count.
-func TestEnvtest_TwoMembersSameGVK_DistinctSelectors(t *testing.T) {
+// 7. Two dependencies with the *same* GVK but distinct selectors. The
+// registry must hold a single informer (one GVK), and each dependency
+// should converge to its own rollup with the expected resource count.
+func TestEnvtest_TwoDependenciesSameGVK_DistinctSelectors(t *testing.T) {
 	fix := newEnvFixture(t)
 
 	// Two widgets, distinct labels.
@@ -373,48 +389,58 @@ func TestEnvtest_TwoMembersSameGVK_DistinctSelectors(t *testing.T) {
 		t.Fatalf("status beta: %v", err)
 	}
 
-	ech := createEchelon(t, fix.namespace, "shared-gvk", map[string]apiv1.MemberSpec{
-		memberWaveA: {Group: groupTestAsCode, Kind: kindWidget,
-			Selector:       &metav1.LabelSelector{MatchLabels: map[string]string{labelWave: "a"}},
-			EmptySetPolicy: apiv1.EmptySetUnknown},
-		memberWaveB: {Group: groupTestAsCode, Kind: kindWidget,
-			Selector:       &metav1.LabelSelector{MatchLabels: map[string]string{labelWave: "b"}},
-			EmptySetPolicy: apiv1.EmptySetUnknown},
+	m := createMilestone(t, fix.namespace, "shared-gvk", []apiv1.DependencyRef{
+		{
+			Name:           depWaveA,
+			EmptySetPolicy: apiv1.EmptySetUnknown,
+			Target: apiv1.TargetSpec{
+				Group: groupTestAsCode, Kind: kindWidget,
+				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{labelWave: "a"}},
+			},
+		},
+		{
+			Name:           depWaveB,
+			EmptySetPolicy: apiv1.EmptySetUnknown,
+			Target: apiv1.TargetSpec{
+				Group: groupTestAsCode, Kind: kindWidget,
+				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{labelWave: "b"}},
+			},
+		},
 	})
 
 	for range 3 {
-		_, _ = fix.reconciler.ReconcileObject(t.Context(), refresh(t, ech))
+		_, _ = fix.reconciler.ReconcileObject(t.Context(), refresh(t, m))
 	}
-	reconcileToConvergence(t, fix, client.ObjectKeyFromObject(ech), func(e *apiv1.Echelon) error {
+	reconcileToConvergence(t, fix, client.ObjectKeyFromObject(m), func(e *apiv1.Milestone) error {
 		if ready(e) != metav1.ConditionTrue {
 			return fmt.Errorf("Ready=%s", ready(e))
 		}
-		if len(e.Status.Members) != 2 {
-			return fmt.Errorf("Members len=%d", len(e.Status.Members))
+		if len(e.Status.DependsOn) != 2 {
+			return fmt.Errorf("DependsOn len=%d", len(e.Status.DependsOn))
 		}
-		for _, name := range []string{"wave-a", "wave-b"} {
-			rollup, ok := e.Status.Members[name]
+		for _, name := range []string{depWaveA, depWaveB} {
+			rollup, ok := depStatusByName(e, name)
 			if !ok {
-				return fmt.Errorf("Members[%q] missing", name)
+				return fmt.Errorf("DependsOn[%q] missing", name)
 			}
 			if rollup.Summary.Total != 1 || rollup.Summary.Current != 1 {
-				return fmt.Errorf("Members[%q].Summary = %+v", name, rollup.Summary)
+				return fmt.Errorf("DependsOn[%q].Summary = %+v", name, rollup.Summary)
 			}
 		}
 		return nil
 	})
 
-	// Exactly one informer for the Widget GVK, shared across the two members.
+	// Exactly one informer for the Widget GVK, shared across the two dependencies.
 	if got := fix.registry.GVKCount(); got != 1 {
-		t.Errorf("GVKCount = %d, want 1 (one informer per GVK regardless of member count)", got)
+		t.Errorf("GVKCount = %d, want 1 (one informer per GVK regardless of dependency count)", got)
 	}
 }
 
-// refresh re-fetches the live Echelon by name.
-func refresh(t *testing.T, ech *apiv1.Echelon) *apiv1.Echelon {
+// refresh re-fetches the live Milestone by name.
+func refresh(t *testing.T, m *apiv1.Milestone) *apiv1.Milestone {
 	t.Helper()
-	out := &apiv1.Echelon{}
-	if err := envtestClient.Get(t.Context(), client.ObjectKeyFromObject(ech), out); err != nil {
+	out := &apiv1.Milestone{}
+	if err := envtestClient.Get(t.Context(), client.ObjectKeyFromObject(m), out); err != nil {
 		t.Fatalf("refresh: %v", err)
 	}
 	return out

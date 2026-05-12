@@ -2,31 +2,31 @@
 # This file is used to track the info used to scaffold your project
 # and allow the plugins properly work.
 # More info: https://book.kubebuilder.io/reference/project-config.html
-domain: io
+domain: as-code.io
 layout:
 - go.kubebuilder.io/v4
 plugins:
   manifests.sdk.operatorframework.io/v2: {}
   scorecard.sdk.operatorframework.io/v2: {}
-projectName: echelon-operator
-repo: github.com/isometry/echelon-operator
+projectName: milestone-operator
+repo: github.com/isometry/milestone-operator
 resources:
 - api:
     crdVersion: v1
     namespaced: true
   controller: true
-  domain: io
-  group: as-code
-  kind: Echelon
-  path: github.com/isometry/echelon-operator/api/v1
+  domain: as-code.io
+  group: milestone
+  kind: Milestone
+  path: github.com/isometry/milestone-operator/api/v1
   version: v1
 - api:
     crdVersion: v1
-    namespaced: true
+    namespaced: false
   controller: true
-  domain: io
-  group: as-code
-  kind: ClusterEchelon
-  path: github.com/isometry/echelon-operator/api/v1
+  domain: as-code.io
+  group: milestone
+  kind: ClusterMilestone
+  path: github.com/isometry/milestone-operator/api/v1
   version: v1
 version: "3"

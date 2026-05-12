@@ -1,5 +1,5 @@
 ## Append samples of your project ##
 resources:
-- as-code_v1_echelon.yaml
-- as-code_v1_clusterechelon.yaml
+- milestone_v1_milestone.yaml
+- milestone_v1_clustermilestone.yaml
 # +kubebuilder:scaffold:manifestskustomizesamples

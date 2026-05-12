@@ -1,4 +1,4 @@
-module github.com/isometry/echelon-operator
+module github.com/isometry/milestone-operator
 
 go 1.26.0
 

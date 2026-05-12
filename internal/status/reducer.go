@@ -8,15 +8,15 @@ You may obtain a copy of the License at
     http://www.apache.org/licenses/LICENSE-2.0
 */
 
-// Package status reduces per-resource kstatus into per-member and owner-level
-// readiness rollups.
+// Package status reduces per-resource kstatus into per-dependency and
+// owner-level readiness rollups.
 package status
 
 import (
 	"sort"
 	"strings"
 
-	apiv1 "github.com/isometry/echelon-operator/api/v1"
+	apiv1 "github.com/isometry/milestone-operator/api/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -28,10 +28,11 @@ type Resource struct {
 	Message              string
 }
 
-// ReduceMember reduces resources of one member into a MemberRollup. When the
-// resource set is empty, the member's EmptySetPolicy controls Ready reporting.
-func ReduceMember(group, version, kind string, resources []Resource, policy apiv1.EmptySetPolicy) apiv1.MemberRollup {
-	rollup := apiv1.MemberRollup{Group: group, Version: version, Kind: kind}
+// ReduceDependency reduces resources of one dependency into a
+// DependencyStatus. When the resource set is empty, the dependency's
+// EmptySetPolicy controls Ready reporting.
+func ReduceDependency(name, group, version, kind string, resources []Resource, policy apiv1.EmptySetPolicy) apiv1.DependencyStatus {
+	rollup := apiv1.DependencyStatus{Name: name, Group: group, Version: version, Kind: kind}
 
 	for _, r := range resources {
 		rollup.Summary.Total++
@@ -81,12 +82,13 @@ func ReduceMember(group, version, kind string, resources []Resource, policy apiv
 	return rollup
 }
 
-// ReduceOwner reduces per-member rollups into the owner-level Ready status,
-// reason, and human-readable message. The not-ready member names are sorted
-// so the message is stable across reconciles (Go map iteration order is not).
-func ReduceOwner(rollups map[string]apiv1.MemberRollup) (metav1.ConditionStatus, string, string) {
+// ReduceOwner reduces per-dependency rollups into the owner-level Ready
+// status, reason, and human-readable message. The not-ready dependency
+// names are sorted so the message is stable across reconciles (Go map
+// iteration order is not).
+func ReduceOwner(rollups map[string]apiv1.DependencyStatus) (metav1.ConditionStatus, string, string) {
 	if len(rollups) == 0 {
-		return metav1.ConditionUnknown, apiv1.ReasonEmptySet, "no members configured"
+		return metav1.ConditionUnknown, apiv1.ReasonEmptySet, "no dependencies configured"
 	}
 	var failed []string
 	allTrue := true
@@ -103,18 +105,18 @@ func ReduceOwner(rollups map[string]apiv1.MemberRollup) (metav1.ConditionStatus,
 	switch {
 	case len(failed) > 0:
 		sort.Strings(failed)
-		return metav1.ConditionFalse, apiv1.ReasonMembersNotReady, "members not ready: " + strings.Join(failed, ", ")
+		return metav1.ConditionFalse, apiv1.ReasonDependenciesNotReady, "dependencies not ready: " + strings.Join(failed, ", ")
 	case allTrue:
-		return metav1.ConditionTrue, apiv1.ReasonAllMembersReady, ""
+		return metav1.ConditionTrue, apiv1.ReasonAllDependenciesReady, ""
 	default:
-		return metav1.ConditionUnknown, apiv1.ReasonMembersInProgress, ""
+		return metav1.ConditionUnknown, apiv1.ReasonDependenciesInProgress, ""
 	}
 }
 
-// SummarizeOwner aggregates per-member Summaries into an owner-level Summary.
-// Order-independent: addition is commutative, map iteration order does not
-// affect the result.
-func SummarizeOwner(rollups map[string]apiv1.MemberRollup) apiv1.Summary {
+// SummarizeOwner aggregates per-dependency Summaries into an owner-level
+// Summary. Order-independent: addition is commutative, map iteration order
+// does not affect the result.
+func SummarizeOwner(rollups map[string]apiv1.DependencyStatus) apiv1.Summary {
 	var total apiv1.Summary
 	for _, r := range rollups {
 		total.Total += r.Summary.Total

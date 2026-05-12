@@ -11,14 +11,14 @@ You may obtain a copy of the License at
 package watcher_test
 
 const (
-	kindEchelon      = "Echelon"
+	kindMilestone    = "Milestone"
 	labelWave        = "wave"
 	nsFluxSystem     = "flux-system"
 	nameWave0        = "wave-0"
 	groupHelmToolkit = "helm.toolkit.fluxcd.io"
 	kindHelmRelease  = "HelmRelease"
 
-	// echelonFluxSystemWave0Key is the canonical owner-key string for
+	// milestoneFluxSystemWave0Key is the canonical owner-key string for
 	// nsFluxSystem/nameWave0 produced by ownerKeys().
-	echelonFluxSystemWave0Key = "Echelon/flux-system/wave-0"
+	milestoneFluxSystemWave0Key = "Milestone/flux-system/wave-0"
 )

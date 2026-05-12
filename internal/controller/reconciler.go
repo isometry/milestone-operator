@@ -18,11 +18,11 @@ import (
 	"strings"
 	"time"
 
-	apiv1 "github.com/isometry/echelon-operator/api/v1"
-	"github.com/isometry/echelon-operator/internal/discovery"
-	"github.com/isometry/echelon-operator/internal/metrics"
-	"github.com/isometry/echelon-operator/internal/status"
-	"github.com/isometry/echelon-operator/internal/watcher"
+	apiv1 "github.com/isometry/milestone-operator/api/v1"
+	"github.com/isometry/milestone-operator/internal/discovery"
+	"github.com/isometry/milestone-operator/internal/metrics"
+	"github.com/isometry/milestone-operator/internal/status"
+	"github.com/isometry/milestone-operator/internal/watcher"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -45,15 +45,15 @@ const stalledRequeue = 30 * time.Second
 // 1MiB etcd limit even on huge selectors.
 const defaultResourceCap = 50
 
-// defaultStalledErrorCap caps the per-member errors enumerated in the Stalled
-// condition message. Beyond this we append a "... N more" suffix.
+// defaultStalledErrorCap caps the per-dependency errors enumerated in the
+// Stalled condition message. Beyond this we append a "... N more" suffix.
 const defaultStalledErrorCap = 50
 
-// Reconciler is the GVK-agnostic reconcile pipeline shared by Echelon and
-// ClusterEchelon controllers. Behavioural variation is encapsulated in
+// Reconciler is the GVK-agnostic reconcile pipeline shared by Milestone and
+// ClusterMilestone controllers. Behavioural variation is encapsulated in
 // OwnerAdapter implementations passed by the per-controller wiring.
 //
-// The owner type T (e.g. *apiv1.Echelon) is a type parameter so that
+// The owner type T (e.g. *apiv1.Milestone) is a type parameter so that
 // NewAdapter is statically typed: mis-pairing a Reconciler[*apiv1.X] with a
 // NewAdapter func(*apiv1.Y) is a compile error at the assignment site.
 type Reconciler[T client.Object] struct {
@@ -95,43 +95,43 @@ func (r *Reconciler[T]) ReconcileObject(ctx context.Context, obj T) (ctrl.Result
 	log.V(1).Info("reconciling", "generation", obj.GetGeneration())
 	prior := *adapter.Status().DeepCopy()
 
-	members, memberErrs := func() ([]NormalizedMember, []MemberError) {
+	deps, depErrs := func() ([]NormalizedDependency, []DependencyError) {
 		defer r.observe(metrics.StageDiscovery)()
-		return adapter.Members(ctx, r.Resolver)
+		return adapter.Dependencies(ctx, r.Resolver)
 	}()
-	for _, me := range memberErrs {
-		metrics.MemberResolveErrors.WithLabelValues(r.Controller, me.Reason).Inc()
-		log.V(1).Info("member discovery failed",
-			"name", me.Name, "group", me.Group, "kind", me.Kind,
-			"reason", me.Reason, "err", me.Err)
+	for _, de := range depErrs {
+		metrics.TargetResolveErrors.WithLabelValues(r.Controller, de.Reason).Inc()
+		log.V(1).Info("dependency discovery failed",
+			"dependency", de.Name, "group", de.Group, "kind", de.Kind,
+			"reason", de.Reason, "err", de.Err)
 	}
-	log.V(1).Info("discovery resolved", "members", len(members), "errors", len(memberErrs))
+	log.V(1).Info("discovery resolved", "dependencies", len(deps), "errors", len(depErrs))
 
-	subscribeErrs := r.reconcileSubscriptions(ctx, ownerKey, members)
+	subscribeErrs := r.reconcileSubscriptions(ctx, ownerKey, deps)
 	for _, se := range subscribeErrs {
-		metrics.MemberResolveErrors.WithLabelValues(r.Controller, se.Reason).Inc()
+		metrics.TargetResolveErrors.WithLabelValues(r.Controller, se.Reason).Inc()
 		log.V(1).Info("subscription failed",
-			"name", se.Name, "group", se.Group, "version", se.Version, "kind", se.Kind,
+			"dependency", se.Name, "group", se.Group, "version", se.Version, "kind", se.Kind,
 			"reason", se.Reason, "err", se.Err)
 	}
-	memberErrs = append(memberErrs, subscribeErrs...)
+	depErrs = append(depErrs, subscribeErrs...)
 
-	// Carry subscribe failures into evaluateMembers so the lister-less GVKs
-	// surface as Ready=Unknown instead of empty-set rollups (which
+	// Carry subscribe failures into evaluateDependencies so the lister-less
+	// GVKs surface as Ready=Unknown instead of empty-set rollups (which
 	// emptySetPolicy: Ready would promote to Ready=True).
-	failedReasons := failedMemberReasons(subscribeErrs)
+	failedReasons := failedDependencyReasons(subscribeErrs)
 
-	rollups, notReady, listErrs := r.evaluateMembers(members, failedReasons)
+	rollups, notReady, listErrs := r.evaluateDependencies(deps, failedReasons)
 	for _, le := range listErrs {
 		log.V(1).Info("list failed",
-			"name", le.Name, "group", le.Group, "version", le.Version, "kind", le.Kind,
+			"dependency", le.Name, "group", le.Group, "version", le.Version, "kind", le.Kind,
 			"reason", le.Reason, "err", le.Err)
-		metrics.MemberResolveErrors.WithLabelValues(r.Controller, le.Reason).Inc()
+		metrics.TargetResolveErrors.WithLabelValues(r.Controller, le.Reason).Inc()
 	}
-	memberErrs = append(memberErrs, listErrs...)
+	depErrs = append(depErrs, listErrs...)
 	log.V(1).Info("evaluated", "rollups", len(rollups), "notReady", len(notReady))
 
-	r.applyStatus(adapter.Status(), obj.GetGeneration(), rollups, notReady, memberErrs)
+	r.applyStatus(adapter.Status(), obj.GetGeneration(), rollups, notReady, depErrs)
 
 	if !statusEqualIgnoringTimestamp(prior, *adapter.Status()) {
 		adapter.Status().LastEvaluatedTime = metav1.NewTime(r.now())
@@ -182,54 +182,54 @@ func (r *Reconciler[T]) finalize(ctx context.Context, obj T, ownerKey watcher.Ow
 	return ctrl.Result{}, nil
 }
 
-func (r *Reconciler[T]) reconcileSubscriptions(ctx context.Context, owner watcher.OwnerKey, desired []NormalizedMember) []MemberError {
+func (r *Reconciler[T]) reconcileSubscriptions(ctx context.Context, owner watcher.OwnerKey, desired []NormalizedDependency) []DependencyError {
 	defer r.observe(metrics.StageSubscriptions)()
 
-	// Group desired members by GVK so each owner/GVK pair becomes one
+	// Group desired dependencies by GVK so each owner/GVK pair becomes one
 	// Subscribe call carrying every matcher the owner declared for that GVK.
-	// Without this, two members on the same GVK with different selectors
-	// would overwrite each other's matcher in the registry and the loser
-	// would stop receiving events.
+	// Without this, two dependencies on the same GVK with different
+	// selectors would overwrite each other's matcher in the registry and
+	// the loser would stop receiving events.
 	type group struct {
 		scope    apimeta.RESTScopeName
 		matchers []watcher.Matcher
-		members  []NormalizedMember
+		deps     []NormalizedDependency
 	}
 	gvkOrder := make([]schema.GroupVersionKind, 0, len(desired))
 	groups := make(map[schema.GroupVersionKind]*group, len(desired))
-	for _, m := range desired {
-		g, ok := groups[m.GVK]
+	for _, d := range desired {
+		g, ok := groups[d.GVK]
 		if !ok {
-			g = &group{scope: m.Scope}
-			groups[m.GVK] = g
-			gvkOrder = append(gvkOrder, m.GVK)
+			g = &group{scope: d.Scope}
+			groups[d.GVK] = g
+			gvkOrder = append(gvkOrder, d.GVK)
 		}
 		g.matchers = append(g.matchers, watcher.Matcher{
-			Selector:   m.Selector,
-			Namespaces: m.NamespaceMatcher,
+			Selector:   d.Selector,
+			Namespaces: d.NamespaceMatcher,
 		})
-		g.members = append(g.members, m)
+		g.deps = append(g.deps, d)
 	}
 
-	// One informer per unique GVK across members; refcounted by ownerKey.
+	// One informer per unique GVK across dependencies; refcounted by ownerKey.
 	for _, gvk := range r.Registry.GVKsByOwner(owner) {
 		if _, ok := groups[gvk]; !ok {
 			r.Registry.Unsubscribe(gvk, owner)
 		}
 	}
 
-	var errs []MemberError
+	var errs []DependencyError
 	for _, gvk := range gvkOrder {
 		g := groups[gvk]
 		sub := watcher.Subscriber{Owner: owner, Matchers: g.matchers}
 		if err := r.Registry.Subscribe(ctx, gvk, g.scope, sub); err != nil {
-			// One informer failure prevents every member in this GVK group
-			// from receiving events. Surface a per-member error so each
-			// member's rollup carries WatchSetupFailed, not a misleading
+			// One informer failure prevents every dependency in this GVK
+			// group from receiving events. Surface a per-dependency error
+			// so each rollup carries WatchSetupFailed, not a misleading
 			// empty-set rollup.
-			for _, m := range g.members {
-				errs = append(errs, MemberError{
-					Name:    m.Name,
+			for _, d := range g.deps {
+				errs = append(errs, DependencyError{
+					Name:    d.Name,
 					Group:   gvk.Group,
 					Version: gvk.Version,
 					Kind:    gvk.Kind,
@@ -242,56 +242,57 @@ func (r *Reconciler[T]) reconcileSubscriptions(ctx context.Context, owner watche
 	return errs
 }
 
-// evaluateMembers produces per-member rollups, owner-level not-ready
-// resources, and MemberErrors for list failures. Members named in
-// failedReasons skip list+reduce — their lister is missing or the upstream
-// subscribe already failed, and emptySetPolicy must not see an empty result.
-func (r *Reconciler[T]) evaluateMembers(members []NormalizedMember, failedReasons map[string]string) (map[string]apiv1.MemberRollup, []apiv1.ResourceStatus, []MemberError) {
-	rollups := make(map[string]apiv1.MemberRollup, len(members))
+// evaluateDependencies produces per-dependency rollups, owner-level
+// not-ready resources, and DependencyErrors for list failures.
+// Dependencies named in failedReasons skip list+reduce — their lister is
+// missing or the upstream subscribe already failed, and emptySetPolicy
+// must not see an empty result. Returned rollup keys are dependency names.
+func (r *Reconciler[T]) evaluateDependencies(deps []NormalizedDependency, failedReasons map[string]string) (map[string]apiv1.DependencyStatus, []apiv1.ResourceStatus, []DependencyError) {
+	rollups := make(map[string]apiv1.DependencyStatus, len(deps))
 	// Stay nil until we actually have not-ready resources: an empty-but-allocated
 	// slice would round-trip through status DeepCopy as != nil and trigger
 	// spurious patches against equal prior state.
 	var notReady []apiv1.ResourceStatus //nolint:prealloc
-	var listErrs []MemberError
-	for _, m := range members {
-		if reason, skip := failedReasons[m.Name]; skip {
-			rollups[m.Name] = failedRollup(m.GVK, reason)
+	var listErrs []DependencyError
+	for _, d := range deps {
+		if reason, skip := failedReasons[d.Name]; skip {
+			rollups[d.Name] = failedRollup(d.Name, d.GVK, reason)
 			continue
 		}
-		resources, err := r.listAndCompute(m)
+		resources, err := r.listAndCompute(d)
 		if err != nil {
-			rollups[m.Name] = failedRollup(m.GVK, apiv1.ReasonWatchSetupFailed)
-			listErrs = append(listErrs, MemberError{
-				Name:    m.Name,
-				Group:   m.GVK.Group,
-				Version: m.GVK.Version,
-				Kind:    m.GVK.Kind,
+			rollups[d.Name] = failedRollup(d.Name, d.GVK, apiv1.ReasonWatchSetupFailed)
+			listErrs = append(listErrs, DependencyError{
+				Name:    d.Name,
+				Group:   d.GVK.Group,
+				Version: d.GVK.Version,
+				Kind:    d.GVK.Kind,
 				Reason:  apiv1.ReasonWatchSetupFailed,
 				Err:     err,
 			})
 			continue
 		}
-		var rollup apiv1.MemberRollup
+		var rollup apiv1.DependencyStatus
 		func() {
 			defer r.observe(metrics.StageReduce)()
-			rollup = status.ReduceMember(m.GVK.Group, m.GVK.Version, m.GVK.Kind, resources, m.EmptySetPolicy)
+			rollup = status.ReduceDependency(d.Name, d.GVK.Group, d.GVK.Version, d.GVK.Kind, resources, d.EmptySetPolicy)
 		}()
-		rollups[m.Name] = rollup
+		rollups[d.Name] = rollup
 		notReady = append(notReady, notReadyResourcesOf(resources)...)
 	}
 	return rollups, notReady, listErrs
 }
 
-func (r *Reconciler[T]) listAndCompute(m NormalizedMember) ([]status.Resource, error) {
+func (r *Reconciler[T]) listAndCompute(d NormalizedDependency) ([]status.Resource, error) {
 	objs, err := func() ([]*unstructured.Unstructured, error) {
 		defer r.observe(metrics.StageList)()
-		o, err := r.Registry.List(m.GVK)
+		o, err := r.Registry.List(d.GVK)
 		if err != nil {
 			return nil, err
 		}
 		out := make([]*unstructured.Unstructured, 0, len(o))
 		for _, u := range o {
-			if !memberAdmits(m, u.GetNamespace(), u.GetLabels()) {
+			if !dependencyAdmits(d, u.GetNamespace(), u.GetLabels()) {
 				continue
 			}
 			out = append(out, u)
@@ -311,8 +312,9 @@ func (r *Reconciler[T]) listAndCompute(m NormalizedMember) ([]status.Resource, e
 
 // failedRollup forces Ready=Unknown so emptySetPolicy can't promote a missing
 // informer / failed list to Ready=True.
-func failedRollup(gvk schema.GroupVersionKind, reason string) apiv1.MemberRollup {
-	return apiv1.MemberRollup{
+func failedRollup(name string, gvk schema.GroupVersionKind, reason string) apiv1.DependencyStatus {
+	return apiv1.DependencyStatus{
+		Name:    name,
 		Group:   gvk.Group,
 		Version: gvk.Version,
 		Kind:    gvk.Kind,
@@ -321,7 +323,7 @@ func failedRollup(gvk schema.GroupVersionKind, reason string) apiv1.MemberRollup
 	}
 }
 
-func failedMemberReasons(errs []MemberError) map[string]string {
+func failedDependencyReasons(errs []DependencyError) map[string]string {
 	if len(errs) == 0 {
 		return nil
 	}
@@ -339,9 +341,9 @@ func failedMemberReasons(errs []MemberError) map[string]string {
 	return out
 }
 
-func (r *Reconciler[T]) applyStatus(sb *apiv1.EchelonStatusBase, generation int64, rollups map[string]apiv1.MemberRollup, notReady []apiv1.ResourceStatus, errs []MemberError) {
+func (r *Reconciler[T]) applyStatus(sb *apiv1.MilestoneStatusBase, generation int64, rollups map[string]apiv1.DependencyStatus, notReady []apiv1.ResourceStatus, errs []DependencyError) {
 	sb.ObservedGeneration = generation
-	sb.Members = rollups
+	sb.DependsOn = sortedDependencyStatuses(rollups)
 	sb.Summary = status.SummarizeOwner(rollups)
 	sb.NotReadyResources, sb.Truncated = capResources(notReady, r.resourceCap())
 
@@ -349,6 +351,20 @@ func (r *Reconciler[T]) applyStatus(sb *apiv1.EchelonStatusBase, generation int6
 	setCondition(sb, apiv1.ConditionReady, readyStatus, readyReason, readyMessage)
 	setCondition(sb, apiv1.ConditionReconciling, metav1.ConditionFalse, apiv1.ReasonReconcileComplete, "")
 	r.applyStalledFromErrors(sb, errs)
+}
+
+// sortedDependencyStatuses materialises the per-dependency rollup map into
+// a slice sorted by Name, keeping the listmap+DeepEqual idempotency guarantee.
+func sortedDependencyStatuses(rollups map[string]apiv1.DependencyStatus) []apiv1.DependencyStatus {
+	if len(rollups) == 0 {
+		return nil
+	}
+	out := make([]apiv1.DependencyStatus, 0, len(rollups))
+	for _, v := range rollups {
+		out = append(out, v)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
 
 func (r *Reconciler[T]) patchStatus(ctx context.Context, adapter OwnerAdapter) error {
@@ -381,7 +397,7 @@ func (r *Reconciler[T]) stalledErrorCap() int {
 	return r.StalledErrorCap
 }
 
-func (r *Reconciler[T]) isStalled(sb *apiv1.EchelonStatusBase) bool {
+func (r *Reconciler[T]) isStalled(sb *apiv1.MilestoneStatusBase) bool {
 	for _, c := range sb.Conditions {
 		if c.Type == apiv1.ConditionStalled && c.Status == metav1.ConditionTrue {
 			return true
@@ -392,11 +408,11 @@ func (r *Reconciler[T]) isStalled(sb *apiv1.EchelonStatusBase) bool {
 
 // --- helpers (pure) ---
 
-func memberAdmits(m NormalizedMember, namespace string, lbls map[string]string) bool {
-	if m.NamespaceMatcher != nil && !m.NamespaceMatcher(namespace) {
+func dependencyAdmits(d NormalizedDependency, namespace string, lbls map[string]string) bool {
+	if d.NamespaceMatcher != nil && !d.NamespaceMatcher(namespace) {
 		return false
 	}
-	if m.Selector != nil && !m.Selector.Matches(labels.Set(lbls)) {
+	if d.Selector != nil && !d.Selector.Matches(labels.Set(lbls)) {
 		return false
 	}
 	return true
@@ -429,7 +445,7 @@ func capResources(in []apiv1.ResourceStatus, cap int) ([]apiv1.ResourceStatus, b
 	return in[:cap], true
 }
 
-func setCondition(sb *apiv1.EchelonStatusBase, condType string, st metav1.ConditionStatus, reason, message string) {
+func setCondition(sb *apiv1.MilestoneStatusBase, condType string, st metav1.ConditionStatus, reason, message string) {
 	c := metav1.Condition{
 		Type:               condType,
 		Status:             st,
@@ -440,7 +456,7 @@ func setCondition(sb *apiv1.EchelonStatusBase, condType string, st metav1.Condit
 	apimeta.SetStatusCondition(&sb.Conditions, c)
 }
 
-func (r *Reconciler[T]) applyStalledFromErrors(sb *apiv1.EchelonStatusBase, errs []MemberError) {
+func (r *Reconciler[T]) applyStalledFromErrors(sb *apiv1.MilestoneStatusBase, errs []DependencyError) {
 	if len(errs) == 0 {
 		apimeta.SetStatusCondition(&sb.Conditions, metav1.Condition{
 			Type:               apiv1.ConditionStalled,
@@ -451,10 +467,10 @@ func (r *Reconciler[T]) applyStalledFromErrors(sb *apiv1.EchelonStatusBase, errs
 		})
 		return
 	}
-	// Stable ordering: errors come from the adapter sorted by member name, so
-	// the primary reason and the enumerated message survive reconciles
-	// unchanged when the same errors recur. Sort defensively.
-	sorted := make([]MemberError, len(errs))
+	// Stable ordering: errors come from the adapter sorted by dependency
+	// name, so the primary reason and the enumerated message survive
+	// reconciles unchanged when the same errors recur. Sort defensively.
+	sorted := make([]DependencyError, len(errs))
 	copy(sorted, errs)
 	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
 
@@ -483,7 +499,7 @@ func (r *Reconciler[T]) applyStalledFromErrors(sb *apiv1.EchelonStatusBase, errs
 	})
 }
 
-func readyConditionStatus(sb *apiv1.EchelonStatusBase) metav1.ConditionStatus {
+func readyConditionStatus(sb *apiv1.MilestoneStatusBase) metav1.ConditionStatus {
 	for _, c := range sb.Conditions {
 		if c.Type == apiv1.ConditionReady {
 			return c.Status
@@ -492,10 +508,10 @@ func readyConditionStatus(sb *apiv1.EchelonStatusBase) metav1.ConditionStatus {
 	return metav1.ConditionUnknown
 }
 
-// statusEqualIgnoringTimestamp compares two EchelonStatusBase values ignoring
+// statusEqualIgnoringTimestamp compares two MilestoneStatusBase values ignoring
 // LastEvaluatedTime and condition lastTransitionTime (which only changes when
 // status itself changes, courtesy of meta.SetStatusCondition).
-func statusEqualIgnoringTimestamp(a, b apiv1.EchelonStatusBase) bool {
+func statusEqualIgnoringTimestamp(a, b apiv1.MilestoneStatusBase) bool {
 	a.LastEvaluatedTime = metav1.Time{}
 	b.LastEvaluatedTime = metav1.Time{}
 	a.Conditions = stripTransitionTimes(a.Conditions)

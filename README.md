@@ -1,69 +1,73 @@
-# echelon-operator
+# milestone-operator
 
 A Kubernetes operator that aggregates the
 [kstatus](https://github.com/kubernetes-sigs/cli-utils/tree/master/pkg/kstatus)
 of arbitrary resources, identified by GVK and label selector, into a single
 kstatus-compatible `Ready` condition exposed on its own CRD.
 
-The operator drives a *deployment-wave* / *run-level* mechanism alongside
-[FluxCD](https://fluxcd.io/): downstream consumers gate on an `Echelon`'s
-`Ready` condition to decide when one wave has settled and the next may
-proceed.
+The operator drives a *deployment-wave* / *milestone gating* mechanism
+alongside [FluxCD](https://fluxcd.io/): downstream consumers gate on a
+`Milestone`'s `Ready` condition to decide when one stage has settled and
+the next may proceed.
 
 ## CRDs
 
-| Kind             | Scope        | Use                                                              |
-|------------------|--------------|------------------------------------------------------------------|
-| `Echelon`        | Namespaced   | Aggregate within the Echelon's own namespace                     |
-| `ClusterEchelon` | Cluster-wide | Aggregate across namespaces (per-member `namespaces` selectors)  |
+| Kind               | Scope        | Use                                                                |
+|--------------------|--------------|--------------------------------------------------------------------|
+| `Milestone`        | Namespaced   | Aggregate within the Milestone's own namespace                     |
+| `ClusterMilestone` | Cluster-wide | Aggregate across namespaces (per-dependency `namespaces` selectors)|
 
-Both CRDs live at `as-code.io/v1`. Each Echelon declares one or more named
-*members* under `spec.members`; the operator aggregates the kstatus of every
-resource matching each member's GVK + selector into a per-member rollup, and
-combines the rollups into the owner's `Ready` condition. Map keys are
-user-chosen RFC-1123 labels and serve as stable identifiers for SSA
-field-ownership and `status.members[name]` lookups.
+Both CRDs live at `milestone.as-code.io/v1`. Each Milestone declares one
+or more named *dependencies* under `spec.dependsOn`; the operator
+aggregates the kstatus of every resource matching each dependency's target
+GVK + selector into a per-dependency rollup, and combines the rollups into
+the owner's `Ready` condition. `name` is the listmap key — a kebab-case
+RFC-1123 label — and serves as the stable identifier surfaced in
+`status.dependsOn[].name`, condition messages, log fields, and the
+`dependency` metric label.
 
-### Echelon (minimal)
+### Milestone (minimal)
 
 ```yaml
-apiVersion: as-code.io/v1
-kind: Echelon
+apiVersion: milestone.as-code.io/v1
+kind: Milestone
 metadata: { name: wave-0, namespace: flux-system }
 spec:
-  members:
-    kustomizations:
-      group: kustomize.toolkit.fluxcd.io
-      kind: Kustomization
-      selector: { matchLabels: { wave: "0" } }
+  dependsOn:
+    - name: kustomizations
       emptySetPolicy: NotReady
+      target:
+        group: kustomize.toolkit.fluxcd.io
+        kind: Kustomization
+        selector: { matchLabels: { wave: "0" } }
 ```
 
-### ClusterEchelon (multi-member, multi-scope)
+### ClusterMilestone (multi-dependency, multi-scope)
 
 ```yaml
-apiVersion: as-code.io/v1
-kind: ClusterEchelon
+apiVersion: milestone.as-code.io/v1
+kind: ClusterMilestone
 metadata: { name: platform-wave-0 }
 spec:
-  members:
-    flux-kustomizations:
-      group: kustomize.toolkit.fluxcd.io
-      kind: Kustomization
-      namespaces: [flux-system]
-      selector: { matchLabels: { wave: "0" } }
+  dependsOn:
+    - name: flux-kustomizations
       emptySetPolicy: NotReady
-    platform-helmreleases:
-      group: helm.toolkit.fluxcd.io
-      kind: HelmRelease
-      namespaceSelector: { matchLabels: { tier: platform } }
-      selector: { matchLabels: { wave: "0" } }
-      emptySetPolicy: Unknown
+      target:
+        group: kustomize.toolkit.fluxcd.io
+        kind: Kustomization
+        namespaces: [flux-system]
+        selector: { matchLabels: { wave: "0" } }
+    - name: platform-helmreleases
+      target:
+        group: helm.toolkit.fluxcd.io
+        kind: HelmRelease
+        namespaceSelector: { matchLabels: { tier: platform } }
+        selector: { matchLabels: { wave: "0" } }
 ```
 
 ### `emptySetPolicy`
 
-Per-member. Controls how an empty resource set is reported:
+Per-dependency. Controls how an empty resource set is reported:
 
 | Value      | Meaning                                                                 |
 |------------|-------------------------------------------------------------------------|
@@ -73,46 +77,49 @@ Per-member. Controls how an empty resource set is reported:
 
 ### Conditions
 
-`Echelon` and `ClusterEchelon` expose three conditions:
+`Milestone` and `ClusterMilestone` expose three conditions:
 
-- `Ready` — kstatus-compatible aggregate over all members
+- `Ready` — kstatus-compatible aggregate over all dependencies
 - `Reconciling` — True while the controller is wiring watchers / settling
-- `Stalled` — True for non-transient structural problems (`GVKNotEstablished`, `NamespaceScopeMismatch`, `WatchSetupFailed`, `DiscoveryFailed`)
+- `Stalled` — True for non-transient structural problems
+  (`GVKNotEstablished`, `NamespaceScopeMismatch`, `WatchSetupFailed`,
+  `DiscoveryFailed`)
 
-`Stalled` is independent of `Ready`. When `Stalled=True`, `Ready` reflects what
-we *can* observe (typically `Unknown`) — never silently `True`.
+`Stalled` is independent of `Ready`. When `Stalled=True`, `Ready`
+reflects what we *can* observe (typically `Unknown`) — never silently
+`True`.
 
 ## Architecture
 
-| Layer                    | Package                  | Responsibility                                          |
-|--------------------------|--------------------------|---------------------------------------------------------|
-| Per-resource readiness   | `internal/status`        | Wraps `kstatus.Compute`, reduces resources → rollup     |
-| Discovery TTL cache      | `internal/discovery`     | Resolves group+kind → GVK + scope                       |
-| Dynamic watcher registry | `internal/watcher`       | Refcounted "one informer per GVK" pattern               |
-| Reconciler               | `internal/controller`    | Generic pipeline shared by Echelon and ClusterEchelon   |
-| Metrics                  | `internal/metrics`       | Prometheus inventory + lister-backed state collector    |
+| Layer                    | Package                  | Responsibility                                                |
+|--------------------------|--------------------------|---------------------------------------------------------------|
+| Per-resource readiness   | `internal/status`        | Wraps `kstatus.Compute`, reduces resources → rollup           |
+| Discovery TTL cache      | `internal/discovery`     | Resolves group+kind → GVK + scope                             |
+| Dynamic watcher registry | `internal/watcher`       | Refcounted "one informer per GVK" pattern                     |
+| Reconciler               | `internal/controller`    | Generic pipeline shared by Milestone and ClusterMilestone     |
+| Metrics                  | `internal/metrics`       | Prometheus inventory + lister-backed state collector          |
 
 The reconciler is single-pass and idempotent. Per-stage timing histograms
-(`echelon_reconcile_stage_duration_seconds`) and an idempotency check
-(`echelon_status_patch_total{result=unchanged}`) make slow or churning
+(`milestone_reconcile_stage_duration_seconds`) and an idempotency check
+(`milestone_status_patch_total{result=unchanged}`) make slow or churning
 deployments diagnosable in production.
 
 ## Observability
 
 Metrics are registered against the controller-runtime metrics registry; the
-manager's `/metrics` endpoint exposes both the standard `controller_runtime_*`
-families and the operator-specific `echelon_*` families documented in
-[`PLAN.md`](./PLAN.md#metric-inventory).
+manager's `/metrics` endpoint exposes both the standard
+`controller_runtime_*` families and the operator-specific `milestone_*`
+families documented in [`PLAN.md`](./PLAN.md#metric-inventory).
 
 A starter `ServiceMonitor` and `PrometheusRule` ship in
-[`config/prometheus/`](./config/prometheus/); a sample Grafana dashboard JSON
-is in [`config/grafana/`](./config/grafana/).
+[`config/prometheus/`](./config/prometheus/); a sample Grafana dashboard
+JSON is in [`config/grafana/`](./config/grafana/).
 
 ## Getting started
 
 ### Prerequisites
 
-- Go 1.26.3+
+- Go 1.26+
 - Docker 17.03+
 - kubectl v1.11.3+
 - A Kubernetes cluster (Kubernetes v1.27+ recommended)
@@ -134,10 +141,10 @@ KUBEBUILDER_ASSETS="$(./bin/setup-envtest use --bin-dir ./bin -p path)" \
 ### Build and deploy
 
 ```sh
-make docker-build docker-push IMG=<registry>/echelon-operator:tag
+make docker-build docker-push IMG=<registry>/milestone-operator:tag
 make install                      # installs CRDs
-make deploy IMG=<registry>/echelon-operator:tag
-kubectl apply -k config/samples/  # sample Echelon and ClusterEchelon
+make deploy IMG=<registry>/milestone-operator:tag
+kubectl apply -k config/samples/  # sample Milestone and ClusterMilestone
 ```
 
 ### Watching custom resource kinds
@@ -147,14 +154,15 @@ on the FluxCD resource groups. To watch additional kinds, edit
 [`config/rbac/dynamic_watch_role.yaml`](./config/rbac/dynamic_watch_role.yaml)
 and re-deploy.
 
-For restricted clusters, replace that ClusterRoleBinding with a narrower role
-covering only the kinds you intend to reference from `spec.members.<name>`.
+For restricted clusters, replace that ClusterRoleBinding with a narrower
+role covering only the kinds you intend to reference from
+`spec.dependsOn[].target.group/kind`.
 
 ## Design
 
 The full design — including the API surface, watcher registry semantics,
-reconcile pipeline, reduction rules, metric inventory, cardinality budget, and
-v1 compatibility discipline — is in [`PLAN.md`](./PLAN.md).
+reconcile pipeline, reduction rules, metric inventory, cardinality budget,
+and v1 compatibility discipline — is in [`PLAN.md`](./PLAN.md).
 
 ## License
 

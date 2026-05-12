@@ -40,11 +40,11 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
-	apiv1 "github.com/isometry/echelon-operator/api/v1"
-	"github.com/isometry/echelon-operator/internal/controller"
-	resolverpkg "github.com/isometry/echelon-operator/internal/discovery"
-	"github.com/isometry/echelon-operator/internal/metrics"
-	"github.com/isometry/echelon-operator/internal/watcher"
+	apiv1 "github.com/isometry/milestone-operator/api/v1"
+	"github.com/isometry/milestone-operator/internal/controller"
+	resolverpkg "github.com/isometry/milestone-operator/internal/discovery"
+	"github.com/isometry/milestone-operator/internal/metrics"
+	"github.com/isometry/milestone-operator/internal/watcher"
 	// +kubebuilder:scaffold:imports
 )
 
@@ -162,7 +162,7 @@ func main() {
 		WebhookServer:          webhookServer,
 		HealthProbeBindAddress: probeAddr,
 		LeaderElection:         enableLeaderElection,
-		LeaderElectionID:       "echelon-operator.as-code.io",
+		LeaderElectionID:       "milestone-operator.as-code.io",
 	})
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
@@ -188,16 +188,16 @@ func main() {
 	dynFactory := watcher.NewDynamicFactory(dynClient, mgr.GetRESTMapper(), informerResync)
 
 	// Per-controller enqueue channels fed by the watcher.Registry's EnqueueFunc.
-	echelonEvents := make(chan event.GenericEvent, enqueueChannelSize)
-	cechelonEvents := make(chan event.GenericEvent, enqueueChannelSize)
+	milestoneEvents := make(chan event.GenericEvent, enqueueChannelSize)
+	cmilestoneEvents := make(chan event.GenericEvent, enqueueChannelSize)
 	enqueue := func(o watcher.OwnerKey) {
 		switch o.Kind {
-		case "Echelon":
-			echelonEvents <- event.GenericEvent{Object: &apiv1.Echelon{
+		case "Milestone":
+			milestoneEvents <- event.GenericEvent{Object: &apiv1.Milestone{
 				ObjectMeta: metav1.ObjectMeta{Namespace: o.Namespace, Name: o.Name},
 			}}
-		case "ClusterEchelon":
-			cechelonEvents <- event.GenericEvent{Object: &apiv1.ClusterEchelon{
+		case "ClusterMilestone":
+			cmilestoneEvents <- event.GenericEvent{Object: &apiv1.ClusterMilestone{
 				ObjectMeta: metav1.ObjectMeta{Name: o.Name},
 			}}
 		}
@@ -205,46 +205,46 @@ func main() {
 	registry := watcher.NewRegistry(dynFactory, enqueue)
 
 	// Generic reconcilers (one per CRD).
-	echelonReconciler := &controller.Reconciler[*apiv1.Echelon]{
+	milestoneReconciler := &controller.Reconciler[*apiv1.Milestone]{
 		Client:     mgr.GetClient(),
 		Registry:   registry,
 		Resolver:   resolver,
-		NewAdapter: controller.NewEchelonAdapter,
-		Controller: "Echelon",
+		NewAdapter: controller.NewMilestoneAdapter,
+		Controller: "Milestone",
 	}
-	clusterEchelonReconciler := &controller.Reconciler[*apiv1.ClusterEchelon]{
+	clusterMilestoneReconciler := &controller.Reconciler[*apiv1.ClusterMilestone]{
 		Client:     mgr.GetClient(),
 		Registry:   registry,
 		Resolver:   resolver,
-		NewAdapter: controller.NewClusterEchelonAdapterFactory(mgr.GetClient()),
-		Controller: "ClusterEchelon",
+		NewAdapter: controller.NewClusterMilestoneAdapterFactory(mgr.GetClient()),
+		Controller: "ClusterMilestone",
 	}
 
-	if err := (&controller.EchelonReconciler{
+	if err := (&controller.MilestoneReconciler{
 		Client:        mgr.GetClient(),
 		Scheme:        mgr.GetScheme(),
-		Reconciler:    echelonReconciler,
-		EnqueueEvents: echelonEvents,
+		Reconciler:    milestoneReconciler,
+		EnqueueEvents: milestoneEvents,
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "Echelon")
+		setupLog.Error(err, "unable to create controller", "controller", "Milestone")
 		os.Exit(1)
 	}
-	if err := (&controller.ClusterEchelonReconciler{
+	if err := (&controller.ClusterMilestoneReconciler{
 		Client:        mgr.GetClient(),
 		Scheme:        mgr.GetScheme(),
-		Reconciler:    clusterEchelonReconciler,
-		EnqueueEvents: cechelonEvents,
+		Reconciler:    clusterMilestoneReconciler,
+		EnqueueEvents: cmilestoneEvents,
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "ClusterEchelon")
+		setupLog.Error(err, "unable to create controller", "controller", "ClusterMilestone")
 		os.Exit(1)
 	}
 
 	// CRD watcher: wakes stalled owners on Established=True.
 	if err := (&controller.CRDWatcher{
-		Client:         mgr.GetClient(),
-		Resolver:       resolver,
-		EchelonEvents:  echelonEvents,
-		CEchelonEvents: cechelonEvents,
+		Client:           mgr.GetClient(),
+		Resolver:         resolver,
+		MilestoneEvents:  milestoneEvents,
+		CMilestoneEvents: cmilestoneEvents,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "CRDWatcher")
 		os.Exit(1)
@@ -299,16 +299,16 @@ type managerStateLister struct {
 	client client.Client
 }
 
-func (l *managerStateLister) ListEchelons(ctx context.Context) []apiv1.Echelon {
-	list := &apiv1.EchelonList{}
+func (l *managerStateLister) ListMilestones(ctx context.Context) []apiv1.Milestone {
+	list := &apiv1.MilestoneList{}
 	if err := l.client.List(ctx, list); err != nil {
 		return nil
 	}
 	return list.Items
 }
 
-func (l *managerStateLister) ListClusterEchelons(ctx context.Context) []apiv1.ClusterEchelon {
-	list := &apiv1.ClusterEchelonList{}
+func (l *managerStateLister) ListClusterMilestones(ctx context.Context) []apiv1.ClusterMilestone {
+	list := &apiv1.ClusterMilestoneList{}
 	if err := l.client.List(ctx, list); err != nil {
 		return nil
 	}

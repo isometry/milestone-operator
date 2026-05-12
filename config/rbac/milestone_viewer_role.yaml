@@ -1,7 +1,7 @@
-# This rule is not used by the project echelon-operator itself.
+# This rule is not used by the project milestone-operator itself.
 # It is provided to allow the cluster admin to help manage permissions for users.
 #
-# Grants read-only access to as-code.io resources.
+# Grants read-only access to milestone.as-code.io resources.
 # This role is intended for users who need visibility into these resources
 # without permissions to modify them. It is ideal for monitoring purposes and limited-access viewing.
 
@@ -9,21 +9,21 @@ apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
   labels:
-    app.kubernetes.io/name: echelon-operator
+    app.kubernetes.io/name: milestone-operator
     app.kubernetes.io/managed-by: kustomize
-  name: echelon-viewer-role
+  name: milestone-viewer-role
 rules:
 - apiGroups:
-  - as-code.io
+  - milestone.as-code.io
   resources:
-  - echelons
+  - milestones
   verbs:
   - get
   - list
   - watch
 - apiGroups:
-  - as-code.io
+  - milestone.as-code.io
   resources:
-  - echelons/status
+  - milestones/status
   verbs:
   - get

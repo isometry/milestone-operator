@@ -21,10 +21,10 @@ rules:
   - list
   - watch
 - apiGroups:
-  - as-code.io
+  - milestone.as-code.io
   resources:
-  - clusterechelons
-  - echelons
+  - clustermilestones
+  - milestones
   verbs:
   - create
   - delete
@@ -34,17 +34,17 @@ rules:
   - update
   - watch
 - apiGroups:
-  - as-code.io
+  - milestone.as-code.io
   resources:
-  - clusterechelons/finalizers
-  - echelons/finalizers
+  - clustermilestones/finalizers
+  - milestones/finalizers
   verbs:
   - update
 - apiGroups:
-  - as-code.io
+  - milestone.as-code.io
   resources:
-  - clusterechelons/status
-  - echelons/status
+  - clustermilestones/status
+  - milestones/status
   verbs:
   - get
   - patch

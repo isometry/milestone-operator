@@ -3,56 +3,56 @@
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
-  name: echelon-operator
+  name: milestone-operator
   namespace: system
   labels:
-    app.kubernetes.io/name: echelon-operator
+    app.kubernetes.io/name: milestone-operator
     app.kubernetes.io/component: alerts
 spec:
   groups:
-    - name: echelon.operator
+    - name: milestone.operator
       interval: 30s
       rules:
-        - alert: EchelonStuckReconciling
+        - alert: MilestoneStuckReconciling
           expr: |
             max by (owner_kind, namespace, name) (
-              echelon_status_condition{type="Reconciling", status="True"}
+              milestone_status_condition{type="Reconciling", status="True"}
             ) == 1
           for: 10m
           labels:
             severity: warning
           annotations:
-            summary: "Echelon {{ $labels.namespace }}/{{ $labels.name }} stuck reconciling"
+            summary: "Milestone {{ $labels.namespace }}/{{ $labels.name }} stuck reconciling"
             description: "Reconciling=True for >10m suggests the controller is unable to settle the object."
 
-        - alert: EchelonStalled
+        - alert: MilestoneStalled
           expr: |
             max by (owner_kind, namespace, name) (
-              echelon_status_condition{type="Stalled", status="True"}
+              milestone_status_condition{type="Stalled", status="True"}
             ) == 1
           for: 5m
           labels:
             severity: warning
           annotations:
-            summary: "Echelon {{ $labels.namespace }}/{{ $labels.name }} stalled"
+            summary: "Milestone {{ $labels.namespace }}/{{ $labels.name }} stalled"
             description: "Stalled=True for >5m. Check Stalled condition reason (e.g. GVKNotEstablished, WatchSetupFailed)."
 
-        - alert: EchelonRegistrySubscriberLeak
+        - alert: MilestoneRegistrySubscriberLeak
           expr: |
-            sum(echelon_subscribers) - sum(echelon_informers) > 0
+            sum(milestone_subscribers) - sum(milestone_informers) > 0
           for: 5m
           labels:
             severity: warning
           annotations:
-            summary: "Subscriber/informer count skew in echelon-operator registry"
+            summary: "Subscriber/informer count skew in milestone-operator registry"
             description: "Subscribers without an active informer indicates a leaked subscription. Investigate operator restart loops."
 
-        - alert: EchelonReconcileErrors
+        - alert: MilestoneReconcileErrors
           expr: |
-            sum(rate(controller_runtime_reconcile_errors_total{controller=~"echelon|clusterechelon|crd-watcher"}[5m])) > 0
+            sum(rate(controller_runtime_reconcile_errors_total{controller=~"milestone|clustermilestone|crd-watcher"}[5m])) > 0
           for: 5m
           labels:
             severity: warning
           annotations:
-            summary: "Echelon reconciler errors"
+            summary: "Milestone reconciler errors"
             description: "Sustained reconcile errors. Check operator logs for the failing controller."

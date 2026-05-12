@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	apiv1 "github.com/isometry/echelon-operator/api/v1"
-	"github.com/isometry/echelon-operator/internal/metrics"
+	apiv1 "github.com/isometry/milestone-operator/api/v1"
+	"github.com/isometry/milestone-operator/internal/metrics"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -76,33 +76,33 @@ func sampleValue(m *dto.Metric) float64 {
 }
 
 type fakeLister struct {
-	echelons        []apiv1.Echelon
-	clusterEchelons []apiv1.ClusterEchelon
+	milestones        []apiv1.Milestone
+	clusterMilestones []apiv1.ClusterMilestone
 }
 
-func (f *fakeLister) ListEchelons(_ context.Context) []apiv1.Echelon { return f.echelons }
-func (f *fakeLister) ListClusterEchelons(_ context.Context) []apiv1.ClusterEchelon {
-	return f.clusterEchelons
+func (f *fakeLister) ListMilestones(_ context.Context) []apiv1.Milestone { return f.milestones }
+func (f *fakeLister) ListClusterMilestones(_ context.Context) []apiv1.ClusterMilestone {
+	return f.clusterMilestones
 }
 
-const memberName = "kustomizations"
+const depName = "kustomizations"
 
-func newReadyEchelon(ns, name string) apiv1.Echelon {
+func newReadyMilestone(ns, name string) apiv1.Milestone {
 	now := metav1.NewTime(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-	return apiv1.Echelon{
+	return apiv1.Milestone{
 		ObjectMeta: metav1.ObjectMeta{Namespace: ns, Name: name, Generation: 3},
-		Status: apiv1.EchelonStatus{
-			EchelonStatusBase: apiv1.EchelonStatusBase{
+		Status: apiv1.MilestoneStatus{
+			MilestoneStatusBase: apiv1.MilestoneStatusBase{
 				ObservedGeneration: 3,
 				LastEvaluatedTime:  now,
 				Summary:            apiv1.Summary{Total: 5, Current: 5},
 				Conditions: []metav1.Condition{
-					{Type: apiv1.ConditionReady, Status: metav1.ConditionTrue, Reason: apiv1.ReasonAllMembersReady},
+					{Type: apiv1.ConditionReady, Status: metav1.ConditionTrue, Reason: apiv1.ReasonAllDependenciesReady},
 					{Type: apiv1.ConditionReconciling, Status: metav1.ConditionFalse},
 					{Type: apiv1.ConditionStalled, Status: metav1.ConditionFalse},
 				},
-				Members: map[string]apiv1.MemberRollup{
-					memberName: {Group: groupKustomize, Version: "v1", Kind: kindKustomization,
+				DependsOn: []apiv1.DependencyStatus{
+					{Name: depName, Group: groupKustomize, Version: "v1", Kind: kindKustomization,
 						Ready: metav1.ConditionTrue, Reason: apiv1.ReasonAllResourcesReady,
 						Summary: apiv1.Summary{Total: 5, Current: 5}},
 				},
@@ -112,7 +112,7 @@ func newReadyEchelon(ns, name string) apiv1.Echelon {
 }
 
 func TestStateCollector_EmitsConditionAndGenerationGauges(t *testing.T) {
-	lister := &fakeLister{echelons: []apiv1.Echelon{newReadyEchelon(nsFluxSystem, "wave-0")}}
+	lister := &fakeLister{milestones: []apiv1.Milestone{newReadyMilestone(nsFluxSystem, "wave-0")}}
 	reg := prometheus.NewRegistry()
 	col := metrics.NewStateCollector(t.Context(), lister)
 	if err := reg.Register(col); err != nil {
@@ -123,11 +123,11 @@ func TestStateCollector_EmitsConditionAndGenerationGauges(t *testing.T) {
 		t.Fatalf("gather: %v", err)
 	}
 	want := map[string]bool{
-		"echelon_status_condition":                 true,
-		"echelon_observed_generation":              true,
-		"echelon_member_resources":                 true,
-		"echelon_member_ready":                     true,
-		"echelon_last_evaluated_timestamp_seconds": true,
+		"milestone_status_condition":                 true,
+		"milestone_observed_generation":              true,
+		"milestone_dependency_resources":             true,
+		"milestone_dependency_ready":                 true,
+		"milestone_last_evaluated_timestamp_seconds": true,
 	}
 	have := map[string]bool{}
 	for _, mf := range mfs {
@@ -141,19 +141,19 @@ func TestStateCollector_EmitsConditionAndGenerationGauges(t *testing.T) {
 }
 
 func TestStateCollector_StatusConditionGauge(t *testing.T) {
-	lister := &fakeLister{echelons: []apiv1.Echelon{newReadyEchelon(nsFluxSystem, "wave-0")}}
+	lister := &fakeLister{milestones: []apiv1.Milestone{newReadyMilestone(nsFluxSystem, "wave-0")}}
 	col := metrics.NewStateCollector(t.Context(), lister)
 
-	v := valueAt(t, col, "echelon_status_condition", map[string]string{
-		keyOwnerKind: kindEchelon, keyNamespace: nsFluxSystem, keyName: nameWave0,
+	v := valueAt(t, col, "milestone_status_condition", map[string]string{
+		keyOwnerKind: kindMilestone, keyNamespace: nsFluxSystem, keyName: nameWave0,
 		keyType: apiv1.ConditionReady, keyStatus: "True",
 	})
 	if v != 1 {
 		t.Errorf("Ready=True gauge = %v, want 1", v)
 	}
 	// The 0-status sibling should be 0.
-	v = valueAt(t, col, "echelon_status_condition", map[string]string{
-		keyOwnerKind: kindEchelon, keyNamespace: nsFluxSystem, keyName: nameWave0,
+	v = valueAt(t, col, "milestone_status_condition", map[string]string{
+		keyOwnerKind: kindMilestone, keyNamespace: nsFluxSystem, keyName: nameWave0,
 		keyType: apiv1.ConditionReady, keyStatus: "False",
 	})
 	if v != 0 {
@@ -161,7 +161,7 @@ func TestStateCollector_StatusConditionGauge(t *testing.T) {
 	}
 }
 
-func TestStateCollector_MemberReadyEncodes(t *testing.T) {
+func TestStateCollector_DependencyReadyEncodes(t *testing.T) {
 	cases := []struct {
 		name   string
 		ready  metav1.ConditionStatus
@@ -173,15 +173,13 @@ func TestStateCollector_MemberReadyEncodes(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			ech := newReadyEchelon(nsFluxSystem, "x")
-			rollup := ech.Status.Members[memberName]
-			rollup.Ready = tc.ready
-			ech.Status.Members[memberName] = rollup
-			lister := &fakeLister{echelons: []apiv1.Echelon{ech}}
+			m := newReadyMilestone(nsFluxSystem, "x")
+			m.Status.DependsOn[0].Ready = tc.ready
+			lister := &fakeLister{milestones: []apiv1.Milestone{m}}
 			col := metrics.NewStateCollector(t.Context(), lister)
-			v := valueAt(t, col, "echelon_member_ready", map[string]string{
-				keyOwnerKind: kindEchelon, keyNamespace: nsFluxSystem, keyName: "x",
-				keyMember: memberName, keyTargetGroup: groupKustomize, keyTargetKind: kindKustomization,
+			v := valueAt(t, col, "milestone_dependency_ready", map[string]string{
+				keyOwnerKind: kindMilestone, keyNamespace: nsFluxSystem, keyName: "x",
+				keyDependency: depName, keyTargetGroup: groupKustomize, keyTargetKind: kindKustomization,
 			})
 			if v != tc.expect {
 				t.Errorf("encoded = %v, want %v", v, tc.expect)
@@ -190,11 +188,11 @@ func TestStateCollector_MemberReadyEncodes(t *testing.T) {
 	}
 }
 
-func TestStateCollector_ClusterEchelonHasEmptyNamespaceLabel(t *testing.T) {
-	ce := apiv1.ClusterEchelon{
+func TestStateCollector_ClusterMilestoneHasEmptyNamespaceLabel(t *testing.T) {
+	cm := apiv1.ClusterMilestone{
 		ObjectMeta: metav1.ObjectMeta{Name: "platform-wave", Generation: 1},
-		Status: apiv1.ClusterEchelonStatus{
-			EchelonStatusBase: apiv1.EchelonStatusBase{
+		Status: apiv1.ClusterMilestoneStatus{
+			MilestoneStatusBase: apiv1.MilestoneStatusBase{
 				ObservedGeneration: 1,
 				Conditions: []metav1.Condition{
 					{Type: apiv1.ConditionReady, Status: metav1.ConditionUnknown},
@@ -202,9 +200,9 @@ func TestStateCollector_ClusterEchelonHasEmptyNamespaceLabel(t *testing.T) {
 			},
 		},
 	}
-	col := metrics.NewStateCollector(t.Context(), &fakeLister{clusterEchelons: []apiv1.ClusterEchelon{ce}})
-	v := valueAt(t, col, "echelon_status_condition", map[string]string{
-		keyOwnerKind: "ClusterEchelon", keyNamespace: "", keyName: "platform-wave",
+	col := metrics.NewStateCollector(t.Context(), &fakeLister{clusterMilestones: []apiv1.ClusterMilestone{cm}})
+	v := valueAt(t, col, "milestone_status_condition", map[string]string{
+		keyOwnerKind: "ClusterMilestone", keyNamespace: "", keyName: "platform-wave",
 		keyType: apiv1.ConditionReady, keyStatus: "Unknown",
 	})
 	if v != 1 {
@@ -212,12 +210,10 @@ func TestStateCollector_ClusterEchelonHasEmptyNamespaceLabel(t *testing.T) {
 	}
 }
 
-func TestStateCollector_MemberResourcesPerStatusBucket(t *testing.T) {
-	ech := newReadyEchelon(nsFluxSystem, "wave-0")
-	rollup := ech.Status.Members[memberName]
-	rollup.Summary = apiv1.Summary{Total: 4, Current: 1, InProgress: 2, Failed: 1}
-	ech.Status.Members[memberName] = rollup
-	col := metrics.NewStateCollector(t.Context(), &fakeLister{echelons: []apiv1.Echelon{ech}})
+func TestStateCollector_DependencyResourcesPerStatusBucket(t *testing.T) {
+	m := newReadyMilestone(nsFluxSystem, "wave-0")
+	m.Status.DependsOn[0].Summary = apiv1.Summary{Total: 4, Current: 1, InProgress: 2, Failed: 1}
+	col := metrics.NewStateCollector(t.Context(), &fakeLister{milestones: []apiv1.Milestone{m}})
 
 	cases := map[string]float64{
 		"current":    1,
@@ -226,9 +222,9 @@ func TestStateCollector_MemberResourcesPerStatusBucket(t *testing.T) {
 		"total":      4,
 	}
 	for status, want := range cases {
-		got := valueAt(t, col, "echelon_member_resources", map[string]string{
-			keyOwnerKind: kindEchelon, keyNamespace: nsFluxSystem, keyName: nameWave0,
-			keyMember: memberName, keyTargetGroup: groupKustomize, keyTargetKind: kindKustomization,
+		got := valueAt(t, col, "milestone_dependency_resources", map[string]string{
+			keyOwnerKind: kindMilestone, keyNamespace: nsFluxSystem, keyName: nameWave0,
+			keyDependency: depName, keyTargetGroup: groupKustomize, keyTargetKind: kindKustomization,
 			keyStatus: status,
 		})
 		if got != want {
@@ -237,20 +233,21 @@ func TestStateCollector_MemberResourcesPerStatusBucket(t *testing.T) {
 	}
 }
 
-// TestStateCollector_MultipleEchelons_SeparateSeries checks that two Echelons
-// sharing a name across different namespaces produce two distinct metric
-// series — i.e. the namespace label disambiguates them. Without per-namespace
-// emission a deleted-then-recreated owner would clobber the live one's gauge.
-func TestStateCollector_MultipleEchelons_SeparateSeries(t *testing.T) {
-	lister := &fakeLister{echelons: []apiv1.Echelon{
-		newReadyEchelon(nsFluxSystem, "wave-0"),
-		newReadyEchelon("team-a", "wave-0"),
+// TestStateCollector_MultipleMilestones_SeparateSeries checks that two
+// Milestones sharing a name across different namespaces produce two distinct
+// metric series — i.e. the namespace label disambiguates them. Without
+// per-namespace emission a deleted-then-recreated owner would clobber the
+// live one's gauge.
+func TestStateCollector_MultipleMilestones_SeparateSeries(t *testing.T) {
+	lister := &fakeLister{milestones: []apiv1.Milestone{
+		newReadyMilestone(nsFluxSystem, "wave-0"),
+		newReadyMilestone("team-a", "wave-0"),
 	}}
 	col := metrics.NewStateCollector(t.Context(), lister)
 
 	for _, ns := range []string{"flux-system", "team-a"} {
-		v := valueAt(t, col, "echelon_status_condition", map[string]string{
-			"owner_kind": kindEchelon, "namespace": ns, keyName: "wave-0",
+		v := valueAt(t, col, "milestone_status_condition", map[string]string{
+			"owner_kind": kindMilestone, "namespace": ns, keyName: "wave-0",
 			keyType: apiv1.ConditionReady, keyStatus: "True",
 		})
 		if v != 1 {

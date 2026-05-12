@@ -9,7 +9,7 @@ You may obtain a copy of the License at
 */
 
 // Package watcher manages dynamic informers and dispatches member events to
-// the Echelons that subscribe to them.
+// the Milestones that subscribe to them.
 package watcher
 
 import (
@@ -20,7 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// OwnerKey identifies an Echelon or ClusterEchelon object.
+// OwnerKey identifies a Milestone or ClusterMilestone object.
 type OwnerKey struct {
 	Kind      string
 	Namespace string
@@ -69,7 +69,7 @@ func (s Subscriber) Match(obj client.Object) bool {
 	return false
 }
 
-// SubscriberIndex maps GVKs to their interested Echelons and supports the
+// SubscriberIndex maps GVKs to their interested Milestones and supports the
 // reverse lookup needed at unsubscribe time.
 type SubscriberIndex struct {
 	mu      sync.RWMutex

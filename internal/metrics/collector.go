@@ -12,25 +12,24 @@ package metrics
 
 import (
 	"context"
-	"sort"
 
-	apiv1 "github.com/isometry/echelon-operator/api/v1"
+	apiv1 "github.com/isometry/milestone-operator/api/v1"
 	"github.com/prometheus/client_golang/prometheus"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// StateLister is the abstraction the collector uses to walk Echelon and
-// ClusterEchelon objects at scrape time. In production this is implemented by
-// a controller-runtime cache-backed lister; tests inject a fake. The ctx is
-// the manager's signal context — when shutdown begins, in-flight scrapes fail
-// soft (return empty slices) rather than blocking.
+// StateLister is the abstraction the collector uses to walk Milestone and
+// ClusterMilestone objects at scrape time. In production this is
+// implemented by a controller-runtime cache-backed lister; tests inject a
+// fake. The ctx is the manager's signal context — when shutdown begins,
+// in-flight scrapes fail soft (return empty slices) rather than blocking.
 type StateLister interface {
-	ListEchelons(ctx context.Context) []apiv1.Echelon
-	ListClusterEchelons(ctx context.Context) []apiv1.ClusterEchelon
+	ListMilestones(ctx context.Context) []apiv1.Milestone
+	ListClusterMilestones(ctx context.Context) []apiv1.ClusterMilestone
 }
 
-// StateCollector emits per-object gauges for every Echelon/ClusterEchelon at
-// scrape time. Lister-backed so a deleted object's series disappears
+// StateCollector emits per-object gauges for every Milestone/ClusterMilestone
+// at scrape time. Lister-backed so a deleted object's series disappears
 // immediately on the next scrape, with no per-reconcile bookkeeping.
 //
 // The Prometheus Collector interface predates context.Context, so the base
@@ -42,8 +41,8 @@ type StateCollector struct {
 
 	statusCondition        *prometheus.Desc
 	observedGeneration     *prometheus.Desc
-	memberResources        *prometheus.Desc
-	memberReady            *prometheus.Desc
+	dependencyResources    *prometheus.Desc
+	dependencyReady        *prometheus.Desc
 	lastEvaluatedTimestamp *prometheus.Desc
 }
 
@@ -55,27 +54,27 @@ func NewStateCollector(ctx context.Context, lister StateLister) *StateCollector 
 		base:   ctx,
 		lister: lister,
 		statusCondition: prometheus.NewDesc(
-			"echelon_status_condition",
+			"milestone_status_condition",
 			"1 when the named condition has the named status, 0 otherwise.",
 			[]string{labelOwnerKind, labelNamespace, labelName, labelType, labelStatus}, nil,
 		),
 		observedGeneration: prometheus.NewDesc(
-			"echelon_observed_generation",
+			"milestone_observed_generation",
 			"metadata.generation observed at the last successful reconcile.",
 			[]string{labelOwnerKind, labelNamespace, labelName}, nil,
 		),
-		memberResources: prometheus.NewDesc(
-			"echelon_member_resources",
-			"Per-member resource counts by kstatus bucket; status label includes 'total'.",
-			[]string{labelOwnerKind, labelNamespace, labelName, labelMember, labelTargetGroup, labelTargetKind, labelStatus}, nil,
+		dependencyResources: prometheus.NewDesc(
+			"milestone_dependency_resources",
+			"Per-dependency resource counts by kstatus bucket; status label includes 'total'.",
+			[]string{labelOwnerKind, labelNamespace, labelName, labelDependency, labelTargetGroup, labelTargetKind, labelStatus}, nil,
 		),
-		memberReady: prometheus.NewDesc(
-			"echelon_member_ready",
-			"Per-member Ready encoded as 1=True, 0=False, -1=Unknown.",
-			[]string{labelOwnerKind, labelNamespace, labelName, labelMember, labelTargetGroup, labelTargetKind}, nil,
+		dependencyReady: prometheus.NewDesc(
+			"milestone_dependency_ready",
+			"Per-dependency Ready encoded as 1=True, 0=False, -1=Unknown.",
+			[]string{labelOwnerKind, labelNamespace, labelName, labelDependency, labelTargetGroup, labelTargetKind}, nil,
 		),
 		lastEvaluatedTimestamp: prometheus.NewDesc(
-			"echelon_last_evaluated_timestamp_seconds",
+			"milestone_last_evaluated_timestamp_seconds",
 			"Unix timestamp of the last status evaluation.",
 			[]string{labelOwnerKind, labelNamespace, labelName}, nil,
 		),
@@ -86,22 +85,22 @@ func NewStateCollector(ctx context.Context, lister StateLister) *StateCollector 
 func (c *StateCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.statusCondition
 	ch <- c.observedGeneration
-	ch <- c.memberResources
-	ch <- c.memberReady
+	ch <- c.dependencyResources
+	ch <- c.dependencyReady
 	ch <- c.lastEvaluatedTimestamp
 }
 
 // Collect implements prometheus.Collector.
 func (c *StateCollector) Collect(ch chan<- prometheus.Metric) {
-	for _, e := range c.lister.ListEchelons(c.base) {
-		c.emit(ch, "Echelon", e.GetNamespace(), e.GetName(), &e.Status.EchelonStatusBase)
+	for _, m := range c.lister.ListMilestones(c.base) {
+		c.emit(ch, "Milestone", m.GetNamespace(), m.GetName(), &m.Status.MilestoneStatusBase)
 	}
-	for _, e := range c.lister.ListClusterEchelons(c.base) {
-		c.emit(ch, "ClusterEchelon", "", e.GetName(), &e.Status.EchelonStatusBase)
+	for _, m := range c.lister.ListClusterMilestones(c.base) {
+		c.emit(ch, "ClusterMilestone", "", m.GetName(), &m.Status.MilestoneStatusBase)
 	}
 }
 
-func (c *StateCollector) emit(ch chan<- prometheus.Metric, kind, namespace, name string, sb *apiv1.EchelonStatusBase) {
+func (c *StateCollector) emit(ch chan<- prometheus.Metric, kind, namespace, name string, sb *apiv1.MilestoneStatusBase) {
 	ch <- prometheus.MustNewConstMetric(c.observedGeneration, prometheus.GaugeValue, float64(sb.ObservedGeneration), kind, namespace, name)
 
 	if !sb.LastEvaluatedTime.IsZero() {
@@ -118,25 +117,19 @@ func (c *StateCollector) emit(ch chan<- prometheus.Metric, kind, namespace, name
 		}
 	}
 
-	// Iterate sorted member keys so scrapes are deterministic across reconciles.
-	memberNames := make([]string, 0, len(sb.Members))
-	for n := range sb.Members {
-		memberNames = append(memberNames, n)
-	}
-	sort.Strings(memberNames)
-	for _, mname := range memberNames {
-		m := sb.Members[mname]
-		ch <- prometheus.MustNewConstMetric(c.memberReady, prometheus.GaugeValue, encodeReady(m.Ready), kind, namespace, name, mname, m.Group, m.Kind)
+	// status.DependsOn is already sorted by Name (reconciler invariant).
+	for _, d := range sb.DependsOn {
+		ch <- prometheus.MustNewConstMetric(c.dependencyReady, prometheus.GaugeValue, encodeReady(d.Ready), kind, namespace, name, d.Name, d.Group, d.Kind)
 		emit := func(bucket string, v int32) {
-			ch <- prometheus.MustNewConstMetric(c.memberResources, prometheus.GaugeValue, float64(v), kind, namespace, name, mname, m.Group, m.Kind, bucket)
+			ch <- prometheus.MustNewConstMetric(c.dependencyResources, prometheus.GaugeValue, float64(v), kind, namespace, name, d.Name, d.Group, d.Kind, bucket)
 		}
-		emit("total", m.Summary.Total)
-		emit("current", m.Summary.Current)
-		emit("inProgress", m.Summary.InProgress)
-		emit("failed", m.Summary.Failed)
-		emit("notFound", m.Summary.NotFound)
-		emit("terminating", m.Summary.Terminating)
-		emit("unknown", m.Summary.Unknown)
+		emit("total", d.Summary.Total)
+		emit("current", d.Summary.Current)
+		emit("inProgress", d.Summary.InProgress)
+		emit("failed", d.Summary.Failed)
+		emit("notFound", d.Summary.NotFound)
+		emit("terminating", d.Summary.Terminating)
+		emit("unknown", d.Summary.Unknown)
 	}
 }
 

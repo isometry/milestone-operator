@@ -11,11 +11,12 @@ You may obtain a copy of the License at
 package status_test
 
 const (
-	kindKustomization    = "Kustomization"
-	statusTrue           = "True"
-	keyReason            = "reason"
-	keyStatus            = "status"
-	keyType              = "type"
-	memberKustomizations = "kustomizations"
-	memberHelmreleases   = "helmreleases"
+	kindKustomization = "Kustomization"
+	statusTrue        = "True"
+	keyReason         = "reason"
+	keyStatus         = "status"
+	keyType           = "type"
+	depKustomizations = "kustomizations"
+	depHelmreleases   = "helmreleases"
+	depConfigmaps     = "configmaps"
 )

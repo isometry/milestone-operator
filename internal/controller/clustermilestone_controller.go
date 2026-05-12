@@ -14,7 +14,7 @@ import (
 	"context"
 	"maps"
 
-	apiv1 "github.com/isometry/echelon-operator/api/v1"
+	apiv1 "github.com/isometry/milestone-operator/api/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -27,34 +27,34 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/source"
 )
 
-// ClusterEchelonReconciler is the thin per-CRD wrapper around the generic
+// ClusterMilestoneReconciler is the thin per-CRD wrapper around the generic
 // Reconciler for the cluster-scoped CRD.
-type ClusterEchelonReconciler struct {
+type ClusterMilestoneReconciler struct {
 	client.Client
 	Scheme        *runtime.Scheme
-	Reconciler    *Reconciler[*apiv1.ClusterEchelon]
+	Reconciler    *Reconciler[*apiv1.ClusterMilestone]
 	EnqueueEvents <-chan event.GenericEvent
 }
 
-// +kubebuilder:rbac:groups=as-code.io,resources=clusterechelons,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=as-code.io,resources=clusterechelons/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=as-code.io,resources=clusterechelons/finalizers,verbs=update
+// +kubebuilder:rbac:groups=milestone.as-code.io,resources=clustermilestones,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=milestone.as-code.io,resources=clustermilestones/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=milestone.as-code.io,resources=clustermilestones/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch
 
 // Reconcile implements the controller-runtime Reconciler interface.
-func (r *ClusterEchelonReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	return r.Reconciler.AsReconcileFunc(func() *apiv1.ClusterEchelon { return &apiv1.ClusterEchelon{} })(ctx, req)
+func (r *ClusterMilestoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+	return r.Reconciler.AsReconcileFunc(func() *apiv1.ClusterMilestone { return &apiv1.ClusterMilestone{} })(ctx, req)
 }
 
 // SetupWithManager wires the controller into the manager.
-func (r *ClusterEchelonReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *ClusterMilestoneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	b := ctrl.NewControllerManagedBy(mgr).
-		For(&apiv1.ClusterEchelon{}).
-		Named("clusterechelon").
+		For(&apiv1.ClusterMilestone{}).
+		Named("clustermilestone").
 		Watches(
 			&corev1.Namespace{},
-			handler.EnqueueRequestsFromMapFunc(r.namespaceToClusterEchelons),
+			handler.EnqueueRequestsFromMapFunc(r.namespaceToClusterMilestones),
 			builder.WithPredicates(namespaceMembershipPredicate{}),
 		)
 	if r.EnqueueEvents != nil {
@@ -63,12 +63,13 @@ func (r *ClusterEchelonReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return b.Complete(r)
 }
 
-// namespaceToClusterEchelons fans a Namespace event out to every
-// ClusterEchelon that uses *any* spec.members[*].namespaceSelector. No
-// label-side filtering: a label removal or namespace deletion must still
-// reach previously-matching owners so they can recompute their member set.
-func (r *ClusterEchelonReconciler) namespaceToClusterEchelons(ctx context.Context, _ client.Object) []reconcile.Request {
-	var list apiv1.ClusterEchelonList
+// namespaceToClusterMilestones fans a Namespace event out to every
+// ClusterMilestone that uses *any* spec.dependsOn[*].target.namespaceSelector.
+// No label-side filtering: a label removal or namespace deletion must still
+// reach previously-matching owners so they can recompute their dependency
+// set.
+func (r *ClusterMilestoneReconciler) namespaceToClusterMilestones(ctx context.Context, _ client.Object) []reconcile.Request {
+	var list apiv1.ClusterMilestoneList
 	if err := r.List(ctx, &list); err != nil {
 		return nil
 	}
@@ -84,9 +85,9 @@ func (r *ClusterEchelonReconciler) namespaceToClusterEchelons(ctx context.Contex
 	return out
 }
 
-func usesNamespaceSelector(ce *apiv1.ClusterEchelon) bool {
-	for _, m := range ce.Spec.Members {
-		if m.NamespaceSelector != nil {
+func usesNamespaceSelector(cm *apiv1.ClusterMilestone) bool {
+	for i := range cm.Spec.DependsOn {
+		if cm.Spec.DependsOn[i].Target.NamespaceSelector != nil {
 			return true
 		}
 	}
@@ -94,10 +95,10 @@ func usesNamespaceSelector(ce *apiv1.ClusterEchelon) bool {
 }
 
 // namespaceMembershipPredicate admits the Namespace events that can affect a
-// ClusterEchelon's namespaceSelector membership: creation (new namespace may
-// match), label-only updates (matching may flip), and deletion (previously
-// matching namespace drops). Heartbeat updates with unchanged labels are
-// dropped so unrelated noise doesn't churn reconciles.
+// ClusterMilestone's namespaceSelector membership: creation (new namespace
+// may match), label-only updates (matching may flip), and deletion
+// (previously matching namespace drops). Heartbeat updates with unchanged
+// labels are dropped so unrelated noise doesn't churn reconciles.
 //
 // Spelled out explicitly rather than relying on
 // predicate.LabelChangedPredicate{} composed via predicate.Or — that

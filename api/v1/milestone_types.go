@@ -20,24 +20,24 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// ClusterEchelonSpec defines the desired state of ClusterEchelon.
-//
-// +kubebuilder:validation:XValidation:rule="self.members.all(k, k.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'))",message="member keys must be RFC-1123 labels"
-type ClusterEchelonSpec struct {
-	// Members is the set of resource selections this ClusterEchelon aggregates
-	// over, keyed by user-given names. Each member may scope its search via
-	// Namespaces or NamespaceSelector.
-	// +kubebuilder:validation:MinProperties=1
-	Members map[string]ClusterMemberSpec `json:"members"`
+// MilestoneSpec defines the desired state of Milestone.
+type MilestoneSpec struct {
+	// DependsOn is the ordered set of dependencies this Milestone
+	// aggregates. All target resources are scoped to the Milestone's own
+	// namespace.
+	// +kubebuilder:validation:MinItems=1
+	// +listType=map
+	// +listMapKey=name
+	DependsOn []DependencyRef `json:"dependsOn"`
 }
 
-// ClusterEchelonStatus is the observed state of ClusterEchelon.
-type ClusterEchelonStatus struct {
-	EchelonStatusBase `json:",inline"`
+// MilestoneStatus is the observed state of Milestone.
+type MilestoneStatus struct {
+	MilestoneStatusBase `json:",inline"`
 }
 
 // +kubebuilder:object:root=true
-// +kubebuilder:resource:scope=Cluster,shortName=cech
+// +kubebuilder:resource:scope=Namespaced
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
 // +kubebuilder:printcolumn:name="Reason",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].reason"
@@ -45,25 +45,21 @@ type ClusterEchelonStatus struct {
 // +kubebuilder:printcolumn:name="Current",type="integer",JSONPath=".status.summary.current"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
-// ClusterEchelon aggregates the kstatus of resources matching its members
-// across namespaces, exposing a kstatus-compatible Ready condition.
-type ClusterEchelon struct {
+// Milestone aggregates the kstatus of resources matching its dependencies
+// within its own namespace, exposing a kstatus-compatible Ready condition.
+type Milestone struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   ClusterEchelonSpec   `json:"spec"`
-	Status ClusterEchelonStatus `json:"status,omitempty"`
+	Spec   MilestoneSpec   `json:"spec"`
+	Status MilestoneStatus `json:"status,omitempty"`
 }
 
 // +kubebuilder:object:root=true
 
-// ClusterEchelonList contains a list of ClusterEchelon.
-type ClusterEchelonList struct {
+// MilestoneList contains a list of Milestone.
+type MilestoneList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
-	Items           []ClusterEchelon `json:"items"`
-}
-
-func init() {
-	SchemeBuilder.Register(&ClusterEchelon{}, &ClusterEchelonList{})
+	Items           []Milestone `json:"items"`
 }

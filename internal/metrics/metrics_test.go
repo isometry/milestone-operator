@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/isometry/echelon-operator/internal/metrics"
+	"github.com/isometry/milestone-operator/internal/metrics"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 )
@@ -60,12 +60,12 @@ func TestObserveStage_RecordsDuration(t *testing.T) {
 	if err := metrics.Register(reg); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
-	done := metrics.ObserveStage(kindEchelon, "discovery")
+	done := metrics.ObserveStage(kindMilestone, "discovery")
 	time.Sleep(2 * time.Millisecond)
 	done()
 	// We can't easily assert exact duration, but we can confirm the histogram
 	// recorded at least one observation (sample count >= 1).
-	count := testutil.CollectAndCount(metrics.ReconcileStageDuration, "echelon_reconcile_stage_duration_seconds")
+	count := testutil.CollectAndCount(metrics.ReconcileStageDuration, "milestone_reconcile_stage_duration_seconds")
 	if count < 1 {
 		t.Errorf("histogram series count = %d, want >= 1", count)
 	}
@@ -86,9 +86,9 @@ func TestRegister_AllMetricFamiliesPresent(t *testing.T) {
 	metrics.EventDispatchDuration.WithLabelValues("g", "v", "K").Observe(0)
 	metrics.DiscoveryResolveTotal.WithLabelValues("hit").Inc()
 	metrics.DiscoveryCacheSize.Set(0)
-	metrics.ReconcileStageDuration.WithLabelValues(kindEchelon, "discovery").Observe(0)
-	metrics.StatusPatchTotal.WithLabelValues(kindEchelon, "changed").Inc()
-	metrics.MemberResolveErrors.WithLabelValues(kindEchelon, "GVKNotEstablished").Inc()
+	metrics.ReconcileStageDuration.WithLabelValues(kindMilestone, "discovery").Observe(0)
+	metrics.StatusPatchTotal.WithLabelValues(kindMilestone, "changed").Inc()
+	metrics.TargetResolveErrors.WithLabelValues(kindMilestone, "GVKNotEstablished").Inc()
 	metrics.CRDEstablishedEvents.WithLabelValues(groupKustomize, kindKustomization).Inc()
 	metrics.OwnersWoken.WithLabelValues("crd_established").Inc()
 
@@ -97,19 +97,19 @@ func TestRegister_AllMetricFamiliesPresent(t *testing.T) {
 		t.Fatalf("Gather: %v", err)
 	}
 	wantNames := []string{
-		"echelon_informers",
-		"echelon_subscribers",
-		"echelon_informer_events_total",
-		"echelon_subscribe_total",
-		"echelon_unsubscribe_total",
-		"echelon_event_dispatch_duration_seconds",
-		"echelon_discovery_resolve_total",
-		"echelon_discovery_cache_size",
-		"echelon_reconcile_stage_duration_seconds",
-		"echelon_status_patch_total",
-		"echelon_member_resolve_errors_total",
-		"echelon_crd_established_events_total",
-		"echelon_owners_woken_total",
+		"milestone_informers",
+		"milestone_subscribers",
+		"milestone_informer_events_total",
+		"milestone_subscribe_total",
+		"milestone_unsubscribe_total",
+		"milestone_event_dispatch_duration_seconds",
+		"milestone_discovery_resolve_total",
+		"milestone_discovery_cache_size",
+		"milestone_reconcile_stage_duration_seconds",
+		"milestone_status_patch_total",
+		"milestone_target_resolve_errors_total",
+		"milestone_crd_established_events_total",
+		"milestone_owners_woken_total",
 	}
 	have := make(map[string]bool, len(families))
 	for _, mf := range families {

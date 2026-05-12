@@ -1,0 +1,30 @@
+apiVersion: milestone.as-code.io/v1
+kind: ClusterMilestone
+metadata:
+  name: platform-wave-0
+  labels:
+    app.kubernetes.io/name: milestone-operator
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  dependsOn:
+    - name: flux-kustomizations
+      emptySetPolicy: NotReady
+      target:
+        group: kustomize.toolkit.fluxcd.io
+        kind: Kustomization
+        namespaces:
+          - flux-system
+        selector:
+          matchLabels:
+            wave: "0"
+    - name: platform-helmreleases
+      emptySetPolicy: Unknown
+      target:
+        group: helm.toolkit.fluxcd.io
+        kind: HelmRelease
+        namespaceSelector:
+          matchLabels:
+            tier: platform
+        selector:
+          matchLabels:
+            wave: "0"

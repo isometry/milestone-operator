@@ -13,7 +13,7 @@ package status_test
 import (
 	"testing"
 
-	"github.com/isometry/echelon-operator/internal/status"
+	"github.com/isometry/milestone-operator/internal/status"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )

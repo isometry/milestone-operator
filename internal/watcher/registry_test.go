@@ -19,7 +19,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/isometry/echelon-operator/internal/watcher"
+	"github.com/isometry/milestone-operator/internal/watcher"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
@@ -118,7 +118,7 @@ func sub(owner watcher.OwnerKey, sel labels.Selector) watcher.Subscriber {
 func TestRegistry_Subscribe_FirstStartsInformer(t *testing.T) {
 	ff := newFakeFactory()
 	r := watcher.NewRegistry(ff, func(watcher.OwnerKey) {})
-	owner := watcher.OwnerKey{Kind: kindEchelon, Namespace: nsFluxSystem, Name: nameWave0}
+	owner := watcher.OwnerKey{Kind: kindMilestone, Namespace: nsFluxSystem, Name: nameWave0}
 	if err := r.Subscribe(context.Background(), kustomizationGVK, apimeta.RESTScopeNameNamespace, sub(owner, labels.Everything())); err != nil {
 		t.Fatalf("Subscribe: %v", err)
 	}
@@ -130,8 +130,8 @@ func TestRegistry_Subscribe_FirstStartsInformer(t *testing.T) {
 func TestRegistry_Subscribe_SecondReusesInformer(t *testing.T) {
 	ff := newFakeFactory()
 	r := watcher.NewRegistry(ff, func(watcher.OwnerKey) {})
-	a := watcher.OwnerKey{Kind: kindEchelon, Namespace: "ns", Name: "a"}
-	b := watcher.OwnerKey{Kind: kindEchelon, Namespace: "ns", Name: "b"}
+	a := watcher.OwnerKey{Kind: kindMilestone, Namespace: "ns", Name: "a"}
+	b := watcher.OwnerKey{Kind: kindMilestone, Namespace: "ns", Name: "b"}
 	_ = r.Subscribe(context.Background(), kustomizationGVK, apimeta.RESTScopeNameNamespace, sub(a, labels.Everything()))
 	_ = r.Subscribe(context.Background(), kustomizationGVK, apimeta.RESTScopeNameNamespace, sub(b, labels.Everything()))
 	if len(ff.started) != 1 {
@@ -145,8 +145,8 @@ func TestRegistry_Subscribe_SecondReusesInformer(t *testing.T) {
 func TestRegistry_UnsubscribeOfLastStopsInformer(t *testing.T) {
 	ff := newFakeFactory()
 	r := watcher.NewRegistry(ff, func(watcher.OwnerKey) {})
-	a := watcher.OwnerKey{Kind: kindEchelon, Namespace: "ns", Name: "a"}
-	b := watcher.OwnerKey{Kind: kindEchelon, Namespace: "ns", Name: "b"}
+	a := watcher.OwnerKey{Kind: kindMilestone, Namespace: "ns", Name: "a"}
+	b := watcher.OwnerKey{Kind: kindMilestone, Namespace: "ns", Name: "b"}
 	_ = r.Subscribe(context.Background(), kustomizationGVK, apimeta.RESTScopeNameNamespace, sub(a, labels.Everything()))
 	_ = r.Subscribe(context.Background(), kustomizationGVK, apimeta.RESTScopeNameNamespace, sub(b, labels.Everything()))
 
@@ -167,7 +167,7 @@ func TestRegistry_UnsubscribeOfLastStopsInformer(t *testing.T) {
 func TestRegistry_UnsubscribeAll(t *testing.T) {
 	ff := newFakeFactory()
 	r := watcher.NewRegistry(ff, func(watcher.OwnerKey) {})
-	owner := watcher.OwnerKey{Kind: kindEchelon, Namespace: "ns", Name: "multi"}
+	owner := watcher.OwnerKey{Kind: kindMilestone, Namespace: "ns", Name: "multi"}
 	helmGVK := schema.GroupVersionKind{Group: groupHelmToolkit, Version: "v2", Kind: kindHelmRelease}
 	_ = r.Subscribe(context.Background(), kustomizationGVK, apimeta.RESTScopeNameNamespace, sub(owner, labels.Everything()))
 	_ = r.Subscribe(context.Background(), helmGVK, apimeta.RESTScopeNameNamespace, sub(owner, labels.Everything()))
@@ -181,7 +181,7 @@ func TestRegistry_Subscribe_FactoryError(t *testing.T) {
 	ff := newFakeFactory()
 	ff.failOn[kustomizationGVK] = errors.New("boom")
 	r := watcher.NewRegistry(ff, func(watcher.OwnerKey) {})
-	owner := watcher.OwnerKey{Kind: kindEchelon, Namespace: "ns", Name: "a"}
+	owner := watcher.OwnerKey{Kind: kindMilestone, Namespace: "ns", Name: "a"}
 	err := r.Subscribe(context.Background(), kustomizationGVK, apimeta.RESTScopeNameNamespace, sub(owner, labels.Everything()))
 	if err == nil {
 		t.Fatalf("expected error from failed factory")
@@ -202,7 +202,7 @@ func TestRegistry_Subscribe_FactoryError(t *testing.T) {
 func TestRegistry_Subscribe_PartialFailurePreservesPriorMatchers(t *testing.T) {
 	ff := newFakeFactory()
 	r := watcher.NewRegistry(ff, func(watcher.OwnerKey) {})
-	owner := watcher.OwnerKey{Kind: kindEchelon, Namespace: "ns", Name: "a"}
+	owner := watcher.OwnerKey{Kind: kindMilestone, Namespace: "ns", Name: "a"}
 
 	if err := r.Subscribe(context.Background(), kustomizationGVK, apimeta.RESTScopeNameNamespace,
 		sub(owner, mustSelector(t, map[string]string{labelWave: "0"}))); err != nil {
@@ -233,7 +233,7 @@ func TestRegistry_HandlerEnqueuesMatchedSubscribers(t *testing.T) {
 		defer mu.Unlock()
 		enqueued = append(enqueued, o)
 	})
-	owner := watcher.OwnerKey{Kind: kindEchelon, Namespace: nsFluxSystem, Name: nameWave0}
+	owner := watcher.OwnerKey{Kind: kindMilestone, Namespace: nsFluxSystem, Name: nameWave0}
 	_ = r.Subscribe(context.Background(), kustomizationGVK, apimeta.RESTScopeNameNamespace,
 		sub(owner, mustSelector(t, map[string]string{labelWave: "0"})))
 
@@ -264,7 +264,7 @@ func TestRegistry_HandlerEnqueuesMatchedSubscribers(t *testing.T) {
 func TestRegistry_List_DelegatesToInformer(t *testing.T) {
 	ff := newFakeFactory()
 	r := watcher.NewRegistry(ff, func(watcher.OwnerKey) {})
-	owner := watcher.OwnerKey{Kind: kindEchelon, Namespace: "ns", Name: "a"}
+	owner := watcher.OwnerKey{Kind: kindMilestone, Namespace: "ns", Name: "a"}
 	_ = r.Subscribe(context.Background(), kustomizationGVK, apimeta.RESTScopeNameNamespace, sub(owner, labels.Everything()))
 
 	want := []*unstructured.Unstructured{makeObj("ns", "x", nil)}
@@ -297,7 +297,7 @@ func TestRegistry_Subscribe_SyncTimeout(t *testing.T) {
 	r := watcher.NewRegistry(ff, func(watcher.OwnerKey) {})
 	r.SyncTimeout = 50 * time.Millisecond
 
-	owner := watcher.OwnerKey{Kind: kindEchelon, Namespace: "ns", Name: "a"}
+	owner := watcher.OwnerKey{Kind: kindMilestone, Namespace: "ns", Name: "a"}
 	err := r.Subscribe(context.Background(), kustomizationGVK, apimeta.RESTScopeNameNamespace, sub(owner, labels.Everything()))
 	if err == nil {
 		t.Fatalf("expected sync timeout error")
@@ -331,7 +331,7 @@ func TestRegistry_Subscribe_ConcurrentDistinctGVKs_NotSerialised(t *testing.T) {
 	aDone := make(chan error, 1)
 	go func() {
 		aDone <- r.Subscribe(context.Background(), kustomizationGVK, apimeta.RESTScopeNameNamespace,
-			sub(watcher.OwnerKey{Kind: kindEchelon, Namespace: "n", Name: "a"}, labels.Everything()))
+			sub(watcher.OwnerKey{Kind: kindMilestone, Namespace: "n", Name: "a"}, labels.Everything()))
 	}()
 
 	// Wait until A is provably inside factory.Start before issuing B; with
@@ -346,7 +346,7 @@ func TestRegistry_Subscribe_ConcurrentDistinctGVKs_NotSerialised(t *testing.T) {
 	bDone := make(chan error, 1)
 	go func() {
 		bDone <- r.Subscribe(context.Background(), helmGVK, apimeta.RESTScopeNameNamespace,
-			sub(watcher.OwnerKey{Kind: kindEchelon, Namespace: "n", Name: "b"}, labels.Everything()))
+			sub(watcher.OwnerKey{Kind: kindMilestone, Namespace: "n", Name: "b"}, labels.Everything()))
 	}()
 
 	select {
@@ -389,7 +389,7 @@ func TestRegistry_Subscribe_ConcurrentSameGVK_StartsOnce(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		errsCh <- r.Subscribe(context.Background(), kustomizationGVK, apimeta.RESTScopeNameNamespace,
-			sub(watcher.OwnerKey{Kind: kindEchelon, Namespace: "n", Name: "o0"}, labels.Everything()))
+			sub(watcher.OwnerKey{Kind: kindMilestone, Namespace: "n", Name: "o0"}, labels.Everything()))
 	}()
 	select {
 	case <-entered:
@@ -401,7 +401,7 @@ func TestRegistry_Subscribe_ConcurrentSameGVK_StartsOnce(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			errsCh <- r.Subscribe(context.Background(), kustomizationGVK, apimeta.RESTScopeNameNamespace,
-				sub(watcher.OwnerKey{Kind: kindEchelon, Namespace: "n", Name: fmt.Sprintf("o%d", i)}, labels.Everything()))
+				sub(watcher.OwnerKey{Kind: kindMilestone, Namespace: "n", Name: fmt.Sprintf("o%d", i)}, labels.Everything()))
 		}(i)
 	}
 
@@ -443,7 +443,7 @@ func TestRegistry_Subscribe_ConcurrentSameGVK_StartFailurePropagates(t *testing.
 	go func() {
 		defer wg.Done()
 		errsCh <- r.Subscribe(context.Background(), kustomizationGVK, apimeta.RESTScopeNameNamespace,
-			sub(watcher.OwnerKey{Kind: kindEchelon, Namespace: "n", Name: "o0"}, labels.Everything()))
+			sub(watcher.OwnerKey{Kind: kindMilestone, Namespace: "n", Name: "o0"}, labels.Everything()))
 	}()
 	select {
 	case <-entered:
@@ -455,7 +455,7 @@ func TestRegistry_Subscribe_ConcurrentSameGVK_StartFailurePropagates(t *testing.
 		go func(i int) {
 			defer wg.Done()
 			errsCh <- r.Subscribe(context.Background(), kustomizationGVK, apimeta.RESTScopeNameNamespace,
-				sub(watcher.OwnerKey{Kind: kindEchelon, Namespace: "n", Name: fmt.Sprintf("o%d", i)}, labels.Everything()))
+				sub(watcher.OwnerKey{Kind: kindMilestone, Namespace: "n", Name: fmt.Sprintf("o%d", i)}, labels.Everything()))
 		}(i)
 	}
 
@@ -482,7 +482,7 @@ func TestRegistry_UnsubscribeAll_StopsDispatchToFinalizedOwner(t *testing.T) {
 	ff := newFakeFactory()
 	var enqueued atomic.Int64
 	r := watcher.NewRegistry(ff, func(watcher.OwnerKey) { enqueued.Add(1) })
-	owner := watcher.OwnerKey{Kind: kindEchelon, Namespace: "ns", Name: "a"}
+	owner := watcher.OwnerKey{Kind: kindMilestone, Namespace: "ns", Name: "a"}
 	_ = r.Subscribe(context.Background(), kustomizationGVK, apimeta.RESTScopeNameNamespace, sub(owner, labels.Everything()))
 	entry := ff.entries[kustomizationGVK]
 	if entry == nil {

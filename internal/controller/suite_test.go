@@ -17,7 +17,7 @@ import (
 	"testing"
 	"time"
 
-	apiv1 "github.com/isometry/echelon-operator/api/v1"
+	apiv1 "github.com/isometry/milestone-operator/api/v1"
 	apiextv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -41,7 +41,7 @@ var (
 	envtestStopper context.CancelFunc
 
 	widgetCRD = &apiextv1.CustomResourceDefinition{
-		ObjectMeta: metav1.ObjectMeta{Name: "widgets.test.as-code.io"},
+		ObjectMeta: metav1.ObjectMeta{Name: "widgets.test.milestone.as-code.io"},
 		Spec: apiextv1.CustomResourceDefinitionSpec{
 			Group: groupTestAsCode,
 			Names: apiextv1.CustomResourceDefinitionNames{
@@ -150,7 +150,7 @@ func setupEnvtest() error {
 		return err
 	}
 	// Wait briefly for the Widget CRD to become Established.
-	if err := waitForCRDEstablished(context.Background(), cl, "widgets.test.as-code.io", 30*time.Second); err != nil {
+	if err := waitForCRDEstablished(context.Background(), cl, "widgets.test.milestone.as-code.io", 30*time.Second); err != nil {
 		return err
 	}
 	return nil

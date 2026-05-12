@@ -14,8 +14,8 @@ import (
 	"strings"
 	"testing"
 
-	apiv1 "github.com/isometry/echelon-operator/api/v1"
-	"github.com/isometry/echelon-operator/internal/status"
+	apiv1 "github.com/isometry/milestone-operator/api/v1"
+	"github.com/isometry/milestone-operator/internal/status"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -32,7 +32,7 @@ func resource(s string) status.Resource {
 	return status.Resource{Group: "kustomize.toolkit.fluxcd.io", Version: "v1", Kind: kindKustomization, Namespace: "flux-system", Name: "x", Status: s}
 }
 
-func TestReduceMember_EmptySet(t *testing.T) {
+func TestReduceDependency_EmptySet(t *testing.T) {
 	cases := []struct {
 		name       string
 		policy     apiv1.EmptySetPolicy
@@ -46,7 +46,7 @@ func TestReduceMember_EmptySet(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := status.ReduceMember("kustomize.toolkit.fluxcd.io", "v1", kindKustomization, nil, tc.policy)
+			got := status.ReduceDependency(depKustomizations, "kustomize.toolkit.fluxcd.io", "v1", kindKustomization, nil, tc.policy)
 			if got.Ready != tc.wantReady {
 				t.Errorf("Ready = %s, want %s", got.Ready, tc.wantReady)
 			}
@@ -56,14 +56,14 @@ func TestReduceMember_EmptySet(t *testing.T) {
 			if got.Summary.Total != 0 {
 				t.Errorf("Summary.Total = %d, want 0", got.Summary.Total)
 			}
-			if got.Group != "kustomize.toolkit.fluxcd.io" || got.Version != "v1" || got.Kind != kindKustomization {
-				t.Errorf("identity = (%q,%q,%q), want (kustomize.toolkit.fluxcd.io,v1,Kustomization)", got.Group, got.Version, got.Kind)
+			if got.Name != depKustomizations || got.Group != "kustomize.toolkit.fluxcd.io" || got.Version != "v1" || got.Kind != kindKustomization {
+				t.Errorf("identity = (%q,%q,%q,%q), want (kustomizations,kustomize.toolkit.fluxcd.io,v1,Kustomization)", got.Name, got.Group, got.Version, got.Kind)
 			}
 		})
 	}
 }
 
-func TestReduceMember_Resources(t *testing.T) {
+func TestReduceDependency_Resources(t *testing.T) {
 	cases := []struct {
 		name       string
 		statuses   []string
@@ -134,7 +134,7 @@ func TestReduceMember_Resources(t *testing.T) {
 			for i, s := range tc.statuses {
 				rs[i] = resource(s)
 			}
-			got := status.ReduceMember("kustomize.toolkit.fluxcd.io", "v1", kindKustomization, rs, apiv1.EmptySetUnknown)
+			got := status.ReduceDependency(depKustomizations, "kustomize.toolkit.fluxcd.io", "v1", kindKustomization, rs, apiv1.EmptySetUnknown)
 			if got.Ready != tc.wantReady {
 				t.Errorf("Ready = %s, want %s", got.Ready, tc.wantReady)
 			}
@@ -149,50 +149,50 @@ func TestReduceMember_Resources(t *testing.T) {
 }
 
 func TestReduceOwner(t *testing.T) {
-	rollup := func(kind string, ready metav1.ConditionStatus) apiv1.MemberRollup {
-		return apiv1.MemberRollup{Kind: kind, Ready: ready}
+	rollup := func(name, kind string, ready metav1.ConditionStatus) apiv1.DependencyStatus {
+		return apiv1.DependencyStatus{Name: name, Kind: kind, Ready: ready}
 	}
 	cases := []struct {
 		name       string
-		rollups    map[string]apiv1.MemberRollup
+		rollups    map[string]apiv1.DependencyStatus
 		wantStatus metav1.ConditionStatus
 		wantReason string
 		wantInMsg  []string // substrings expected in the message
 	}{
 		{
-			name:       "no members defensive",
+			name:       "no dependencies defensive",
 			rollups:    nil,
 			wantStatus: metav1.ConditionUnknown,
 			wantReason: apiv1.ReasonEmptySet,
 		},
 		{
 			name: "all ready",
-			rollups: map[string]apiv1.MemberRollup{
-				memberKustomizations: rollup(kindKustomization, metav1.ConditionTrue),
-				memberHelmreleases:   rollup("HelmRelease", metav1.ConditionTrue),
+			rollups: map[string]apiv1.DependencyStatus{
+				depKustomizations: rollup(depKustomizations, kindKustomization, metav1.ConditionTrue),
+				depHelmreleases:   rollup(depHelmreleases, "HelmRelease", metav1.ConditionTrue),
 			},
 			wantStatus: metav1.ConditionTrue,
-			wantReason: apiv1.ReasonAllMembersReady,
+			wantReason: apiv1.ReasonAllDependenciesReady,
 		},
 		{
 			name: "any false wins",
-			rollups: map[string]apiv1.MemberRollup{
-				memberKustomizations: rollup(kindKustomization, metav1.ConditionTrue),
-				memberHelmreleases:   rollup("HelmRelease", metav1.ConditionFalse),
-				"configmaps":         rollup("ConfigMap", metav1.ConditionUnknown),
+			rollups: map[string]apiv1.DependencyStatus{
+				depKustomizations: rollup(depKustomizations, kindKustomization, metav1.ConditionTrue),
+				depHelmreleases:   rollup(depHelmreleases, "HelmRelease", metav1.ConditionFalse),
+				depConfigmaps:     rollup(depConfigmaps, "ConfigMap", metav1.ConditionUnknown),
 			},
 			wantStatus: metav1.ConditionFalse,
-			wantReason: apiv1.ReasonMembersNotReady,
+			wantReason: apiv1.ReasonDependenciesNotReady,
 			wantInMsg:  []string{"helmreleases"},
 		},
 		{
 			name: "unknown when mixed without false",
-			rollups: map[string]apiv1.MemberRollup{
-				memberKustomizations: rollup(kindKustomization, metav1.ConditionTrue),
-				memberHelmreleases:   rollup("HelmRelease", metav1.ConditionUnknown),
+			rollups: map[string]apiv1.DependencyStatus{
+				depKustomizations: rollup(depKustomizations, kindKustomization, metav1.ConditionTrue),
+				depHelmreleases:   rollup(depHelmreleases, "HelmRelease", metav1.ConditionUnknown),
 			},
 			wantStatus: metav1.ConditionUnknown,
-			wantReason: apiv1.ReasonMembersInProgress,
+			wantReason: apiv1.ReasonDependenciesInProgress,
 		},
 	}
 	for _, tc := range cases {
@@ -217,10 +217,10 @@ func TestReduceOwner_StableMessage(t *testing.T) {
 	// Same input set, multiple runs: message must be byte-equal because the
 	// reducer sorts not-ready names. Otherwise Go map iteration would flap
 	// status patches each reconcile.
-	rollups := map[string]apiv1.MemberRollup{
-		"zeta":  {Kind: "Z", Ready: metav1.ConditionFalse},
-		"alpha": {Kind: "A", Ready: metav1.ConditionFalse},
-		"mid":   {Kind: "M", Ready: metav1.ConditionFalse},
+	rollups := map[string]apiv1.DependencyStatus{
+		"zeta":  {Name: "zeta", Kind: "Z", Ready: metav1.ConditionFalse},
+		"alpha": {Name: "alpha", Kind: "A", Ready: metav1.ConditionFalse},
+		"mid":   {Name: "mid", Kind: "M", Ready: metav1.ConditionFalse},
 	}
 	_, _, want := status.ReduceOwner(rollups)
 	for i := 0; i < 20; i++ {
@@ -229,17 +229,17 @@ func TestReduceOwner_StableMessage(t *testing.T) {
 			t.Fatalf("message not stable across runs: got %q want %q", got, want)
 		}
 	}
-	// And the sort is by member name (alpha, mid, zeta), not by kind.
+	// And the sort is by dependency name (alpha, mid, zeta), not by kind.
 	if !strings.Contains(want, "alpha, mid, zeta") {
-		t.Errorf("expected sorted member names in message, got %q", want)
+		t.Errorf("expected sorted dependency names in message, got %q", want)
 	}
 }
 
 func TestSummarizeOwner(t *testing.T) {
-	rollups := map[string]apiv1.MemberRollup{
-		memberKustomizations: {Kind: kindKustomization, Summary: apiv1.Summary{Total: 3, Current: 2, InProgress: 1}},
-		memberHelmreleases:   {Kind: "HelmRelease", Summary: apiv1.Summary{Total: 2, Current: 1, Failed: 1}},
-		"configmaps":         {Kind: "ConfigMap", Summary: apiv1.Summary{Total: 1, NotFound: 1}},
+	rollups := map[string]apiv1.DependencyStatus{
+		depKustomizations: {Name: depKustomizations, Kind: kindKustomization, Summary: apiv1.Summary{Total: 3, Current: 2, InProgress: 1}},
+		depHelmreleases:   {Name: depHelmreleases, Kind: "HelmRelease", Summary: apiv1.Summary{Total: 2, Current: 1, Failed: 1}},
+		depConfigmaps:     {Name: depConfigmaps, Kind: "ConfigMap", Summary: apiv1.Summary{Total: 1, NotFound: 1}},
 	}
 	want := apiv1.Summary{Total: 6, Current: 3, InProgress: 1, Failed: 1, NotFound: 1}
 	got := status.SummarizeOwner(rollups)

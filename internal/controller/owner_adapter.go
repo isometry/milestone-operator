@@ -13,9 +13,9 @@ package controller
 import (
 	"context"
 
-	apiv1 "github.com/isometry/echelon-operator/api/v1"
-	"github.com/isometry/echelon-operator/internal/discovery"
-	"github.com/isometry/echelon-operator/internal/watcher"
+	apiv1 "github.com/isometry/milestone-operator/api/v1"
+	"github.com/isometry/milestone-operator/internal/discovery"
+	"github.com/isometry/milestone-operator/internal/watcher"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
@@ -23,9 +23,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// NormalizedMember is the discovery- and selector-resolved view of a single
-// spec.members[name] entry, ready to feed the registry and the lister.
-type NormalizedMember struct {
+// NormalizedDependency is the discovery- and selector-resolved view of a
+// single spec.dependsOn[] entry, ready to feed the registry and the lister.
+type NormalizedDependency struct {
 	Name             string
 	GVK              schema.GroupVersionKind
 	Scope            apimeta.RESTScopeName
@@ -34,10 +34,10 @@ type NormalizedMember struct {
 	EmptySetPolicy   apiv1.EmptySetPolicy
 }
 
-// MemberError is a structural failure tied to a single member. The reconciler
-// surfaces these as Stalled with the carried Reason; reconcile continues for
-// the remaining members.
-type MemberError struct {
+// DependencyError is a structural failure tied to a single dependency. The
+// reconciler surfaces these as Stalled with the carried Reason; reconcile
+// continues for the remaining dependencies.
+type DependencyError struct {
 	Name    string
 	Group   string
 	Version string
@@ -46,27 +46,28 @@ type MemberError struct {
 	Err     error
 }
 
-func (e MemberError) Error() string { return e.Err.Error() }
-func (e MemberError) Unwrap() error { return e.Err }
+func (e DependencyError) Error() string { return e.Err.Error() }
+func (e DependencyError) Unwrap() error { return e.Err }
 
-// OwnerAdapter abstracts the differences between Echelon and ClusterEchelon so
-// the reconcile pipeline can serve both with one implementation. The interface
-// is intentionally non-generic: the typed owner flows through Reconciler[T]
-// directly, and the adapter only exposes owner-agnostic shapes
-// (NormalizedMember, MemberError, *EchelonStatusBase).
+// OwnerAdapter abstracts the differences between Milestone and
+// ClusterMilestone so the reconcile pipeline can serve both with one
+// implementation. The interface is intentionally non-generic: the typed
+// owner flows through Reconciler[T] directly, and the adapter only exposes
+// owner-agnostic shapes (NormalizedDependency, DependencyError,
+// *MilestoneStatusBase).
 type OwnerAdapter interface {
 	// OwnerKey identifies this object in the watcher registry.
 	OwnerKey() watcher.OwnerKey
 
-	// Members normalises spec.members into NormalizedMember plus per-member
-	// errors that the reconciler should surface as Stalled reasons.
-	// Implementations must return members sorted by Name so downstream
-	// iteration is deterministic.
-	Members(ctx context.Context, dr discovery.Resolver) ([]NormalizedMember, []MemberError)
+	// Dependencies normalises spec.dependsOn into NormalizedDependency plus
+	// per-entry errors that the reconciler should surface as Stalled
+	// reasons. Implementations must return dependencies in spec order so
+	// downstream iteration is deterministic.
+	Dependencies(ctx context.Context, dr discovery.Resolver) ([]NormalizedDependency, []DependencyError)
 
-	// Status returns a pointer to the embedded EchelonStatusBase so the
+	// Status returns a pointer to the embedded MilestoneStatusBase so the
 	// reconciler can mutate it in place before patching.
-	Status() *apiv1.EchelonStatusBase
+	Status() *apiv1.MilestoneStatusBase
 
 	// PatchStatus persists the in-memory status to the API server. The
 	// reconciler is responsible for deciding whether the patch is a no-op.

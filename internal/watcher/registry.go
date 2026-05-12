@@ -17,7 +17,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/isometry/echelon-operator/internal/metrics"
+	"github.com/isometry/milestone-operator/internal/metrics"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime/schema"

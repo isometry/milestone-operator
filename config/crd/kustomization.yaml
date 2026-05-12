@@ -2,8 +2,8 @@
 # since it depends on service name and namespace that are out of this kustomize package.
 # It should be run by config/default
 resources:
-- bases/as-code.io_echelons.yaml
-- bases/as-code.io_clusterechelons.yaml
+- bases/milestone.as-code.io_milestones.yaml
+- bases/milestone.as-code.io_clustermilestones.yaml
 # +kubebuilder:scaffold:crdkustomizeresource
 
 patches:

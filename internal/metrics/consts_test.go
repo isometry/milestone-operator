@@ -11,7 +11,7 @@ You may obtain a copy of the License at
 package metrics_test
 
 const (
-	kindEchelon       = "Echelon"
+	kindMilestone     = "Milestone"
 	kindKustomization = "Kustomization"
 	groupKustomize    = "kustomize.toolkit.fluxcd.io"
 	nsFluxSystem      = "flux-system"
@@ -26,5 +26,5 @@ const (
 	keyStatus      = "status"
 	keyTargetGroup = "target_group"
 	keyTargetKind  = "target_kind"
-	keyMember      = "member"
+	keyDependency  = "dependency"
 )

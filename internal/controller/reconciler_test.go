@@ -19,11 +19,11 @@ import (
 	"testing"
 	"time"
 
-	apiv1 "github.com/isometry/echelon-operator/api/v1"
-	"github.com/isometry/echelon-operator/internal/controller"
-	"github.com/isometry/echelon-operator/internal/discovery"
-	ctrmetrics "github.com/isometry/echelon-operator/internal/metrics"
-	"github.com/isometry/echelon-operator/internal/watcher"
+	apiv1 "github.com/isometry/milestone-operator/api/v1"
+	"github.com/isometry/milestone-operator/internal/controller"
+	"github.com/isometry/milestone-operator/internal/discovery"
+	ctrmetrics "github.com/isometry/milestone-operator/internal/metrics"
+	"github.com/isometry/milestone-operator/internal/watcher"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -116,23 +116,25 @@ func (r *fakeRegistry) GVKsByOwner(owner watcher.OwnerKey) []schema.GroupVersion
 	return out
 }
 
-// fakeAdapter wraps an apiv1.Echelon for testing purposes; fixed members and
+// fakeAdapter wraps an apiv1.Milestone for testing; fixed dependencies and
 // pre-resolved errors. PatchStatus persists to the fake client.
 type fakeAdapter struct {
-	obj      *apiv1.Echelon
-	members  []controller.NormalizedMember
-	errs     []controller.MemberError
+	obj      *apiv1.Milestone
+	deps     []controller.NormalizedDependency
+	errs     []controller.DependencyError
 	patchErr error
 	patches  int
 }
 
 func (a *fakeAdapter) OwnerKey() watcher.OwnerKey {
-	return watcher.OwnerKey{Kind: kindEchelon, Namespace: a.obj.GetNamespace(), Name: a.obj.GetName()}
+	return watcher.OwnerKey{Kind: kindMilestone, Namespace: a.obj.GetNamespace(), Name: a.obj.GetName()}
 }
-func (a *fakeAdapter) Members(_ context.Context, _ discovery.Resolver) ([]controller.NormalizedMember, []controller.MemberError) {
-	return a.members, a.errs
+func (a *fakeAdapter) Dependencies(_ context.Context, _ discovery.Resolver) ([]controller.NormalizedDependency, []controller.DependencyError) {
+	return a.deps, a.errs
 }
-func (a *fakeAdapter) Status() *apiv1.EchelonStatusBase { return &a.obj.Status.EchelonStatusBase }
+func (a *fakeAdapter) Status() *apiv1.MilestoneStatusBase {
+	return &a.obj.Status.MilestoneStatusBase
+}
 func (a *fakeAdapter) PatchStatus(ctx context.Context, c client.Client) error {
 	a.patches++
 	if a.patchErr != nil {
@@ -153,11 +155,11 @@ func newScheme(t *testing.T) *runtime.Scheme {
 	return sc
 }
 
-func newEchelon(name string) *apiv1.Echelon {
-	return &apiv1.Echelon{
+func newMilestone(name string) *apiv1.Milestone {
+	return &apiv1.Milestone{
 		ObjectMeta: metav1.ObjectMeta{Namespace: nsFluxSystem, Name: name, Generation: 1},
-		Spec: apiv1.EchelonSpec{Members: map[string]apiv1.MemberSpec{
-			memberKustomizations: {Kind: kindKustomization, Group: groupKustomize},
+		Spec: apiv1.MilestoneSpec{DependsOn: []apiv1.DependencyRef{
+			{Name: depKustomizations, Target: apiv1.TargetSpec{Kind: kindKustomization, Group: groupKustomize}},
 		}},
 	}
 }
@@ -183,21 +185,21 @@ func currentResource(name string) *unstructured.Unstructured {
 
 var kustomizationGVK = schema.GroupVersionKind{Group: groupKustomize, Version: "v1", Kind: kindKustomization}
 
-func newFixture(t *testing.T, ech *apiv1.Echelon, fa *fakeAdapter, freg *fakeRegistry) *controller.Reconciler[*apiv1.Echelon] {
+func newFixture(t *testing.T, ech *apiv1.Milestone, fa *fakeAdapter, freg *fakeRegistry) *controller.Reconciler[*apiv1.Milestone] {
 	t.Helper()
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(ech).WithStatusSubresource(ech).Build()
-	return &controller.Reconciler[*apiv1.Echelon]{
+	return &controller.Reconciler[*apiv1.Milestone]{
 		Client:     cl,
 		Registry:   freg,
 		Resolver:   nil, // unused: fakeAdapter pre-resolves members
-		NewAdapter: func(_ *apiv1.Echelon) controller.OwnerAdapter { return fa },
-		Controller: kindEchelon,
+		NewAdapter: func(_ *apiv1.Milestone) controller.OwnerAdapter { return fa },
+		Controller: kindMilestone,
 		Now:        func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) },
 	}
 }
 
 func TestReconcile_AddsFinalizer(t *testing.T) {
-	ech := newEchelon("e1")
+	ech := newMilestone("e1")
 	fa := &fakeAdapter{obj: ech}
 	r := newFixture(t, ech, fa, newFakeRegistry())
 
@@ -216,14 +218,14 @@ func TestReconcile_AddsFinalizer(t *testing.T) {
 }
 
 func TestReconcile_HappyPath_AllCurrent(t *testing.T) {
-	ech := newEchelon("e1")
+	ech := newMilestone("e1")
 	ech.Finalizers = []string{apiv1.Finalizer}
 	freg := newFakeRegistry()
 	freg.listResponses[kustomizationGVK] = []*unstructured.Unstructured{currentResource("a"), currentResource("b")}
 	fa := &fakeAdapter{
 		obj: ech,
-		members: []controller.NormalizedMember{{
-			Name: memberKustomizations, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
+		deps: []controller.NormalizedDependency{{
+			Name: depKustomizations, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
 			Selector: mustSelector(t), EmptySetPolicy: apiv1.EmptySetUnknown,
 		}},
 	}
@@ -238,8 +240,8 @@ func TestReconcile_HappyPath_AllCurrent(t *testing.T) {
 	if ech.Status.Summary.Total != 2 || ech.Status.Summary.Current != 2 {
 		t.Errorf("summary = %+v, want total=2 current=2", ech.Status.Summary)
 	}
-	if got, ok := ech.Status.Members[memberKustomizations]; !ok || got.Ready != metav1.ConditionTrue {
-		t.Errorf("Status.Members[kustomizations] = %+v, want Ready=True", got)
+	if got, ok := depStatusByName(ech, depKustomizations); !ok || got.Ready != metav1.ConditionTrue {
+		t.Errorf("Status.DependsOn[kustomizations] = %+v, want Ready=True", got)
 	}
 	if fa.patches != 1 {
 		t.Errorf("patches = %d, want 1", fa.patches)
@@ -247,13 +249,13 @@ func TestReconcile_HappyPath_AllCurrent(t *testing.T) {
 }
 
 func TestReconcile_EmptySet_AppliesPolicy(t *testing.T) {
-	ech := newEchelon("e1")
+	ech := newMilestone("e1")
 	ech.Finalizers = []string{apiv1.Finalizer}
 	freg := newFakeRegistry()
 	fa := &fakeAdapter{
 		obj: ech,
-		members: []controller.NormalizedMember{{
-			Name: memberKustomizations, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
+		deps: []controller.NormalizedDependency{{
+			Name: depKustomizations, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
 			Selector: mustSelector(t), EmptySetPolicy: apiv1.EmptySetNotReady,
 		}},
 	}
@@ -268,13 +270,13 @@ func TestReconcile_EmptySet_AppliesPolicy(t *testing.T) {
 }
 
 func TestReconcile_Deletion_RunsFinalizer(t *testing.T) {
-	ech := newEchelon("e1")
+	ech := newMilestone("e1")
 	ech.Finalizers = []string{apiv1.Finalizer}
 	now := metav1.Now()
 	ech.DeletionTimestamp = &now
 	freg := newFakeRegistry()
-	freg.subscribed[watcher.OwnerKey{Kind: kindEchelon, Namespace: nsFluxSystem, Name: "e1"}] = map[schema.GroupVersionKind]watcher.Subscriber{
-		kustomizationGVK: {Owner: watcher.OwnerKey{Kind: kindEchelon, Namespace: nsFluxSystem, Name: "e1"}},
+	freg.subscribed[watcher.OwnerKey{Kind: kindMilestone, Namespace: nsFluxSystem, Name: "e1"}] = map[schema.GroupVersionKind]watcher.Subscriber{
+		kustomizationGVK: {Owner: watcher.OwnerKey{Kind: kindMilestone, Namespace: nsFluxSystem, Name: "e1"}},
 	}
 	fa := &fakeAdapter{obj: ech}
 	r := newFixture(t, ech, fa, freg)
@@ -293,10 +295,10 @@ func TestReconcile_Deletion_RunsFinalizer(t *testing.T) {
 }
 
 func TestReconcile_SubscriptionDiff_RemovesStale(t *testing.T) {
-	ech := newEchelon("e1")
+	ech := newMilestone("e1")
 	ech.Finalizers = []string{apiv1.Finalizer}
 	freg := newFakeRegistry()
-	owner := watcher.OwnerKey{Kind: kindEchelon, Namespace: nsFluxSystem, Name: "e1"}
+	owner := watcher.OwnerKey{Kind: kindMilestone, Namespace: nsFluxSystem, Name: "e1"}
 	helmGVK := schema.GroupVersionKind{Group: "helm.toolkit.fluxcd.io", Version: "v2", Kind: "HelmRelease"}
 	// Pre-subscribe owner to two GVKs; spec only carries Kustomization.
 	freg.subscribed[owner] = map[schema.GroupVersionKind]watcher.Subscriber{
@@ -305,8 +307,8 @@ func TestReconcile_SubscriptionDiff_RemovesStale(t *testing.T) {
 	}
 	fa := &fakeAdapter{
 		obj: ech,
-		members: []controller.NormalizedMember{{
-			Name: memberKustomizations, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
+		deps: []controller.NormalizedDependency{{
+			Name: depKustomizations, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
 			Selector: mustSelector(t),
 		}},
 	}
@@ -327,12 +329,12 @@ func TestReconcile_SubscriptionDiff_RemovesStale(t *testing.T) {
 }
 
 func TestReconcile_MemberResolveError_SetsStalled(t *testing.T) {
-	ech := newEchelon("e1")
+	ech := newMilestone("e1")
 	ech.Finalizers = []string{apiv1.Finalizer}
 	fa := &fakeAdapter{
 		obj: ech,
-		errs: []controller.MemberError{{
-			Name: memberLate, Group: groupMissing, Version: "v1", Kind: kindLate,
+		errs: []controller.DependencyError{{
+			Name: depLate, Group: groupMissing, Version: "v1", Kind: kindLate,
 			Reason: apiv1.ReasonGVKNotEstablished,
 			Err:    errors.New("not established"),
 		}},
@@ -358,14 +360,14 @@ func TestReconcile_MemberResolveError_SetsStalled(t *testing.T) {
 func TestReconcile_StalledMessage_TruncatesManyErrors(t *testing.T) {
 	const cap = 50
 	const overflow = 10
-	ech := newEchelon("e1")
+	ech := newMilestone("e1")
 	ech.Finalizers = []string{apiv1.Finalizer}
 
-	errs := make([]controller.MemberError, 0, cap+overflow)
+	errs := make([]controller.DependencyError, 0, cap+overflow)
 	for i := range cap + overflow {
 		// Names use zero-padding so lexical order matches numeric order; the
 		// reducer sorts errors by Name before rendering.
-		errs = append(errs, controller.MemberError{
+		errs = append(errs, controller.DependencyError{
 			Name:    fmt.Sprintf("m%03d", i),
 			Group:   groupMissing,
 			Version: "v1",
@@ -401,9 +403,9 @@ func TestReconcile_StalledMessage_TruncatesManyErrors(t *testing.T) {
 }
 
 func TestReconcile_StalledMessage_NoTruncationWhenWithinCap(t *testing.T) {
-	ech := newEchelon("e1")
+	ech := newMilestone("e1")
 	ech.Finalizers = []string{apiv1.Finalizer}
-	errs := []controller.MemberError{
+	errs := []controller.DependencyError{
 		{Name: "m0", Group: groupMissing, Version: "v1", Kind: "K0",
 			Reason: apiv1.ReasonGVKNotEstablished, Err: errors.New("nope")},
 		{Name: "m1", Group: groupMissing, Version: "v1", Kind: "K1",
@@ -421,14 +423,14 @@ func TestReconcile_StalledMessage_NoTruncationWhenWithinCap(t *testing.T) {
 }
 
 func TestReconcile_PatchIdempotency(t *testing.T) {
-	ech := newEchelon("e1")
+	ech := newMilestone("e1")
 	ech.Finalizers = []string{apiv1.Finalizer}
 	freg := newFakeRegistry()
 	freg.listResponses[kustomizationGVK] = []*unstructured.Unstructured{currentResource("a")}
 	fa := &fakeAdapter{
 		obj: ech,
-		members: []controller.NormalizedMember{{
-			Name: memberKustomizations, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
+		deps: []controller.NormalizedDependency{{
+			Name: depKustomizations, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
 			Selector: mustSelector(t), EmptySetPolicy: apiv1.EmptySetUnknown,
 		}},
 	}
@@ -447,14 +449,14 @@ func TestReconcile_PatchIdempotency(t *testing.T) {
 }
 
 func TestReconcile_SubscribeFailure_SetsStalled(t *testing.T) {
-	ech := newEchelon("e1")
+	ech := newMilestone("e1")
 	ech.Finalizers = []string{apiv1.Finalizer}
 	freg := newFakeRegistry()
 	freg.subscribeErr[kustomizationGVK] = errors.New("RBAC denied")
 	fa := &fakeAdapter{
 		obj: ech,
-		members: []controller.NormalizedMember{{
-			Name: memberKustomizations, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
+		deps: []controller.NormalizedDependency{{
+			Name: depKustomizations, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
 			Selector: mustSelector(t),
 		}},
 	}
@@ -469,7 +471,7 @@ func TestReconcile_SubscribeFailure_SetsStalled(t *testing.T) {
 }
 
 func TestReconcile_CapsNotReadyResources(t *testing.T) {
-	ech := newEchelon("e1")
+	ech := newMilestone("e1")
 	ech.Finalizers = []string{apiv1.Finalizer}
 	freg := newFakeRegistry()
 	// 60 explicitly not-ready resources; cap is 50.
@@ -490,8 +492,8 @@ func TestReconcile_CapsNotReadyResources(t *testing.T) {
 	freg.listResponses[kustomizationGVK] = resources
 	fa := &fakeAdapter{
 		obj: ech,
-		members: []controller.NormalizedMember{{
-			Name: memberKustomizations, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
+		deps: []controller.NormalizedDependency{{
+			Name: depKustomizations, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
 			Selector: mustSelector(t),
 		}},
 	}
@@ -511,13 +513,13 @@ func TestReconcile_CapsNotReadyResources(t *testing.T) {
 func TestReconcile_NotFoundFromGet_NoOp(t *testing.T) {
 	// AsReconcileFunc should swallow IsNotFound and return no error.
 	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).Build()
-	r := &controller.Reconciler[*apiv1.Echelon]{
+	r := &controller.Reconciler[*apiv1.Milestone]{
 		Client:     cl,
 		Registry:   newFakeRegistry(),
-		NewAdapter: func(_ *apiv1.Echelon) controller.OwnerAdapter { return nil },
-		Controller: kindEchelon,
+		NewAdapter: func(_ *apiv1.Milestone) controller.OwnerAdapter { return nil },
+		Controller: kindMilestone,
 	}
-	rf := r.AsReconcileFunc(func() *apiv1.Echelon { return &apiv1.Echelon{} })
+	rf := r.AsReconcileFunc(func() *apiv1.Milestone { return &apiv1.Milestone{} })
 	res, err := rf(t.Context(), reconcileRequest(nsFluxSystem, "missing"))
 	if err != nil {
 		t.Errorf("expected nil error, got %v", err)
@@ -527,28 +529,28 @@ func TestReconcile_NotFoundFromGet_NoOp(t *testing.T) {
 	}
 }
 
-// TestReconcile_MultipleEchelons_IndependentStatus drives two owners through
+// TestReconcile_MultipleMilestones_IndependentStatus drives two owners through
 // the pipeline against a shared registry and asserts each computes its own
 // status. e1 watches Kustomizations (one Current resource ⇒ Ready=True); e2
 // watches HelmReleases with an empty resource set under the NotReady policy
 // (⇒ Ready=False). Independence means: shared registry, distinct outcomes.
-func TestReconcile_MultipleEchelons_IndependentStatus(t *testing.T) {
+func TestReconcile_MultipleMilestones_IndependentStatus(t *testing.T) {
 	helmGVK := schema.GroupVersionKind{Group: "helm.toolkit.fluxcd.io", Version: "v2", Kind: "HelmRelease"}
 
-	e1 := newEchelon("e1")
+	e1 := newMilestone("e1")
 	e1.Finalizers = []string{apiv1.Finalizer}
-	e2 := newEchelon("e2")
+	e2 := newMilestone("e2")
 	e2.Finalizers = []string{apiv1.Finalizer}
 
 	freg := newFakeRegistry()
 	freg.listResponses[kustomizationGVK] = []*unstructured.Unstructured{currentResource("a")}
 	// helmGVK has no listResponses entry → empty set.
 
-	fa1 := &fakeAdapter{obj: e1, members: []controller.NormalizedMember{{
+	fa1 := &fakeAdapter{obj: e1, deps: []controller.NormalizedDependency{{
 		Name: "k", GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
 		Selector: mustSelector(t), EmptySetPolicy: apiv1.EmptySetUnknown,
 	}}}
-	fa2 := &fakeAdapter{obj: e2, members: []controller.NormalizedMember{{
+	fa2 := &fakeAdapter{obj: e2, deps: []controller.NormalizedDependency{{
 		Name: "h", GVK: helmGVK, Scope: apimeta.RESTScopeNameNamespace,
 		Selector: mustSelector(t), EmptySetPolicy: apiv1.EmptySetNotReady,
 	}}}
@@ -558,17 +560,17 @@ func TestReconcile_MultipleEchelons_IndependentStatus(t *testing.T) {
 		WithObjects(e1, e2).
 		WithStatusSubresource(e1, e2).
 		Build()
-	r := &controller.Reconciler[*apiv1.Echelon]{
+	r := &controller.Reconciler[*apiv1.Milestone]{
 		Client:   cl,
 		Registry: freg,
 		Resolver: nil,
-		NewAdapter: func(obj *apiv1.Echelon) controller.OwnerAdapter {
+		NewAdapter: func(obj *apiv1.Milestone) controller.OwnerAdapter {
 			if obj.GetName() == "e1" {
 				return fa1
 			}
 			return fa2
 		},
-		Controller: kindEchelon,
+		Controller: kindMilestone,
 		Now:        func() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) },
 	}
 
@@ -587,8 +589,8 @@ func TestReconcile_MultipleEchelons_IndependentStatus(t *testing.T) {
 	}
 
 	// Each owner should have subscribed to its own GVK only.
-	owner1 := watcher.OwnerKey{Kind: kindEchelon, Namespace: nsFluxSystem, Name: "e1"}
-	owner2 := watcher.OwnerKey{Kind: kindEchelon, Namespace: nsFluxSystem, Name: "e2"}
+	owner1 := watcher.OwnerKey{Kind: kindMilestone, Namespace: nsFluxSystem, Name: "e1"}
+	owner2 := watcher.OwnerKey{Kind: kindMilestone, Namespace: nsFluxSystem, Name: "e2"}
 	if got := freg.GVKsByOwner(owner1); len(got) != 1 || got[0] != kustomizationGVK {
 		t.Errorf("e1 subscriptions = %v, want [Kustomization]", got)
 	}
@@ -608,7 +610,7 @@ func TestReconcile_MultipleEchelons_IndependentStatus(t *testing.T) {
 // filter — selector admission happens in the reconciler's memberAdmits check,
 // which is exercised indirectly by relying on labels.
 func TestReconcile_TwoMembersSameGVK(t *testing.T) {
-	ech := newEchelon("e1")
+	ech := newMilestone("e1")
 	ech.Finalizers = []string{apiv1.Finalizer}
 	freg := newFakeRegistry()
 
@@ -630,10 +632,10 @@ func TestReconcile_TwoMembersSameGVK(t *testing.T) {
 
 	fa := &fakeAdapter{
 		obj: ech,
-		members: []controller.NormalizedMember{
-			{Name: memberWaveA, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
+		deps: []controller.NormalizedDependency{
+			{Name: depWaveA, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
 				Selector: selA, EmptySetPolicy: apiv1.EmptySetUnknown},
-			{Name: memberWaveB, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
+			{Name: depWaveB, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
 				Selector: selB, EmptySetPolicy: apiv1.EmptySetUnknown},
 		},
 	}
@@ -642,24 +644,24 @@ func TestReconcile_TwoMembersSameGVK(t *testing.T) {
 		t.Fatalf("Reconcile: %v", err)
 	}
 
-	if len(ech.Status.Members) != 2 {
-		t.Fatalf("Status.Members len = %d, want 2", len(ech.Status.Members))
+	if len(ech.Status.DependsOn) != 2 {
+		t.Fatalf("Status.DependsOn len = %d, want 2", len(ech.Status.DependsOn))
 	}
 	for _, name := range []string{"wave-a", "wave-b"} {
-		got, ok := ech.Status.Members[name]
+		got, ok := depStatusByName(ech, name)
 		if !ok {
-			t.Errorf("Status.Members[%q] missing", name)
+			t.Errorf("Status.DependsOn[%q] missing", name)
 			continue
 		}
 		if got.Summary.Total != 1 || got.Summary.Current != 1 {
-			t.Errorf("Members[%q].Summary = %+v, want total=1 current=1", name, got.Summary)
+			t.Errorf("DependsOn[%q].Summary = %+v, want total=1 current=1", name, got.Summary)
 		}
 	}
 }
 
 // helpers
 
-func readyStatusOf(ech *apiv1.Echelon) metav1.ConditionStatus {
+func readyStatusOf(ech *apiv1.Milestone) metav1.ConditionStatus {
 	for _, c := range ech.Status.Conditions {
 		if c.Type == apiv1.ConditionReady {
 			return c.Status
@@ -668,7 +670,7 @@ func readyStatusOf(ech *apiv1.Echelon) metav1.ConditionStatus {
 	return ""
 }
 
-func hasCondition(ech *apiv1.Echelon, t string, st metav1.ConditionStatus) bool {
+func hasCondition(ech *apiv1.Milestone, t string, st metav1.ConditionStatus) bool {
 	for _, c := range ech.Status.Conditions {
 		if c.Type == t && c.Status == st {
 			return true
@@ -677,7 +679,7 @@ func hasCondition(ech *apiv1.Echelon, t string, st metav1.ConditionStatus) bool 
 	return false
 }
 
-func stalledMessageOf(ech *apiv1.Echelon) string {
+func stalledMessageOf(ech *apiv1.Milestone) string {
 	for _, c := range ech.Status.Conditions {
 		if c.Type == apiv1.ConditionStalled {
 			return c.Message
@@ -709,14 +711,14 @@ func reconcileRequest(ns, name string) reconcile.Request {
 // bug: a List error on a member with emptySetPolicy: Ready must not produce
 // Ready=True.
 func TestReconcile_ListFailure_DoesNotPromoteToReady(t *testing.T) {
-	ech := newEchelon("e1")
+	ech := newMilestone("e1")
 	ech.Finalizers = []string{apiv1.Finalizer}
 	freg := newFakeRegistry()
 	freg.listErr[kustomizationGVK] = errors.New("cache unavailable")
 	fa := &fakeAdapter{
 		obj: ech,
-		members: []controller.NormalizedMember{{
-			Name: memberKustomizations, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
+		deps: []controller.NormalizedDependency{{
+			Name: depKustomizations, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
 			Selector: mustSelector(t), EmptySetPolicy: apiv1.EmptySetReady,
 		}},
 	}
@@ -726,15 +728,15 @@ func TestReconcile_ListFailure_DoesNotPromoteToReady(t *testing.T) {
 		t.Fatalf("Reconcile: %v", err)
 	}
 
-	got, ok := ech.Status.Members[memberKustomizations]
+	got, ok := depStatusByName(ech, depKustomizations)
 	if !ok {
-		t.Fatalf("Members[%q] missing", memberKustomizations)
+		t.Fatalf("DependsOn[%q] missing", depKustomizations)
 	}
 	if got.Ready != metav1.ConditionUnknown {
-		t.Errorf("Members[%q].Ready = %s, want Unknown", memberKustomizations, got.Ready)
+		t.Errorf("DependsOn[%q].Ready = %s, want Unknown", depKustomizations, got.Ready)
 	}
 	if got.Reason != apiv1.ReasonWatchSetupFailed {
-		t.Errorf("Members[%q].Reason = %q, want %q", memberKustomizations, got.Reason, apiv1.ReasonWatchSetupFailed)
+		t.Errorf("DependsOn[%q].Reason = %q, want %q", depKustomizations, got.Reason, apiv1.ReasonWatchSetupFailed)
 	}
 	if !hasCondition(ech, apiv1.ConditionStalled, metav1.ConditionTrue) {
 		t.Errorf("Stalled should be True after list failure; conditions=%+v", ech.Status.Conditions)
@@ -744,12 +746,12 @@ func TestReconcile_ListFailure_DoesNotPromoteToReady(t *testing.T) {
 	}
 }
 
-// TestReconcile_SubscribeFailure_IncrementsMemberResolveErrors mirrors the
+// TestReconcile_SubscribeFailure_IncrementsTargetResolveErrors mirrors the
 // existing metric coverage for discovery and list failures: subscribe
-// failures must bump echelon_member_resolve_errors_total{reason=
+// failures must bump milestone_target_resolve_errors_total{reason=
 // WatchSetupFailed} so operators can alert on informer setup outages.
-func TestReconcile_SubscribeFailure_IncrementsMemberResolveErrors(t *testing.T) {
-	ech := newEchelon("e1")
+func TestReconcile_SubscribeFailure_IncrementsTargetResolveErrors(t *testing.T) {
+	ech := newMilestone("e1")
 	ech.Finalizers = []string{apiv1.Finalizer}
 	freg := newFakeRegistry()
 	freg.subscribeErr[kustomizationGVK] = errors.New("apiserver down")
@@ -758,16 +760,16 @@ func TestReconcile_SubscribeFailure_IncrementsMemberResolveErrors(t *testing.T) 
 	selB, _ := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{MatchLabels: map[string]string{labelWave: "b"}})
 	fa := &fakeAdapter{
 		obj: ech,
-		members: []controller.NormalizedMember{
-			{Name: memberWaveA, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
+		deps: []controller.NormalizedDependency{
+			{Name: depWaveA, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
 				Selector: selA, EmptySetPolicy: apiv1.EmptySetReady},
-			{Name: memberWaveB, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
+			{Name: depWaveB, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
 				Selector: selB, EmptySetPolicy: apiv1.EmptySetReady},
 		},
 	}
 	r := newFixture(t, ech, fa, freg)
 
-	counter := ctrmetrics.MemberResolveErrors.WithLabelValues(kindEchelon, apiv1.ReasonWatchSetupFailed)
+	counter := ctrmetrics.TargetResolveErrors.WithLabelValues(kindMilestone, apiv1.ReasonWatchSetupFailed)
 	before := testutil.ToFloat64(counter)
 
 	if _, err := r.ReconcileObject(t.Context(), ech); err != nil {
@@ -776,7 +778,7 @@ func TestReconcile_SubscribeFailure_IncrementsMemberResolveErrors(t *testing.T) 
 
 	got := testutil.ToFloat64(counter) - before
 	if got != 2 {
-		t.Errorf("MemberResolveErrors{WatchSetupFailed} delta = %v, want 2 (one per member in failing GVK group)", got)
+		t.Errorf("TargetResolveErrors{WatchSetupFailed} delta = %v, want 2 (one per member in failing GVK group)", got)
 	}
 }
 
@@ -784,7 +786,7 @@ func TestReconcile_SubscribeFailure_IncrementsMemberResolveErrors(t *testing.T) 
 // Subscribe failure must surface as WatchSetupFailed on every member in the
 // GVK group, not just the aggregate Stalled condition.
 func TestReconcile_SubscribeFailure_PerMemberRollupWatchSetupFailed(t *testing.T) {
-	ech := newEchelon("e1")
+	ech := newMilestone("e1")
 	ech.Finalizers = []string{apiv1.Finalizer}
 	freg := newFakeRegistry()
 	freg.subscribeErr[kustomizationGVK] = errors.New("apiserver down")
@@ -793,10 +795,10 @@ func TestReconcile_SubscribeFailure_PerMemberRollupWatchSetupFailed(t *testing.T
 	selB, _ := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{MatchLabels: map[string]string{labelWave: "b"}})
 	fa := &fakeAdapter{
 		obj: ech,
-		members: []controller.NormalizedMember{
-			{Name: memberWaveA, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
+		deps: []controller.NormalizedDependency{
+			{Name: depWaveA, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
 				Selector: selA, EmptySetPolicy: apiv1.EmptySetReady},
-			{Name: memberWaveB, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
+			{Name: depWaveB, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
 				Selector: selB, EmptySetPolicy: apiv1.EmptySetReady},
 		},
 	}
@@ -805,17 +807,17 @@ func TestReconcile_SubscribeFailure_PerMemberRollupWatchSetupFailed(t *testing.T
 	if _, err := r.ReconcileObject(t.Context(), ech); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	for _, name := range []string{memberWaveA, memberWaveB} {
-		got, ok := ech.Status.Members[name]
+	for _, name := range []string{depWaveA, depWaveB} {
+		got, ok := depStatusByName(ech, name)
 		if !ok {
-			t.Errorf("Members[%q] missing", name)
+			t.Errorf("DependsOn[%q] missing", name)
 			continue
 		}
 		if got.Ready != metav1.ConditionUnknown {
-			t.Errorf("Members[%q].Ready = %s, want Unknown", name, got.Ready)
+			t.Errorf("DependsOn[%q].Ready = %s, want Unknown", name, got.Ready)
 		}
 		if got.Reason != apiv1.ReasonWatchSetupFailed {
-			t.Errorf("Members[%q].Reason = %q, want %q", name, got.Reason, apiv1.ReasonWatchSetupFailed)
+			t.Errorf("DependsOn[%q].Reason = %q, want %q", name, got.Reason, apiv1.ReasonWatchSetupFailed)
 		}
 	}
 }
@@ -825,15 +827,15 @@ func TestReconcile_SubscribeFailure_PerMemberRollupWatchSetupFailed(t *testing.T
 // current generation, so Flux can distinguish a settled condition from a
 // stale one without cross-referencing status.observedGeneration.
 func TestReconcile_Conditions_CarryObservedGeneration(t *testing.T) {
-	ech := newEchelon("e1")
+	ech := newMilestone("e1")
 	ech.Finalizers = []string{apiv1.Finalizer}
 	ech.Generation = 7
 	freg := newFakeRegistry()
 	freg.listResponses[kustomizationGVK] = []*unstructured.Unstructured{currentResource("a")}
 	fa := &fakeAdapter{
 		obj: ech,
-		members: []controller.NormalizedMember{{
-			Name: memberKustomizations, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
+		deps: []controller.NormalizedDependency{{
+			Name: depKustomizations, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
 			Selector: mustSelector(t), EmptySetPolicy: apiv1.EmptySetUnknown,
 		}},
 	}
@@ -867,14 +869,14 @@ func TestReconcile_Conditions_CarryObservedGeneration(t *testing.T) {
 // Times, which zeroes per-condition observedGeneration to prevent its
 // rewrites from driving additional patches.
 func TestReconcile_PatchIdempotency_AtGenerationBump(t *testing.T) {
-	ech := newEchelon("e1")
+	ech := newMilestone("e1")
 	ech.Finalizers = []string{apiv1.Finalizer}
 	freg := newFakeRegistry()
 	freg.listResponses[kustomizationGVK] = []*unstructured.Unstructured{currentResource("a")}
 	fa := &fakeAdapter{
 		obj: ech,
-		members: []controller.NormalizedMember{{
-			Name: memberKustomizations, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
+		deps: []controller.NormalizedDependency{{
+			Name: depKustomizations, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
 			Selector: mustSelector(t), EmptySetPolicy: apiv1.EmptySetUnknown,
 		}},
 	}
@@ -890,7 +892,7 @@ func TestReconcile_PatchIdempotency_AtGenerationBump(t *testing.T) {
 	// stored copy during Status().Update).
 	ech.Generation++
 	if err := r.Client.Update(t.Context(), ech); err != nil {
-		t.Fatalf("update echelon: %v", err)
+		t.Fatalf("update milestone: %v", err)
 	}
 	if _, err := r.ReconcileObject(t.Context(), ech); err != nil {
 		t.Fatalf("post-bump reconcile: %v", err)

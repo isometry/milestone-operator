@@ -4,17 +4,15 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.18.0
-  name: echelons.as-code.io
+  name: clustermilestones.milestone.as-code.io
 spec:
-  group: as-code.io
+  group: milestone.as-code.io
   names:
-    kind: Echelon
-    listKind: EchelonList
-    plural: echelons
-    shortNames:
-    - ech
-    singular: echelon
-  scope: Namespaced
+    kind: ClusterMilestone
+    listKind: ClusterMilestoneList
+    plural: clustermilestones
+    singular: clustermilestone
+  scope: Cluster
   versions:
   - additionalPrinterColumns:
     - jsonPath: .status.conditions[?(@.type=='Ready')].status
@@ -36,8 +34,9 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          Echelon aggregates the kstatus of resources matching its members within its
-          own namespace, exposing a kstatus-compatible Ready condition.
+          ClusterMilestone aggregates the kstatus of resources matching its
+          dependencies across namespaces, exposing a kstatus-compatible Ready
+          condition.
         properties:
           apiVersion:
             description: |-
@@ -57,104 +56,177 @@ spec:
           metadata:
             type: object
           spec:
-            description: EchelonSpec defines the desired state of Echelon.
+            description: ClusterMilestoneSpec defines the desired state of ClusterMilestone.
             properties:
-              members:
-                additionalProperties:
-                  description: |-
-                    MemberSpec selects a set of resources by GVK and label selector. The map key
-                    in spec.members carries the user-given name of this member.
+              dependsOn:
+                description: |-
+                  DependsOn is the ordered set of dependencies this ClusterMilestone
+                  aggregates. Each dependency may scope its search via
+                  Target.Namespaces or Target.NamespaceSelector.
+                items:
+                  description: ClusterDependencyRef is the cluster-scoped variant
+                    of DependencyRef.
                   properties:
                     emptySetPolicy:
                       default: Unknown
                       description: |-
-                        EmptySetPolicy controls Ready reporting when zero resources match.
-                        Defaults to Unknown when omitted.
+                        EmptySetPolicy controls how a dependency's Ready is reported when zero
+                        resources match its target selector.
                       enum:
                       - Unknown
                       - Ready
                       - NotReady
                       type: string
-                    group:
-                      description: |-
-                        Group is the API group of the target kind. Empty string means the core
-                        Kubernetes group.
-                      type: string
-                    kind:
-                      description: Kind is the target kind (e.g. "Kustomization",
-                        "HelmRelease").
+                    name:
+                      maxLength: 63
                       minLength: 1
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                       type: string
-                    selector:
+                    target:
                       description: |-
-                        Selector is a standard Kubernetes label selector. Nil selects every
-                        resource of Kind in scope.
+                        ClusterTargetSpec extends TargetSpec with namespace selection. Exactly
+                        one of Namespaces or NamespaceSelector may be set; both empty means
+                        "all namespaces".
                       properties:
-                        matchExpressions:
-                          description: matchExpressions is a list of label selector
-                            requirements. The requirements are ANDed.
-                          items:
-                            description: |-
-                              A label selector requirement is a selector that contains values, a key, and an operator that
-                              relates the key and values.
-                            properties:
-                              key:
-                                description: key is the label key that the selector
-                                  applies to.
-                                type: string
-                              operator:
-                                description: |-
-                                  operator represents a key's relationship to a set of values.
-                                  Valid operators are In, NotIn, Exists and DoesNotExist.
-                                type: string
-                              values:
-                                description: |-
-                                  values is an array of string values. If the operator is In or NotIn,
-                                  the values array must be non-empty. If the operator is Exists or DoesNotExist,
-                                  the values array must be empty. This array is replaced during a strategic
-                                  merge patch.
-                                items:
-                                  type: string
-                                type: array
-                                x-kubernetes-list-type: atomic
-                            required:
-                            - key
-                            - operator
-                            type: object
-                          type: array
-                          x-kubernetes-list-type: atomic
-                        matchLabels:
-                          additionalProperties:
-                            type: string
+                        group:
                           description: |-
-                            matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
-                            map is equivalent to an element of matchExpressions, whose key field is "key", the
-                            operator is "In", and the values array contains only "value". The requirements are ANDed.
+                            Group is the API group of the target kind. Empty string means the
+                            core Kubernetes group.
+                          type: string
+                        kind:
+                          description: Kind is the target kind (e.g. "Kustomization",
+                            "HelmRelease").
+                          minLength: 1
+                          type: string
+                        namespaceSelector:
+                          description: |-
+                            NamespaceSelector matches namespaces by label. Mutually exclusive
+                            with Namespaces.
+                          properties:
+                            matchExpressions:
+                              description: matchExpressions is a list of label selector
+                                requirements. The requirements are ANDed.
+                              items:
+                                description: |-
+                                  A label selector requirement is a selector that contains values, a key, and an operator that
+                                  relates the key and values.
+                                properties:
+                                  key:
+                                    description: key is the label key that the selector
+                                      applies to.
+                                    type: string
+                                  operator:
+                                    description: |-
+                                      operator represents a key's relationship to a set of values.
+                                      Valid operators are In, NotIn, Exists and DoesNotExist.
+                                    type: string
+                                  values:
+                                    description: |-
+                                      values is an array of string values. If the operator is In or NotIn,
+                                      the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                      the values array must be empty. This array is replaced during a strategic
+                                      merge patch.
+                                    items:
+                                      type: string
+                                    type: array
+                                    x-kubernetes-list-type: atomic
+                                required:
+                                - key
+                                - operator
+                                type: object
+                              type: array
+                              x-kubernetes-list-type: atomic
+                            matchLabels:
+                              additionalProperties:
+                                type: string
+                              description: |-
+                                matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                                map is equivalent to an element of matchExpressions, whose key field is "key", the
+                                operator is "In", and the values array contains only "value". The requirements are ANDed.
+                              type: object
                           type: object
+                          x-kubernetes-map-type: atomic
+                        namespaces:
+                          description: |-
+                            Namespaces is an explicit allow-list of namespaces to search.
+                            Mutually exclusive with NamespaceSelector.
+                          items:
+                            type: string
+                          type: array
+                          x-kubernetes-list-type: set
+                        selector:
+                          description: |-
+                            Selector is a standard Kubernetes label selector. Nil selects every
+                            resource of Kind in scope.
+                          properties:
+                            matchExpressions:
+                              description: matchExpressions is a list of label selector
+                                requirements. The requirements are ANDed.
+                              items:
+                                description: |-
+                                  A label selector requirement is a selector that contains values, a key, and an operator that
+                                  relates the key and values.
+                                properties:
+                                  key:
+                                    description: key is the label key that the selector
+                                      applies to.
+                                    type: string
+                                  operator:
+                                    description: |-
+                                      operator represents a key's relationship to a set of values.
+                                      Valid operators are In, NotIn, Exists and DoesNotExist.
+                                    type: string
+                                  values:
+                                    description: |-
+                                      values is an array of string values. If the operator is In or NotIn,
+                                      the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                      the values array must be empty. This array is replaced during a strategic
+                                      merge patch.
+                                    items:
+                                      type: string
+                                    type: array
+                                    x-kubernetes-list-type: atomic
+                                required:
+                                - key
+                                - operator
+                                type: object
+                              type: array
+                              x-kubernetes-list-type: atomic
+                            matchLabels:
+                              additionalProperties:
+                                type: string
+                              description: |-
+                                matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                                map is equivalent to an element of matchExpressions, whose key field is "key", the
+                                operator is "In", and the values array contains only "value". The requirements are ANDed.
+                              type: object
+                          type: object
+                          x-kubernetes-map-type: atomic
+                        version:
+                          description: |-
+                            Version is the API version of the target kind. When empty, the
+                            operator resolves the preferred version via discovery.
+                          type: string
+                      required:
+                      - kind
                       type: object
-                      x-kubernetes-map-type: atomic
-                    version:
-                      description: |-
-                        Version is the API version of the target kind. When empty, the operator
-                        resolves the preferred version via discovery.
-                      type: string
+                      x-kubernetes-validations:
+                      - message: namespaces and namespaceSelector are mutually exclusive
+                        rule: '!(has(self.namespaces) && has(self.namespaceSelector))'
                   required:
-                  - kind
+                  - name
+                  - target
                   type: object
-                description: |-
-                  Members is the set of resource selections this Echelon aggregates over,
-                  keyed by user-given names. All resources are scoped to the Echelon's
-                  own namespace.
-                minProperties: 1
-                type: object
+                minItems: 1
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
             required:
-            - members
+            - dependsOn
             type: object
-            x-kubernetes-validations:
-            - message: member keys must be RFC-1123 labels
-              rule: self.members.all(k, k.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'))
           status:
-            description: EchelonStatus is the observed state of Echelon.
+            description: ClusterMilestoneStatus is the observed state of ClusterMilestone.
             properties:
               conditions:
                 description: Conditions exposes Ready, Reconciling, and Stalled (kstatus-compatible).
@@ -216,17 +288,15 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
-              lastEvaluatedTime:
-                description: LastEvaluatedTime is the timestamp of the last status
-                  evaluation.
-                format: date-time
-                type: string
-              members:
-                additionalProperties:
+              dependsOn:
+                description: |-
+                  DependsOn carries per-dependency rollups, keyed by the same name as
+                  spec.dependsOn.
+                items:
                   description: |-
-                    MemberRollup is the per-member aggregated readiness reported on the owner.
-                    One MemberRollup is produced for every entry in spec.members, keyed by the
-                    same map key, regardless of whether discovery succeeded.
+                    DependencyStatus is the per-dependency aggregated readiness reported on
+                    the owner. One entry is produced for every spec.dependsOn entry,
+                    regardless of whether discovery succeeded.
                   properties:
                     group:
                       description: |-
@@ -236,11 +306,15 @@ spec:
                     kind:
                       description: Kind is the target Kind as declared in the spec.
                       type: string
+                    name:
+                      description: Name mirrors spec.dependsOn[].name and is the listmap
+                        key.
+                      type: string
                     ready:
                       description: |-
                         Ready is True when every selected resource is Current; False when any
-                        resource is Failed or NotFound; Unknown otherwise (or per emptySetPolicy
-                        when no resources match).
+                        resource is Failed or NotFound; Unknown otherwise (or per
+                        emptySetPolicy when no resources match).
                       enum:
                       - "True"
                       - "False"
@@ -283,8 +357,8 @@ spec:
                           type: integer
                         total:
                           description: |-
-                            Total is the count of resources currently matched by the member's
-                            selector. Total == sum of all the other buckets.
+                            Total is the count of resources currently matched by the dependency's
+                            target selector. Total == sum of all the other buckets.
                           format: int32
                           type: integer
                         unknown:
@@ -303,26 +377,34 @@ spec:
                       type: object
                     version:
                       description: |-
-                        Version is the API version resolved via discovery (the spec's version
-                        when set; otherwise the group's preferred version).
+                        Version is the API version resolved via discovery (the target's
+                        version when set; otherwise the group's preferred version).
                       type: string
                   required:
                   - kind
+                  - name
                   - ready
                   - summary
                   type: object
-                description: Members carries per-member rollups, keyed identically
-                  to spec.members.
-                type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              lastEvaluatedTime:
+                description: LastEvaluatedTime is the timestamp of the last status
+                  evaluation.
+                format: date-time
+                type: string
               notReadyResources:
                 description: |-
-                  NotReadyResources lists resources whose kstatus is not Current. Capped to
-                  avoid object-size explosions; Truncated indicates the cap was hit.
+                  NotReadyResources lists resources whose kstatus is not Current.
+                  Capped to avoid object-size explosions; Truncated indicates the cap
+                  was hit.
                 items:
                   description: |-
                     ResourceStatus identifies an individual matched resource and the kstatus
-                    computed for it. Only resources whose Status is not Current are surfaced on
-                    the owner (see EchelonStatusBase.NotReadyResources).
+                    computed for it. Only resources whose Status is not Current are surfaced
+                    on the owner (see MilestoneStatusBase.NotReadyResources).
                   properties:
                     group:
                       description: Group is the API group of the resource. Empty for
@@ -333,21 +415,21 @@ spec:
                       type: string
                     message:
                       description: |-
-                        Message is the kstatus message for this resource when one was provided
-                        by sigs.k8s.io/cli-utils.
+                        Message is the kstatus message for this resource when one was
+                        provided by sigs.k8s.io/cli-utils.
                       type: string
                     name:
                       description: Name is the name of the resource.
                       type: string
                     namespace:
                       description: |-
-                        Namespace is the namespace of the resource. Empty when the resource is
-                        cluster-scoped.
+                        Namespace is the namespace of the resource. Empty when the resource
+                        is cluster-scoped.
                       type: string
                     reason:
                       description: |-
-                        Reason is the kstatus reason for this resource when one was provided by
-                        sigs.k8s.io/cli-utils.
+                        Reason is the kstatus reason for this resource when one was provided
+                        by sigs.k8s.io/cli-utils.
                       type: string
                     status:
                       description: |-
@@ -373,12 +455,12 @@ spec:
                 type: array
               observedGeneration:
                 description: |-
-                  ObservedGeneration mirrors metadata.generation at the time of the last
-                  successful reconcile.
+                  ObservedGeneration mirrors metadata.generation at the time of the
+                  last successful reconcile.
                 format: int64
                 type: integer
               summary:
-                description: Summary aggregates resource counters across all members.
+                description: Summary aggregates resource counters across all dependencies.
                 properties:
                   current:
                     description: Current counts resources whose kstatus is Current
@@ -408,8 +490,8 @@ spec:
                     type: integer
                   total:
                     description: |-
-                      Total is the count of resources currently matched by the member's
-                      selector. Total == sum of all the other buckets.
+                      Total is the count of resources currently matched by the dependency's
+                      target selector. Total == sum of all the other buckets.
                     format: int32
                     type: integer
                   unknown:

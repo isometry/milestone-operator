@@ -9,7 +9,7 @@ You may obtain a copy of the License at
 */
 
 // Package metrics declares the Prometheus metrics emitted by the
-// echelon-operator. Metrics are registered against the controller-runtime
+// milestone-operator. Metrics are registered against the controller-runtime
 // metrics registry from cmd/main.go via Register; tests register against a
 // fresh prometheus.Registry to avoid global pollution.
 package metrics
@@ -20,7 +20,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 )
 
-const ns = "echelon"
+const ns = "milestone"
 
 // Label names. Centralised so both metrics.go and collector.go reference the
 // same string and so callers can build label maps without typos.
@@ -40,7 +40,7 @@ const (
 	labelStatus      = "status"
 	labelTargetGroup = "target_group"
 	labelTargetKind  = "target_kind"
-	labelMember      = "member"
+	labelDependency  = "dependency"
 )
 
 var (
@@ -51,12 +51,12 @@ var (
 		Help:      "Active dynamic informers, one per unique watched GVK.",
 	}, []string{labelGroup, labelVersion, labelKind})
 
-	// Subscribers gauges the refcount of Echelon/ClusterEchelon subscribers
-	// per GVK.
+	// Subscribers gauges the refcount of Milestone/ClusterMilestone
+	// subscribers per GVK.
 	Subscribers = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: ns,
 		Name:      "subscribers",
-		Help:      "Subscribers per GVK (refcount across Echelons and ClusterEchelons).",
+		Help:      "Subscribers per GVK (refcount across Milestones and ClusterMilestones).",
 	}, []string{labelGroup, labelVersion, labelKind})
 
 	// InformerEvents counts dispatched informer events.
@@ -118,11 +118,13 @@ var (
 		Help:      "Status patch outcomes (changed, unchanged, error).",
 	}, []string{labelController, labelResult})
 
-	// MemberResolveErrors counts per-member resolution errors by reason.
-	MemberResolveErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
+	// TargetResolveErrors counts per-target resolution errors by reason.
+	// Discovery/list failures have no dependency name available, so no
+	// dependency label.
+	TargetResolveErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: ns,
-		Name:      "member_resolve_errors_total",
-		Help:      "Per-member resolution errors, labelled by reason.",
+		Name:      "target_resolve_errors_total",
+		Help:      "Per-target resolution errors, labelled by reason.",
 	}, []string{labelController, labelReason})
 
 	// CRDEstablishedEvents counts CRD Established=True transitions observed by
@@ -154,7 +156,7 @@ func All() []prometheus.Collector {
 		DiscoveryCacheSize,
 		ReconcileStageDuration,
 		StatusPatchTotal,
-		MemberResolveErrors,
+		TargetResolveErrors,
 		CRDEstablishedEvents,
 		OwnersWoken,
 	}
