@@ -41,6 +41,16 @@ const (
 	labelTargetGroup = "target_group"
 	labelTargetKind  = "target_kind"
 	labelDependency  = "dependency"
+	labelParentKind  = "parent_kind"
+)
+
+// Result values for FluxNotifyTotal.
+const (
+	FluxNotifySuccess   = "success"
+	FluxNotifyNotFound  = "not_found"
+	FluxNotifyNoMatch   = "no_match"
+	FluxNotifyForbidden = "forbidden"
+	FluxNotifyError     = "error"
 )
 
 var (
@@ -141,6 +151,16 @@ var (
 		Name:      "owners_woken_total",
 		Help:      "Owners re-enqueued in response to external events.",
 	}, []string{labelReason})
+
+	// FluxNotifyTotal counts on-demand reconcile-request annotations sent to
+	// FluxCD parents (Kustomization, HelmRelease) when a child Milestone's
+	// Ready condition transitions. Result ∈ {success, not_found, no_match,
+	// forbidden, error}.
+	FluxNotifyTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: ns,
+		Name:      "flux_notify_total",
+		Help:      "Reconcile-poke requests sent to Flux parents on Ready transitions.",
+	}, []string{labelController, labelParentKind, labelResult})
 )
 
 // All returns every collector defined by this package.
@@ -159,6 +179,7 @@ func All() []prometheus.Collector {
 		TargetResolveErrors,
 		CRDEstablishedEvents,
 		OwnersWoken,
+		FluxNotifyTotal,
 	}
 }
 

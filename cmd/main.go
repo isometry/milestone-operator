@@ -43,6 +43,7 @@ import (
 	apiv1 "github.com/isometry/milestone-operator/api/v1"
 	"github.com/isometry/milestone-operator/internal/controller"
 	resolverpkg "github.com/isometry/milestone-operator/internal/discovery"
+	"github.com/isometry/milestone-operator/internal/fluxnotify"
 	"github.com/isometry/milestone-operator/internal/metrics"
 	"github.com/isometry/milestone-operator/internal/watcher"
 	// +kubebuilder:scaffold:imports
@@ -64,6 +65,9 @@ const (
 	enqueueChannelSize = 1024
 	informerResync     = 10 * time.Minute
 	discoveryTTL       = 60 * time.Second
+
+	controllerMilestone        = "Milestone"
+	controllerClusterMilestone = "ClusterMilestone"
 )
 
 // nolint:gocyclo
@@ -93,6 +97,9 @@ func main() {
 	flag.StringVar(&metricsCertKey, "metrics-cert-key", "tls.key", "The name of the metrics server key file.")
 	flag.BoolVar(&enableHTTP2, "enable-http2", false,
 		"If set, HTTP/2 will be enabled for the metrics and webhook servers")
+	var enableFluxNotify bool
+	flag.BoolVar(&enableFluxNotify, "flux-notify", true,
+		"Poke FluxCD parent (Kustomization/HelmRelease) on Milestone Ready transitions.")
 	opts := zap.Options{Development: true}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
@@ -192,11 +199,11 @@ func main() {
 	cmilestoneEvents := make(chan event.GenericEvent, enqueueChannelSize)
 	enqueue := func(o watcher.OwnerKey) {
 		switch o.Kind {
-		case "Milestone":
+		case controllerMilestone:
 			milestoneEvents <- event.GenericEvent{Object: &apiv1.Milestone{
 				ObjectMeta: metav1.ObjectMeta{Namespace: o.Namespace, Name: o.Name},
 			}}
-		case "ClusterMilestone":
+		case controllerClusterMilestone:
 			cmilestoneEvents <- event.GenericEvent{Object: &apiv1.ClusterMilestone{
 				ObjectMeta: metav1.ObjectMeta{Name: o.Name},
 			}}
@@ -204,20 +211,41 @@ func main() {
 	}
 	registry := watcher.NewRegistry(dynFactory, enqueue)
 
+	// FluxCD notify side-effect: one Notifier per controller so that emitted
+	// metrics carry the correct controller label. Both share the manager's
+	// client. Disabled when --flux-notify=false (field stays nil → no-op).
+	var milestoneFluxNotifier, clusterMilestoneFluxNotifier controller.FluxNotifier
+	if enableFluxNotify {
+		milestoneFluxNotifier = &fluxnotify.Notifier{
+			Client:     mgr.GetClient(),
+			Controller: controllerMilestone,
+			Now:        time.Now,
+			Log:        ctrl.Log.WithName("flux-notify").WithValues("controller", controllerMilestone),
+		}
+		clusterMilestoneFluxNotifier = &fluxnotify.Notifier{
+			Client:     mgr.GetClient(),
+			Controller: controllerClusterMilestone,
+			Now:        time.Now,
+			Log:        ctrl.Log.WithName("flux-notify").WithValues("controller", controllerClusterMilestone),
+		}
+	}
+
 	// Generic reconcilers (one per CRD).
 	milestoneReconciler := &controller.Reconciler[*apiv1.Milestone]{
-		Client:     mgr.GetClient(),
-		Registry:   registry,
-		Resolver:   resolver,
-		NewAdapter: controller.NewMilestoneAdapter,
-		Controller: "Milestone",
+		Client:       mgr.GetClient(),
+		Registry:     registry,
+		Resolver:     resolver,
+		NewAdapter:   controller.NewMilestoneAdapter,
+		Controller:   controllerMilestone,
+		FluxNotifier: milestoneFluxNotifier,
 	}
 	clusterMilestoneReconciler := &controller.Reconciler[*apiv1.ClusterMilestone]{
-		Client:     mgr.GetClient(),
-		Registry:   registry,
-		Resolver:   resolver,
-		NewAdapter: controller.NewClusterMilestoneAdapterFactory(mgr.GetClient()),
-		Controller: "ClusterMilestone",
+		Client:       mgr.GetClient(),
+		Registry:     registry,
+		Resolver:     resolver,
+		NewAdapter:   controller.NewClusterMilestoneAdapterFactory(mgr.GetClient()),
+		Controller:   controllerClusterMilestone,
+		FluxNotifier: clusterMilestoneFluxNotifier,
 	}
 
 	if err := (&controller.MilestoneReconciler{
@@ -226,7 +254,7 @@ func main() {
 		Reconciler:    milestoneReconciler,
 		EnqueueEvents: milestoneEvents,
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "Milestone")
+		setupLog.Error(err, "unable to create controller", "controller", controllerMilestone)
 		os.Exit(1)
 	}
 	if err := (&controller.ClusterMilestoneReconciler{
@@ -235,7 +263,7 @@ func main() {
 		Reconciler:    clusterMilestoneReconciler,
 		EnqueueEvents: cmilestoneEvents,
 	}).SetupWithManager(mgr); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "ClusterMilestone")
+		setupLog.Error(err, "unable to create controller", "controller", controllerClusterMilestone)
 		os.Exit(1)
 	}
 

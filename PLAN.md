@@ -245,6 +245,42 @@ controller-runtime. The pipeline is:
 7. Patch via `Status().Update()` (full replacement). If `Stalled=True`,
    requeue after 30s as a safety net (the CRD watcher also wakes us).
 
+## Flux integration
+
+FluxCD's `kustomize-controller` and `helm-controller` only evaluate
+`spec.healthChecks` on each Kustomization/HelmRelease's own reconcile
+interval — they do not continuously watch managed CRs. For a Milestone
+deployed via Flux, the parent's health therefore lags the child's real
+state between intervals. To close that gap, after every successful
+status patch the Reconciler checks whether the `Ready` condition's
+status changed; if so it invokes a `FluxNotifier` that patches
+`reconcile.fluxcd.io/requestedAt` on the parent Kustomization /
+HelmRelease, prompting Flux to re-evaluate immediately.
+
+- Parent identity is read from the labels the Flux controllers
+  auto-stamp on every managed resource (`SetOwnerLabels` in
+  `github.com/fluxcd/pkg/ssa/manager.go`):
+  `kustomize.toolkit.fluxcd.io/{name,namespace}` and
+  `helm.toolkit.fluxcd.io/{name,namespace}`. A child carrying both
+  pairs (rare but legal: a Kustomization wrapping a HelmRelease that
+  templates the Milestone) is poked on both parents.
+- The notify is fire-and-forget: errors are classified
+  (`success` / `not_found` / `no_match` / `forbidden` / `error`) on
+  `milestone_flux_notify_total` and logged at V(1); they never propagate
+  back into the reconcile result. No-match (Flux CRDs not installed) is
+  treated identically to any other failure mode.
+- The hook lives inside the patch-changed branch of the pipeline, so
+  idempotent reconciles never poke. Transition is defined as
+  `readyConditionStatus(prior) != readyConditionStatus(current)`; a
+  fresh object with no prior `Ready` condition counts as a transition
+  from `Unknown`.
+- Controlled by `--flux-notify` (default `true`). When disabled, the
+  `FluxNotifier` field on the generic Reconciler is left nil and the
+  hook becomes a no-op.
+- No per-Milestone opt-out and no in-process debounce: status-patch
+  idempotency already gates the poke rate, and Flux dedups identical
+  reconcile requests via `.status.lastHandledReconcileAt`.
+
 ## Metric inventory
 
 All metrics namespaced `milestone_*`. Cardinality bounds in parentheses.
@@ -285,6 +321,13 @@ All metrics namespaced `milestone_*`. Cardinality bounds in parentheses.
 - `milestone_crd_established_events_total{group,kind}` (counter).
 - `milestone_owners_woken_total{reason}` (counter,
   reason ∈ {crd_established}).
+
+### Flux integration
+
+- `milestone_flux_notify_total{controller,parent_kind,result}` (counter,
+  controller ∈ {Milestone, ClusterMilestone}; parent_kind ∈
+  {Kustomization, HelmRelease}; result ∈ {success, not_found, no_match,
+  forbidden, error}). Bound: ≤20 series.
 
 ### Object-state (lister-backed, scrape-time)
 

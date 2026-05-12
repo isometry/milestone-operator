@@ -63,11 +63,24 @@ type Reconciler[T client.Object] struct {
 	NewAdapter func(T) OwnerAdapter
 	Controller string
 
+	// FluxNotifier, when non-nil, is invoked after a successful status patch
+	// whenever the Ready condition's status transitioned. Used to nudge a
+	// parent FluxCD Kustomization/HelmRelease to re-evaluate immediately
+	// instead of waiting for its scheduled reconcile.
+	FluxNotifier FluxNotifier
+
 	// Now, ResourceCap and StalledErrorCap have sensible defaults; injectable
 	// for tests.
 	Now             func() time.Time
 	ResourceCap     int
 	StalledErrorCap int
+}
+
+// FluxNotifier abstracts the side-effect of poking a FluxCD parent on a
+// child's Ready transition. Defined here (consumer-side) so the controller
+// package needs no compile-time dependency on internal/fluxnotify.
+type FluxNotifier interface {
+	NotifyTransition(ctx context.Context, obj client.Object)
 }
 
 // ReconcileObject runs the full pipeline for the given owner object. Per-stage
@@ -94,6 +107,7 @@ func (r *Reconciler[T]) ReconcileObject(ctx context.Context, obj T) (ctrl.Result
 
 	log.V(1).Info("reconciling", "generation", obj.GetGeneration())
 	prior := *adapter.Status().DeepCopy()
+	priorReady := readyConditionStatus(&prior)
 
 	deps, depErrs := func() ([]NormalizedDependency, []DependencyError) {
 		defer r.observe(metrics.StageDiscovery)()
@@ -141,6 +155,7 @@ func (r *Reconciler[T]) ReconcileObject(ctx context.Context, obj T) (ctrl.Result
 		}
 		metrics.StatusPatchTotal.WithLabelValues(r.Controller, metrics.PatchChanged).Inc()
 		log.V(1).Info("status patched", "ready", readyConditionStatus(adapter.Status()))
+		r.notifyFluxOnTransition(ctx, obj, priorReady, adapter.Status())
 	} else {
 		// Preserve prior LastEvaluatedTime when nothing substantive changed.
 		adapter.Status().LastEvaluatedTime = prior.LastEvaluatedTime
@@ -370,6 +385,22 @@ func sortedDependencyStatuses(rollups map[string]apiv1.DependencyStatus) []apiv1
 func (r *Reconciler[T]) patchStatus(ctx context.Context, adapter OwnerAdapter) error {
 	defer r.observe(metrics.StagePatch)()
 	return adapter.PatchStatus(ctx, r.Client)
+}
+
+// notifyFluxOnTransition invokes the FluxNotifier when the Ready condition's
+// status differs between prior and current. Sits inside the patch-changed
+// branch so idempotent reconciles never trigger a notify. A fresh object has
+// no Ready condition; readyConditionStatus returns Unknown for that case, so
+// the first computed True/False fires (desirable — Flux's initial healthcheck
+// dedupes via lastHandledReconcileAt).
+func (r *Reconciler[T]) notifyFluxOnTransition(ctx context.Context, obj T, priorReady metav1.ConditionStatus, current *apiv1.MilestoneStatusBase) {
+	if r.FluxNotifier == nil {
+		return
+	}
+	if priorReady == readyConditionStatus(current) {
+		return
+	}
+	r.FluxNotifier.NotifyTransition(ctx, obj)
 }
 
 func (r *Reconciler[T]) observe(stage string) func() {

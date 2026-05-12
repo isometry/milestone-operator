@@ -909,3 +909,276 @@ func TestReconcile_PatchIdempotency_AtGenerationBump(t *testing.T) {
 		t.Errorf("steady-state reconcile after generation bump churned: %d → %d", patches2, fa.patches)
 	}
 }
+
+// fakeFluxNotifier records the objects passed to NotifyTransition so the
+// reconciler hook can be asserted without standing up a real client.
+type fakeFluxNotifier struct {
+	calls []client.Object
+}
+
+func (f *fakeFluxNotifier) NotifyTransition(_ context.Context, obj client.Object) {
+	f.calls = append(f.calls, obj)
+}
+
+// TestReconcile_FluxNotify_FiresOnReadyTransition: the first successful
+// reconcile takes the Ready condition from Unknown (no prior condition) to
+// True, which counts as a transition. Notifier must be called exactly once
+// with the owner object.
+func TestReconcile_FluxNotify_FiresOnReadyTransition(t *testing.T) {
+	ech := newMilestone("e1")
+	ech.Finalizers = []string{apiv1.Finalizer}
+	freg := newFakeRegistry()
+	freg.listResponses[kustomizationGVK] = []*unstructured.Unstructured{currentResource("a")}
+	fa := &fakeAdapter{
+		obj: ech,
+		deps: []controller.NormalizedDependency{{
+			Name: depKustomizations, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
+			Selector: mustSelector(t), EmptySetPolicy: apiv1.EmptySetUnknown,
+		}},
+	}
+	r := newFixture(t, ech, fa, freg)
+	notifier := &fakeFluxNotifier{}
+	r.FluxNotifier = notifier
+
+	if _, err := r.ReconcileObject(t.Context(), ech); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if len(notifier.calls) != 1 {
+		t.Fatalf("notifier calls = %d, want 1", len(notifier.calls))
+	}
+	if notifier.calls[0] != ech {
+		t.Errorf("notifier received wrong object: got %v, want %v", notifier.calls[0], ech)
+	}
+}
+
+// TestReconcile_FluxNotify_NotFiredOnIdempotentReconcile: a second reconcile
+// with identical state produces no status patch and so must not call the
+// notifier.
+func TestReconcile_FluxNotify_NotFiredOnIdempotentReconcile(t *testing.T) {
+	ech := newMilestone("e1")
+	ech.Finalizers = []string{apiv1.Finalizer}
+	freg := newFakeRegistry()
+	freg.listResponses[kustomizationGVK] = []*unstructured.Unstructured{currentResource("a")}
+	fa := &fakeAdapter{
+		obj: ech,
+		deps: []controller.NormalizedDependency{{
+			Name: depKustomizations, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
+			Selector: mustSelector(t), EmptySetPolicy: apiv1.EmptySetUnknown,
+		}},
+	}
+	r := newFixture(t, ech, fa, freg)
+	notifier := &fakeFluxNotifier{}
+	r.FluxNotifier = notifier
+
+	if _, err := r.ReconcileObject(t.Context(), ech); err != nil {
+		t.Fatalf("first reconcile: %v", err)
+	}
+	firstCalls := len(notifier.calls)
+
+	if _, err := r.ReconcileObject(t.Context(), ech); err != nil {
+		t.Fatalf("second reconcile: %v", err)
+	}
+	if len(notifier.calls) != firstCalls {
+		t.Errorf("notifier called on idempotent reconcile: %d → %d", firstCalls, len(notifier.calls))
+	}
+}
+
+// TestReconcile_FluxNotify_NotFiredWhenStatusChangesButReadyStable:
+// summary changes (an additional Current resource) drive a patch but Ready
+// stays True. The notifier must not fire — it tracks Ready transitions, not
+// any status change.
+func TestReconcile_FluxNotify_NotFiredWhenStatusChangesButReadyStable(t *testing.T) {
+	ech := newMilestone("e1")
+	ech.Finalizers = []string{apiv1.Finalizer}
+	freg := newFakeRegistry()
+	freg.listResponses[kustomizationGVK] = []*unstructured.Unstructured{currentResource("a")}
+	fa := &fakeAdapter{
+		obj: ech,
+		deps: []controller.NormalizedDependency{{
+			Name: depKustomizations, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
+			Selector: mustSelector(t), EmptySetPolicy: apiv1.EmptySetUnknown,
+		}},
+	}
+	r := newFixture(t, ech, fa, freg)
+	notifier := &fakeFluxNotifier{}
+	r.FluxNotifier = notifier
+
+	if _, err := r.ReconcileObject(t.Context(), ech); err != nil {
+		t.Fatalf("first reconcile: %v", err)
+	}
+	if got := readyStatusOf(ech); got != metav1.ConditionTrue {
+		t.Fatalf("precondition: Ready=%s, want True", got)
+	}
+	firstCalls := len(notifier.calls)
+	firstPatches := fa.patches
+
+	// Add a second Current resource: Summary changes (total 1→2) but Ready
+	// stays True because every resource is Current.
+	freg.listResponses[kustomizationGVK] = []*unstructured.Unstructured{currentResource("a"), currentResource("b")}
+
+	if _, err := r.ReconcileObject(t.Context(), ech); err != nil {
+		t.Fatalf("second reconcile: %v", err)
+	}
+	if fa.patches == firstPatches {
+		t.Fatalf("precondition: summary change should patch (patches stayed at %d)", firstPatches)
+	}
+	if got := readyStatusOf(ech); got != metav1.ConditionTrue {
+		t.Errorf("Ready=%s after second reconcile, want True (precondition)", got)
+	}
+	if len(notifier.calls) != firstCalls {
+		t.Errorf("notifier called on non-Ready status change: %d → %d", firstCalls, len(notifier.calls))
+	}
+}
+
+// TestReconcile_FluxNotify_FiresOnReadyRegression: a Ready=True → False
+// transition (resource list flips from current to NotReady) must call the
+// notifier.
+func TestReconcile_FluxNotify_FiresOnReadyRegression(t *testing.T) {
+	ech := newMilestone("e1")
+	ech.Finalizers = []string{apiv1.Finalizer}
+	freg := newFakeRegistry()
+	freg.listResponses[kustomizationGVK] = []*unstructured.Unstructured{currentResource("a")}
+	fa := &fakeAdapter{
+		obj: ech,
+		deps: []controller.NormalizedDependency{{
+			Name: depKustomizations, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
+			Selector: mustSelector(t), EmptySetPolicy: apiv1.EmptySetUnknown,
+		}},
+	}
+	r := newFixture(t, ech, fa, freg)
+	notifier := &fakeFluxNotifier{}
+	r.FluxNotifier = notifier
+
+	if _, err := r.ReconcileObject(t.Context(), ech); err != nil {
+		t.Fatalf("first reconcile: %v", err)
+	}
+	callsAfterUp := len(notifier.calls)
+
+	// Flip the resource to NotReady so the dependency rollup reports Ready=False.
+	notReady := &unstructured.Unstructured{}
+	notReady.SetAPIVersion(gvKustomizeV1)
+	notReady.SetKind(kindKustomization)
+	notReady.SetNamespace(nsFluxSystem)
+	notReady.SetName("a")
+	notReady.SetGeneration(2)
+	_ = unstructured.SetNestedField(notReady.Object, int64(2), schemaPropStatus, "observedGeneration")
+	_ = unstructured.SetNestedSlice(notReady.Object, []any{
+		map[string]any{keyType: apiv1.ConditionReady, schemaPropStatus: "False", keyReason: "Reconciling"},
+	}, schemaPropStatus, "conditions")
+	freg.listResponses[kustomizationGVK] = []*unstructured.Unstructured{notReady}
+
+	if _, err := r.ReconcileObject(t.Context(), ech); err != nil {
+		t.Fatalf("second reconcile: %v", err)
+	}
+	// The kstatus reducer treats Ready=False with reason "Reconciling" as
+	// owner-level Unknown (existing convention in this codebase). What
+	// matters here is that Ready left True — that's a transition the
+	// notifier must observe.
+	if got := readyStatusOf(ech); got == metav1.ConditionTrue {
+		t.Fatalf("Ready=%s after regression, want non-True", got)
+	}
+	if len(notifier.calls) != callsAfterUp+1 {
+		t.Errorf("notifier calls after regression = %d, want %d", len(notifier.calls), callsAfterUp+1)
+	}
+}
+
+// TestReconcile_FluxNotify_NilNotifier_NoPanic: with FluxNotifier left nil,
+// the reconciler must transition Ready and patch status without panicking.
+func TestReconcile_FluxNotify_NilNotifier_NoPanic(t *testing.T) {
+	ech := newMilestone("e1")
+	ech.Finalizers = []string{apiv1.Finalizer}
+	freg := newFakeRegistry()
+	freg.listResponses[kustomizationGVK] = []*unstructured.Unstructured{currentResource("a")}
+	fa := &fakeAdapter{
+		obj: ech,
+		deps: []controller.NormalizedDependency{{
+			Name: depKustomizations, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
+			Selector: mustSelector(t), EmptySetPolicy: apiv1.EmptySetUnknown,
+		}},
+	}
+	r := newFixture(t, ech, fa, freg)
+	// r.FluxNotifier intentionally nil.
+
+	if _, err := r.ReconcileObject(t.Context(), ech); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if got := readyStatusOf(ech); got != metav1.ConditionTrue {
+		t.Errorf("Ready=%s, want True", got)
+	}
+}
+
+// TestReconcile_FluxNotify_NotFiredWhenPatchFails: the notify hook lives
+// inside the success branch of the patch decision by design. If the status
+// patch itself fails, the notifier must not fire — otherwise we'd poke
+// Flux for a state that isn't actually published. This test guards that
+// placement against future refactors.
+func TestReconcile_FluxNotify_NotFiredWhenPatchFails(t *testing.T) {
+	ech := newMilestone("e1")
+	ech.Finalizers = []string{apiv1.Finalizer}
+	freg := newFakeRegistry()
+	freg.listResponses[kustomizationGVK] = []*unstructured.Unstructured{currentResource("a")}
+	fa := &fakeAdapter{
+		obj: ech,
+		deps: []controller.NormalizedDependency{{
+			Name: depKustomizations, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
+			Selector: mustSelector(t), EmptySetPolicy: apiv1.EmptySetUnknown,
+		}},
+		patchErr: errors.New("apiserver unavailable"),
+	}
+	r := newFixture(t, ech, fa, freg)
+	notifier := &fakeFluxNotifier{}
+	r.FluxNotifier = notifier
+
+	// Reconcile should propagate the patch error (this is how the
+	// controller-runtime workqueue learns to requeue), but more importantly
+	// the notifier must not have fired.
+	if _, err := r.ReconcileObject(t.Context(), ech); err == nil {
+		t.Fatalf("expected patch error to propagate, got nil")
+	}
+	if len(notifier.calls) != 0 {
+		t.Errorf("notifier fired on failed patch: %d calls, want 0", len(notifier.calls))
+	}
+}
+
+// TestReconcile_FluxNotify_OwnerLabelsCarriedThrough: the production
+// FluxNotifier reads obj.GetLabels() to discover the parent Flux resource.
+// Pointer-identity assertions in earlier tests don't prove the label
+// payload actually survives the pipeline. This test pins the data flow:
+// the labels the notifier sees are the labels on the reconciled owner.
+func TestReconcile_FluxNotify_OwnerLabelsCarriedThrough(t *testing.T) {
+	ech := newMilestone("e1")
+	ech.Finalizers = []string{apiv1.Finalizer}
+	ech.Labels = map[string]string{
+		"kustomize.toolkit.fluxcd.io/name":      "payments-wave",
+		"kustomize.toolkit.fluxcd.io/namespace": "flux-system",
+		"app":                                   "payments",
+	}
+	freg := newFakeRegistry()
+	freg.listResponses[kustomizationGVK] = []*unstructured.Unstructured{currentResource("a")}
+	fa := &fakeAdapter{
+		obj: ech,
+		deps: []controller.NormalizedDependency{{
+			Name: depKustomizations, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
+			Selector: mustSelector(t), EmptySetPolicy: apiv1.EmptySetUnknown,
+		}},
+	}
+	r := newFixture(t, ech, fa, freg)
+	notifier := &fakeFluxNotifier{}
+	r.FluxNotifier = notifier
+
+	if _, err := r.ReconcileObject(t.Context(), ech); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if len(notifier.calls) != 1 {
+		t.Fatalf("notifier calls = %d, want 1", len(notifier.calls))
+	}
+	got := notifier.calls[0].GetLabels()
+	for _, key := range []string{
+		"kustomize.toolkit.fluxcd.io/name",
+		"kustomize.toolkit.fluxcd.io/namespace",
+	} {
+		if got[key] != ech.Labels[key] {
+			t.Errorf("notifier label[%q] = %q, want %q (full=%v)", key, got[key], ech.Labels[key], got)
+		}
+	}
+}
