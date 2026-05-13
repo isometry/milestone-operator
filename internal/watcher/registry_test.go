@@ -385,12 +385,10 @@ func TestRegistry_Subscribe_ConcurrentSameGVK_StartsOnce(t *testing.T) {
 	errsCh := make(chan error, N)
 	// Launch the first Subscribe and wait until it has entered factory.Start
 	// so we know it owns the in-flight start before the remaining N-1 race in.
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		errsCh <- r.Subscribe(context.Background(), kustomizationGVK, apimeta.RESTScopeNameNamespace,
 			sub(watcher.OwnerKey{Kind: kindMilestone, Namespace: "n", Name: "o0"}, labels.Everything()))
-	}()
+	})
 	select {
 	case <-entered:
 	case <-time.After(2 * time.Second):
@@ -439,12 +437,10 @@ func TestRegistry_Subscribe_ConcurrentSameGVK_StartFailurePropagates(t *testing.
 	const N = 3
 	var wg sync.WaitGroup
 	errsCh := make(chan error, N)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		errsCh <- r.Subscribe(context.Background(), kustomizationGVK, apimeta.RESTScopeNameNamespace,
 			sub(watcher.OwnerKey{Kind: kindMilestone, Namespace: "n", Name: "o0"}, labels.Everything()))
-	}()
+	})
 	select {
 	case <-entered:
 	case <-time.After(2 * time.Second):

@@ -223,7 +223,7 @@ func TestReduceOwner_StableMessage(t *testing.T) {
 		"mid":   {Name: "mid", Kind: "M", Ready: metav1.ConditionFalse},
 	}
 	_, _, want := status.ReduceOwner(rollups)
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		_, _, got := status.ReduceOwner(rollups)
 		if got != want {
 			t.Fatalf("message not stable across runs: got %q want %q", got, want)

@@ -543,11 +543,11 @@ func TestNotifier_DefaultNow_UsedWhenNil(t *testing.T) {
 	body := string((*calls)[0].body)
 	// Extract the timestamp from `…"reconcile.fluxcd.io/requestedAt":"<ts>"…`
 	const marker = `"reconcile.fluxcd.io/requestedAt":"`
-	idx := strings.Index(body, marker)
-	if idx < 0 {
+	_, after0, ok := strings.Cut(body, marker)
+	if !ok {
 		t.Fatalf("body missing requestedAt key: %s", body)
 	}
-	rest := body[idx+len(marker):]
+	rest := after0
 	end := strings.Index(rest, `"`)
 	if end < 0 {
 		t.Fatalf("body missing closing quote: %s", body)

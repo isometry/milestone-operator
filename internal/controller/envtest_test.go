@@ -257,7 +257,7 @@ func TestEnvtest_LateCRD_StalledThenConverges(t *testing.T) {
 			Versions: []apiextv1.CustomResourceDefinitionVersion{{
 				Name: "v1", Served: true, Storage: true,
 				Schema: &apiextv1.CustomResourceValidation{
-					OpenAPIV3Schema: &apiextv1.JSONSchemaProps{Type: schemaTypeObject, XPreserveUnknownFields: ptrBool(true)},
+					OpenAPIV3Schema: &apiextv1.JSONSchemaProps{Type: schemaTypeObject, XPreserveUnknownFields: new(true)},
 				},
 			}},
 		},

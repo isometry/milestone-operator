@@ -58,8 +58,8 @@ var (
 					OpenAPIV3Schema: &apiextv1.JSONSchemaProps{
 						Type: schemaTypeObject,
 						Properties: map[string]apiextv1.JSONSchemaProps{
-							"spec":           {Type: schemaTypeObject, XPreserveUnknownFields: ptrBool(true)},
-							schemaPropStatus: {Type: schemaTypeObject, XPreserveUnknownFields: ptrBool(true)},
+							"spec":           {Type: schemaTypeObject, XPreserveUnknownFields: new(true)},
+							schemaPropStatus: {Type: schemaTypeObject, XPreserveUnknownFields: new(true)},
 						},
 					},
 				},
@@ -69,8 +69,6 @@ var (
 
 	widgetGVK = schema.GroupVersionKind{Group: groupTestAsCode, Version: "v1", Kind: kindWidget}
 )
-
-func ptrBool(b bool) *bool { return &b }
 
 func TestMain(m *testing.M) {
 	if !envtestAvailable() {
