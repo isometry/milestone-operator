@@ -244,12 +244,14 @@ func (r *Reconciler[T]) reconcileSubscriptions(ctx context.Context, owner watche
 	}
 
 	// One informer per unique GVK across dependencies; refcounted by ownerKey.
-	for _, gvk := range r.Registry.GVKsByOwner(owner) {
-		if _, ok := groups[gvk]; !ok {
-			r.Registry.Unsubscribe(gvk, owner)
-		}
-	}
+	// Capture prior GVKs *before* the Subscribe pass so we can later remove
+	// only those that were dropped from the spec, regardless of what
+	// Subscribe added.
+	priorGVKs := r.Registry.GVKsByOwner(owner)
 
+	// Subscribe to all desired GVKs first. Holding the old informers alive
+	// via refcount across the spec edit means a GVK swap doesn't pay the
+	// cold-cache sync timeout for a kind that's just been replaced.
 	var errs []DependencyError
 	for _, gvk := range gvkOrder {
 		g := groups[gvk]
@@ -269,6 +271,13 @@ func (r *Reconciler[T]) reconcileSubscriptions(ctx context.Context, owner watche
 					Err:     err,
 				})
 			}
+		}
+	}
+
+	// Drop any prior subscriptions whose GVK is no longer in the desired set.
+	for _, gvk := range priorGVKs {
+		if _, ok := groups[gvk]; !ok {
+			r.Registry.Unsubscribe(gvk, owner)
 		}
 	}
 	return errs

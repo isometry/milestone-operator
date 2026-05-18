@@ -13,7 +13,6 @@ package watcher
 import (
 	"context"
 	"fmt"
-	"slices"
 	"sync"
 	"time"
 
@@ -93,7 +92,10 @@ type Registry struct {
 	// Envtest sets a smaller value to keep test runtimes tight.
 	SyncTimeout time.Duration
 
-	mu        sync.Mutex
+	// mu protects informers, refcount, and starting. List and GVKCount take
+	// the read lock; Subscribe, Unsubscribe, and lifecycle changes take the
+	// write lock. The subscriber index has its own RWMutex.
+	mu        sync.RWMutex
 	informers map[schema.GroupVersionKind]InformerEntry
 	refcount  map[schema.GroupVersionKind]int
 	// starting tracks GVKs whose informer Start is in flight. New Subscribes
@@ -152,16 +154,25 @@ func (r *Registry) Subscribe(ctx context.Context, gvk schema.GroupVersionKind, s
 		inflight := &startInFlight{done: make(chan struct{})}
 		r.starting[gvk] = inflight
 		r.mu.Unlock()
+		// Always tear down the inflight sentinel and release followers, even
+		// on panic; without this a panicking Start would strand every
+		// follower on <-inflight.done forever and the orphaned starting[gvk]
+		// entry would prevent any future Subscribe from starting a fresh
+		// informer.
+		defer func() {
+			r.mu.Lock()
+			delete(r.starting, gvk)
+			r.mu.Unlock()
+			close(inflight.done)
+		}()
 
 		startCtx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
 		entry, err := r.factory.Start(startCtx, gvk, scope, r.dispatch(gvk))
-		cancel()
 
 		r.mu.Lock()
-		delete(r.starting, gvk)
 		if err != nil {
 			inflight.err = err
-			close(inflight.done)
 			metrics.SubscribeTotal.WithLabelValues(gvk.Group, gvk.Version, gvk.Kind, metrics.SubscribeError).Inc()
 			r.mu.Unlock()
 			return fmt.Errorf("watcher: start informer for %s: %w", gvk, err)
@@ -169,7 +180,6 @@ func (r *Registry) Subscribe(ctx context.Context, gvk schema.GroupVersionKind, s
 		r.informers[gvk] = entry
 		metrics.Informers.WithLabelValues(gvk.Group, gvk.Version, gvk.Kind).Set(1)
 		r.registerLocked(gvk, sub)
-		close(inflight.done)
 		r.mu.Unlock()
 		return nil
 	}
@@ -205,9 +215,9 @@ func (r *Registry) UnsubscribeAll(owner OwnerKey) {
 
 // List proxies to the per-GVK informer cache.
 func (r *Registry) List(gvk schema.GroupVersionKind) ([]*unstructured.Unstructured, error) {
-	r.mu.Lock()
+	r.mu.RLock()
 	entry, ok := r.informers[gvk]
-	r.mu.Unlock()
+	r.mu.RUnlock()
 	if !ok {
 		return nil, fmt.Errorf("watcher: no informer for %s", gvk)
 	}
@@ -221,8 +231,8 @@ func (r *Registry) SubscriberCount(gvk schema.GroupVersionKind) int {
 
 // GVKCount returns the number of distinct GVKs with active informers.
 func (r *Registry) GVKCount() int {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 	return len(r.informers)
 }
 
@@ -233,7 +243,7 @@ func (r *Registry) GVKsByOwner(owner OwnerKey) []schema.GroupVersionKind {
 }
 
 func (r *Registry) hasSubscriberLocked(gvk schema.GroupVersionKind, owner OwnerKey) bool {
-	return slices.Contains(r.index.GVKsByOwner(owner), gvk)
+	return r.index.Has(gvk, owner)
 }
 
 func (r *Registry) unsubscribeLocked(gvk schema.GroupVersionKind, owner OwnerKey) {

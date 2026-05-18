@@ -146,6 +146,20 @@ func (s *SubscriberIndex) SubscriberCount(gvk schema.GroupVersionKind) int {
 	return len(s.byGVK[gvk])
 }
 
+// Has reports whether owner currently subscribes to gvk. O(1); allocates
+// nothing — preferred over walking GVKsByOwner when only a membership check
+// is needed on a hot path.
+func (s *SubscriberIndex) Has(gvk schema.GroupVersionKind, owner OwnerKey) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	gvks, ok := s.byOwner[owner]
+	if !ok {
+		return false
+	}
+	_, has := gvks[gvk]
+	return has
+}
+
 // GVKsByOwner lists every GVK owner is subscribed to.
 func (s *SubscriberIndex) GVKsByOwner(owner OwnerKey) []schema.GroupVersionKind {
 	s.mu.RLock()

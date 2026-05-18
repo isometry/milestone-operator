@@ -34,6 +34,9 @@ type fakeFactory struct {
 	stopped map[schema.GroupVersionKind]int
 	entries map[schema.GroupVersionKind]*fakeEntry
 	failOn  map[schema.GroupVersionKind]error
+	// panicOn, if set for a GVK, panics with the given message on Start.
+	// Used to exercise the deferred cleanup path in Registry.Subscribe.
+	panicOn map[schema.GroupVersionKind]string
 	// startBlock, if set for a GVK, blocks Start until the channel is closed.
 	// Tests use this to exercise Subscribe concurrency without holding the
 	// registry lock across the slow Start call.
@@ -57,17 +60,25 @@ func newFakeFactory() *fakeFactory {
 		stopped: make(map[schema.GroupVersionKind]int),
 		entries: make(map[schema.GroupVersionKind]*fakeEntry),
 		failOn:  make(map[schema.GroupVersionKind]error),
+		panicOn: make(map[schema.GroupVersionKind]string),
 	}
 }
 
 func (f *fakeFactory) Start(ctx context.Context, gvk schema.GroupVersionKind, _ apimeta.RESTScopeName, handler watcher.InformerEventHandler) (watcher.InformerEntry, error) {
 	f.mu.Lock()
 	block := f.startBlock[gvk]
+	panicMsg, shouldPanic := f.panicOn[gvk]
+	if shouldPanic {
+		delete(f.panicOn, gvk) // single-shot
+	}
 	if ch, ok := f.startedSignal[gvk]; ok {
 		delete(f.startedSignal, gvk) // signal at most once per GVK
 		close(ch)
 	}
 	f.mu.Unlock()
+	if shouldPanic {
+		panic(panicMsg)
+	}
 	if block != nil {
 		select {
 		case <-block:
@@ -467,6 +478,54 @@ func TestRegistry_Subscribe_ConcurrentSameGVK_StartFailurePropagates(t *testing.
 	}
 	if failures != N {
 		t.Errorf("propagated failures = %d, want %d", failures, N)
+	}
+}
+
+// TestRegistry_Subscribe_PanicInStart_DoesNotStrandFollowers pins the
+// defer-cleanup contract on Subscribe's in-flight sentinel: if factory.Start
+// panics before the success/failure paths run, the deferred cleanup must
+// still remove the starting[gvk] entry and close inflight.done. Otherwise
+// followers waiting on the inflight would block forever (closed-and-empty)
+// or loop forever (informer never installed, but starting[gvk] orphaned).
+func TestRegistry_Subscribe_PanicInStart_DoesNotStrandFollowers(t *testing.T) {
+	ff := newFakeFactory()
+	ff.panicOn[kustomizationGVK] = "boom from factory.Start"
+	r := watcher.NewRegistry(ff, func(watcher.OwnerKey) {})
+
+	// Leader Subscribe panics inside factory.Start. Recover so the test
+	// process survives; we only care that registry state is consistent after.
+	var leaderRecovered atomic.Value
+	var wg sync.WaitGroup
+	wg.Go(func() {
+		defer func() {
+			if v := recover(); v != nil {
+				leaderRecovered.Store(v)
+			}
+		}()
+		_ = r.Subscribe(context.Background(), kustomizationGVK, apimeta.RESTScopeNameNamespace,
+			sub(watcher.OwnerKey{Kind: kindMilestone, Namespace: "n", Name: "leader"}, labels.Everything()))
+	})
+	wg.Wait()
+
+	if leaderRecovered.Load() == nil {
+		t.Fatalf("leader did not panic; factory.panicOn configuration broken")
+	}
+
+	// Follower Subscribe arriving after the leader's panic must complete in
+	// bounded time. With panicOn cleared (single-shot), the follower should
+	// become the new owner of a fresh Start and succeed.
+	done := make(chan error, 1)
+	go func() {
+		done <- r.Subscribe(context.Background(), kustomizationGVK, apimeta.RESTScopeNameNamespace,
+			sub(watcher.OwnerKey{Kind: kindMilestone, Namespace: "n", Name: "follower"}, labels.Everything()))
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Errorf("follower Subscribe after leader panic = %v, want success", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("follower stranded: Subscribe did not return after leader panic — defer cleanup missing")
 	}
 }
 
