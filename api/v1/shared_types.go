@@ -67,7 +67,7 @@ type TargetSpec struct {
 // one of Namespaces or NamespaceSelector may be set; both empty means
 // "all namespaces".
 //
-// +kubebuilder:validation:XValidation:rule="!(has(self.namespaces) && has(self.namespaceSelector))",message="namespaces and namespaceSelector are mutually exclusive"
+// +kubebuilder:validation:XValidation:rule="!(size(self.namespaces) > 0 && has(self.namespaceSelector))",message="namespaces and namespaceSelector are mutually exclusive"
 type ClusterTargetSpec struct {
 	TargetSpec `json:",inline"`
 
@@ -108,16 +108,23 @@ type DependencyRef struct {
 
 // ClusterDependencyRef is the cluster-scoped variant of DependencyRef.
 type ClusterDependencyRef struct {
+	// Name identifies this dependency. Used as the listmap key in
+	// spec.dependsOn and surfaced in status, condition messages, logs, and
+	// the dependency metric label.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=63
 	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
 	Name string `json:"name"`
 
+	// EmptySetPolicy controls Ready reporting when zero resources match.
+	// Defaults to Unknown when omitted.
 	// +optional
 	// +kubebuilder:default=Unknown
 	EmptySetPolicy EmptySetPolicy `json:"emptySetPolicy,omitempty"`
 
+	// Target selects the set of resources this dependency aggregates,
+	// including per-dependency namespace scoping.
 	// +kubebuilder:validation:Required
 	Target ClusterTargetSpec `json:"target"`
 }
@@ -126,6 +133,8 @@ type ClusterDependencyRef struct {
 // counters are always populated; a zero value means no resources fall in
 // that bucket, not "not yet computed". The bucket names mirror
 // sigs.k8s.io/cli-utils kstatus.
+//
+// +kubebuilder:validation:XValidation:rule="self.total == self.current + self.inProgress + self.failed + self.notFound + self.terminating + self.unknown",message="Summary.Total must equal the sum of all buckets"
 type Summary struct {
 	// Total is the count of resources currently matched by the dependency's
 	// target selector. Total == sum of all the other buckets.
@@ -174,8 +183,11 @@ type DependencyStatus struct {
 	Ready metav1.ConditionStatus `json:"ready"`
 
 	// Reason is a short machine-readable code summarising why Ready has its
-	// current value (e.g. AllResourcesReady, ResourcesNotReady, EmptySet).
+	// current value. The closed enum covers every reason the operator emits
+	// at the dependency level; see the Reason* constants in this package
+	// for canonical values.
 	// +optional
+	// +kubebuilder:validation:Enum=AllResourcesReady;ResourcesNotReady;ResourcesInProgress;ResourcesUnknown;EmptySet;GVKNotEstablished;NamespaceScopeMismatch;DiscoveryFailed;DiscoveryUnavailable;WatchSetupFailed;ListFailed;ReconcileError
 	Reason string `json:"reason,omitempty"`
 	// Summary holds the per-kstatus-bucket counts that produced Ready.
 	Summary Summary `json:"summary"`
@@ -203,8 +215,10 @@ type ResourceStatus struct {
 	// resource.
 	// +kubebuilder:validation:Enum=Current;InProgress;Failed;NotFound;Terminating;Unknown
 	Status string `json:"status"`
-	// Reason is the kstatus reason for this resource when one was provided
-	// by sigs.k8s.io/cli-utils.
+	// Reason is the first non-empty reason from the conditions emitted by
+	// sigs.k8s.io/cli-utils for this resource (typically the resource's own
+	// Ready/Reconciling/Stalled condition reason — e.g. LessReplicas,
+	// ProgressDeadlineExceeded).
 	// +optional
 	Reason string `json:"reason,omitempty"`
 	// Message is the kstatus message for this resource when one was
@@ -221,7 +235,9 @@ type MilestoneStatusBase struct {
 	// +optional
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
-	// Conditions exposes Ready, Reconciling, and Stalled (kstatus-compatible).
+	// Conditions exposes Ready and Stalled (kstatus-compatible). The
+	// operator may add additional condition types in future releases as
+	// additive (non-breaking) API changes.
 	// +optional
 	// +patchMergeKey=type
 	// +patchStrategy=merge
@@ -242,8 +258,10 @@ type MilestoneStatusBase struct {
 
 	// NotReadyResources lists resources whose kstatus is not Current.
 	// Capped to avoid object-size explosions; Truncated indicates the cap
-	// was hit.
+	// was hit. The MaxItems cap mirrors the runtime cap applied by the
+	// reconciler.
 	// +optional
+	// +kubebuilder:validation:MaxItems=50
 	NotReadyResources []ResourceStatus `json:"notReadyResources,omitempty"`
 
 	// Truncated is true when NotReadyResources was capped.
@@ -255,11 +273,14 @@ type MilestoneStatusBase struct {
 	LastEvaluatedTime metav1.Time `json:"lastEvaluatedTime,omitempty"`
 }
 
-// Condition types exposed on Milestone and ClusterMilestone.
+// Condition types exposed on Milestone and ClusterMilestone. Reconciling
+// is intentionally not exposed today: the pipeline never emits
+// Reconciling=True, and shipping a permanently-False condition wastes API
+// surface. A future two-phase patch may reintroduce it as an additive
+// (non-breaking) change.
 const (
-	ConditionReady       = "Ready"
-	ConditionReconciling = "Reconciling"
-	ConditionStalled     = "Stalled"
+	ConditionReady   = "Ready"
+	ConditionStalled = "Stalled"
 )
 
 // Reason vocabulary for Ready / Reconciling / Stalled conditions and
@@ -287,15 +308,21 @@ const (
 	ReasonGVKNotEstablished      = "GVKNotEstablished"
 	ReasonNamespaceScopeMismatch = "NamespaceScopeMismatch"
 	ReasonDiscoveryFailed        = "DiscoveryFailed"
-	ReasonWatchSetupFailed       = "WatchSetupFailed"
+	// ReasonDiscoveryUnavailable indicates the apiserver discovery API
+	// was unavailable, distinct from "the requested CRD is not installed"
+	// (ReasonGVKNotEstablished).
+	ReasonDiscoveryUnavailable = "DiscoveryUnavailable"
+	ReasonWatchSetupFailed     = "WatchSetupFailed"
+	// ReasonListFailed indicates the dynamic informer's lister returned an
+	// error during reconcile. The watch is established; the failure is
+	// downstream of subscribe.
+	ReasonListFailed = "ListFailed"
+	// ReasonReconcileError is the catch-all reason for unexpected reconcile
+	// failures that don't fit a more specific reason.
+	ReasonReconcileError = "ReconcileError"
 
-	// ReasonReconciling marks an in-flight reconcile. Reserved for a future
-	// transient Reconciling=True patch; the current pipeline never writes
-	// it.
-	ReasonReconciling = "Reconciling"
 	// ReasonReconcileComplete marks a settled reconcile — the reason
-	// carried on Reconciling=False (always) and Stalled=False (no-error
-	// path).
+	// carried on Stalled=False (no-error path).
 	ReasonReconcileComplete = "ReconcileComplete"
 )
 

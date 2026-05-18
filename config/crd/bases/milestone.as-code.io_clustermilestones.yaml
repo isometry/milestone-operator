@@ -8,9 +8,14 @@ metadata:
 spec:
   group: milestone.as-code.io
   names:
+    categories:
+    - all
+    - gitops
     kind: ClusterMilestone
     listKind: ClusterMilestoneList
     plural: clustermilestones
+    shortNames:
+    - cmile
     singular: clustermilestone
   scope: Cluster
   versions:
@@ -27,6 +32,14 @@ spec:
     - jsonPath: .status.summary.current
       name: Current
       type: integer
+    - jsonPath: .status.summary.failed
+      name: Failed
+      priority: 1
+      type: integer
+    - jsonPath: .status.conditions[?(@.type=='Stalled')].status
+      name: Stalled
+      priority: 1
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -70,23 +83,26 @@ spec:
                     emptySetPolicy:
                       default: Unknown
                       description: |-
-                        EmptySetPolicy controls how a dependency's Ready is reported when zero
-                        resources match its target selector.
+                        EmptySetPolicy controls Ready reporting when zero resources match.
+                        Defaults to Unknown when omitted.
                       enum:
                       - Unknown
                       - Ready
                       - NotReady
                       type: string
                     name:
+                      description: |-
+                        Name identifies this dependency. Used as the listmap key in
+                        spec.dependsOn and surfaced in status, condition messages, logs, and
+                        the dependency metric label.
                       maxLength: 63
                       minLength: 1
                       pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                       type: string
                     target:
                       description: |-
-                        ClusterTargetSpec extends TargetSpec with namespace selection. Exactly
-                        one of Namespaces or NamespaceSelector may be set; both empty means
-                        "all namespaces".
+                        Target selects the set of resources this dependency aggregates,
+                        including per-dependency namespace scoping.
                       properties:
                         group:
                           description: |-
@@ -212,11 +228,12 @@ spec:
                       type: object
                       x-kubernetes-validations:
                       - message: namespaces and namespaceSelector are mutually exclusive
-                        rule: '!(has(self.namespaces) && has(self.namespaceSelector))'
+                        rule: '!(size(self.namespaces) > 0 && has(self.namespaceSelector))'
                   required:
                   - name
                   - target
                   type: object
+                maxItems: 32
                 minItems: 1
                 type: array
                 x-kubernetes-list-map-keys:
@@ -323,7 +340,22 @@ spec:
                     reason:
                       description: |-
                         Reason is a short machine-readable code summarising why Ready has its
-                        current value (e.g. AllResourcesReady, ResourcesNotReady, EmptySet).
+                        current value. The closed enum covers every reason the operator emits
+                        at the dependency level; see the Reason* constants in this package
+                        for canonical values.
+                      enum:
+                      - AllResourcesReady
+                      - ResourcesNotReady
+                      - ResourcesInProgress
+                      - ResourcesUnknown
+                      - EmptySet
+                      - GVKNotEstablished
+                      - NamespaceScopeMismatch
+                      - DiscoveryFailed
+                      - DiscoveryUnavailable
+                      - WatchSetupFailed
+                      - ListFailed
+                      - ReconcileError
                       type: string
                     summary:
                       description: Summary holds the per-kstatus-bucket counts that
@@ -375,6 +407,10 @@ spec:
                       - total
                       - unknown
                       type: object
+                      x-kubernetes-validations:
+                      - message: Summary.Total must equal the sum of all buckets
+                        rule: self.total == self.current + self.inProgress + self.failed
+                          + self.notFound + self.terminating + self.unknown
                     version:
                       description: |-
                         Version is the API version resolved via discovery (the target's
@@ -399,7 +435,8 @@ spec:
                 description: |-
                   NotReadyResources lists resources whose kstatus is not Current.
                   Capped to avoid object-size explosions; Truncated indicates the cap
-                  was hit.
+                  was hit. The MaxItems cap mirrors the runtime cap applied by the
+                  reconciler.
                 items:
                   description: |-
                     ResourceStatus identifies an individual matched resource and the kstatus
@@ -428,8 +465,10 @@ spec:
                       type: string
                     reason:
                       description: |-
-                        Reason is the kstatus reason for this resource when one was provided
-                        by sigs.k8s.io/cli-utils.
+                        Reason is the first non-empty reason from the conditions emitted by
+                        sigs.k8s.io/cli-utils for this resource (typically the resource's own
+                        Ready/Reconciling/Stalled condition reason — e.g. LessReplicas,
+                        ProgressDeadlineExceeded).
                       type: string
                     status:
                       description: |-
@@ -452,6 +491,7 @@ spec:
                   - status
                   - version
                   type: object
+                maxItems: 50
                 type: array
               observedGeneration:
                 description: |-
@@ -508,6 +548,10 @@ spec:
                 - total
                 - unknown
                 type: object
+                x-kubernetes-validations:
+                - message: Summary.Total must equal the sum of all buckets
+                  rule: self.total == self.current + self.inProgress + self.failed
+                    + self.notFound + self.terminating + self.unknown
               truncated:
                 description: Truncated is true when NotReadyResources was capped.
                 type: boolean

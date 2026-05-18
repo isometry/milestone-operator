@@ -364,7 +364,6 @@ func (r *Reconciler[T]) applyStatus(sb *apiv1.MilestoneStatusBase, generation in
 
 	readyStatus, readyReason, readyMessage := status.ReduceOwner(rollups)
 	setCondition(sb, apiv1.ConditionReady, readyStatus, readyReason, readyMessage)
-	setCondition(sb, apiv1.ConditionReconciling, metav1.ConditionFalse, apiv1.ReasonReconcileComplete, "")
 	r.applyStalledFromErrors(sb, errs)
 }
 

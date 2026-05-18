@@ -30,7 +30,7 @@ Built with operator-sdk **v1.42.2** (Kubebuilder v4) and Go **1.26+**.
 | ClusterMilestone scoping | `target.namespaces` and `target.namespaceSelector` are **per-dependency** and mutually exclusive (CRD CEL validation). |
 | Watcher architecture | Shared, refcounted registry; one cluster-scoped dynamic informer per GVK. |
 | Per-resource readiness | `sigs.k8s.io/cli-utils/pkg/kstatus/status.Compute` (strict — no condition-fallback). |
-| Conditions | `Ready`, `Reconciling`, `Stalled` (kstatus-compatible). |
+| Conditions | `Ready`, `Stalled` (kstatus-compatible). `Reconciling` is not emitted; reserved for a future additive change when a two-phase patch lands. |
 | Operator scope | Single cluster-scoped deployment serves both CRDs. |
 | Test strategy | Unit + envtest (Go test); e2e against kind via ginkgo deferred. |
 | Observability | First-class Prometheus metrics from day one (custom collector + pipeline counters/histograms); ServiceMonitor + sample alert rules shipped in `config/`. |
@@ -162,9 +162,11 @@ spec:
 ```
 
 CRDs use the `milestone.as-code.io/v1` group; finalizer is
-`milestone.as-code.io/finalizer`. No `shortNames` are set — easy to add
-later if operators clamour for them and we've cleared collisions
-(`ms`/`cms` collide with cluster-api `MachineSet`).
+`milestone.as-code.io/finalizer` (locked at v1.0.0 — changing it post-tag
+orphans existing finalizers). Short names are `mile` (Milestone) and
+`cmile` (ClusterMilestone); `ms`/`cms` were avoided because `ms` collides
+with cluster-api `MachineSet` and `cms` is too cryptic. Resource categories
+are `all` and `gitops`.
 
 ## Reduction rules
 
@@ -199,6 +201,26 @@ stalled, `Ready` reflects what we *can* observe — never silently `True`.
 The reason vocabulary uses a three-layer model — **resources → targets →
 owner**. Resource-level reasons describe matched resources;
 dependency-level / owner-level reasons describe dependency rollups.
+
+`DependencyStatus.Reason` is constrained at the CRD level via
+`+kubebuilder:validation:Enum`; the closed set is:
+
+- Resource-level rollup: `AllResourcesReady`, `ResourcesNotReady`,
+  `ResourcesInProgress`, `ResourcesUnknown`, `EmptySet`.
+- Structural failures: `GVKNotEstablished`, `NamespaceScopeMismatch`,
+  `DiscoveryFailed`, `DiscoveryUnavailable`, `WatchSetupFailed`,
+  `ListFailed`.
+- Catch-all: `ReconcileError`.
+
+Owner-level `Conditions[].Reason` follows the documented vocabulary
+(`AllDependenciesReady`, `DependenciesNotReady`, `DependenciesInProgress`,
+`ReconcileComplete`, plus the structural reasons used on `Stalled=True`)
+but is not closed at the CRD level — the `metav1.Condition.Reason` field
+is shared with other Kubernetes consumers.
+
+Adding a new dependency-level reason post-v1.0.0 requires the CRD update
+to land before the binary that emits it. Adding a new owner-level
+condition reason is unconstrained.
 
 ## Watcher architecture
 
@@ -237,8 +259,8 @@ controller-runtime. The pipeline is:
    reduce — their rollup carries `Ready=Unknown, Reason=WatchSetupFailed`.
 5. `applyStatus(status, generation, rollups, notReady, errs)`: sort
    `status.dependsOn` by `name`, set `Ready` from `ReduceOwner`, set
-   `Reconciling=False, Reason=ReconcileComplete`, set
-   `Stalled` from the accumulated errors.
+   `Stalled` from the accumulated errors (`Reason=ReconcileComplete` on
+   `Stalled=False`). `Reconciling` is not emitted today.
 6. Idempotency: `statusEqualIgnoringTimestamp` (deep-equal modulo
    `LastEvaluatedTime` and per-condition `LastTransitionTime` +
    `ObservedGeneration`) gates the patch. No churn on identical reconciles.
@@ -347,11 +369,27 @@ All metrics namespaced `milestone_*`. Cardinality bounds in parentheses.
 `milestone.as-code.io/v1` will be stable once v1.0.0 is tagged. Until
 then, we iterate freely. Once tagged:
 
-- **Safe**: new optional `omitempty` fields; new condition types and
-  reasons; new printcolumns; new metrics.
+- **Safe**: new optional `omitempty` fields; new owner-level
+  `Conditions[]` types; new owner-level `Conditions[].Reason` values;
+  new printcolumns; new metrics; new sibling fields on `DependencyRef`
+  / `ClusterDependencyRef` (e.g. an optional `minMatched *int` for
+  min-cardinality semantics — see below).
 - **Unsafe**: field renames or removals; new enum values on
-  `EmptySetPolicy`; reordering of `+listMapKey` semantics; changing the
-  finalizer string. These require a new API version + a conversion webhook.
+  `EmptySetPolicy` or on `DependencyStatus.Reason`; reordering of
+  `+listMapKey` semantics; changing the finalizer string
+  (`milestone.as-code.io/finalizer`); lowering `MaxItems` on `dependsOn`
+  or on `notReadyResources`. These require a new API version + a
+  conversion webhook.
+
+**EmptySetPolicy is intentionally narrow.** The three-value enum
+(`Unknown`/`Ready`/`NotReady`) answers a single closed question — "what
+should `Ready` be when the matched set is empty?". Future cardinality
+semantics ("ready iff ≥N matched") land as an optional sibling field on
+`DependencyRef`, not as a new enum value. This keeps the enum locked
+forever while preserving room to evolve.
+
+**`DependencyStatus.Reason` is a closed CRD enum.** New dependency-level
+reasons require a CRD update before the binary that emits them.
 
 Pre-v1.0.0 internal APIs (function signatures, package layout, interface
 shapes) are not stable and may change without notice.

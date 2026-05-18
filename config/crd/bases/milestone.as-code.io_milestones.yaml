@@ -8,9 +8,14 @@ metadata:
 spec:
   group: milestone.as-code.io
   names:
+    categories:
+    - all
+    - gitops
     kind: Milestone
     listKind: MilestoneList
     plural: milestones
+    shortNames:
+    - mile
     singular: milestone
   scope: Namespaced
   versions:
@@ -27,6 +32,14 @@ spec:
     - jsonPath: .status.summary.current
       name: Current
       type: integer
+    - jsonPath: .status.summary.failed
+      name: Failed
+      priority: 1
+      type: integer
+    - jsonPath: .status.conditions[?(@.type=='Stalled')].status
+      name: Stalled
+      priority: 1
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -160,6 +173,7 @@ spec:
                   - name
                   - target
                   type: object
+                maxItems: 32
                 minItems: 1
                 type: array
                 x-kubernetes-list-map-keys:
@@ -266,7 +280,22 @@ spec:
                     reason:
                       description: |-
                         Reason is a short machine-readable code summarising why Ready has its
-                        current value (e.g. AllResourcesReady, ResourcesNotReady, EmptySet).
+                        current value. The closed enum covers every reason the operator emits
+                        at the dependency level; see the Reason* constants in this package
+                        for canonical values.
+                      enum:
+                      - AllResourcesReady
+                      - ResourcesNotReady
+                      - ResourcesInProgress
+                      - ResourcesUnknown
+                      - EmptySet
+                      - GVKNotEstablished
+                      - NamespaceScopeMismatch
+                      - DiscoveryFailed
+                      - DiscoveryUnavailable
+                      - WatchSetupFailed
+                      - ListFailed
+                      - ReconcileError
                       type: string
                     summary:
                       description: Summary holds the per-kstatus-bucket counts that
@@ -318,6 +347,10 @@ spec:
                       - total
                       - unknown
                       type: object
+                      x-kubernetes-validations:
+                      - message: Summary.Total must equal the sum of all buckets
+                        rule: self.total == self.current + self.inProgress + self.failed
+                          + self.notFound + self.terminating + self.unknown
                     version:
                       description: |-
                         Version is the API version resolved via discovery (the target's
@@ -342,7 +375,8 @@ spec:
                 description: |-
                   NotReadyResources lists resources whose kstatus is not Current.
                   Capped to avoid object-size explosions; Truncated indicates the cap
-                  was hit.
+                  was hit. The MaxItems cap mirrors the runtime cap applied by the
+                  reconciler.
                 items:
                   description: |-
                     ResourceStatus identifies an individual matched resource and the kstatus
@@ -371,8 +405,10 @@ spec:
                       type: string
                     reason:
                       description: |-
-                        Reason is the kstatus reason for this resource when one was provided
-                        by sigs.k8s.io/cli-utils.
+                        Reason is the first non-empty reason from the conditions emitted by
+                        sigs.k8s.io/cli-utils for this resource (typically the resource's own
+                        Ready/Reconciling/Stalled condition reason — e.g. LessReplicas,
+                        ProgressDeadlineExceeded).
                       type: string
                     status:
                       description: |-
@@ -395,6 +431,7 @@ spec:
                   - status
                   - version
                   type: object
+                maxItems: 50
                 type: array
               observedGeneration:
                 description: |-
@@ -451,6 +488,10 @@ spec:
                 - total
                 - unknown
                 type: object
+                x-kubernetes-validations:
+                - message: Summary.Total must equal the sum of all buckets
+                  rule: self.total == self.current + self.inProgress + self.failed
+                    + self.notFound + self.terminating + self.unknown
               truncated:
                 description: Truncated is true when NotReadyResources was capped.
                 type: boolean

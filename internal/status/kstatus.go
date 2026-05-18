@@ -38,5 +38,15 @@ func Compute(u *unstructured.Unstructured) Resource {
 	}
 	r.Status = res.Status.String()
 	r.Message = res.Message
+	// Pull a Reason from the kstatus-extracted resource conditions. kstatus
+	// surfaces the resource's own Ready/Reconciling/Stalled conditions; the
+	// first non-empty Reason is the most informative thing we can attribute
+	// (e.g. LessReplicas, ProgressDeadlineExceeded, ReconciliationFailed).
+	for _, c := range res.Conditions {
+		if c.Reason != "" {
+			r.Reason = c.Reason
+			break
+		}
+	}
 	return r
 }

@@ -844,7 +844,7 @@ func TestReconcile_Conditions_CarryObservedGeneration(t *testing.T) {
 	if _, err := r.ReconcileObject(t.Context(), ech); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
-	for _, ct := range []string{apiv1.ConditionReady, apiv1.ConditionReconciling, apiv1.ConditionStalled} {
+	for _, ct := range []string{apiv1.ConditionReady, apiv1.ConditionStalled} {
 		var found *metav1.Condition
 		for i := range ech.Status.Conditions {
 			if ech.Status.Conditions[i].Type == ct {

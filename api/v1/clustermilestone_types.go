@@ -26,6 +26,7 @@ type ClusterMilestoneSpec struct {
 	// aggregates. Each dependency may scope its search via
 	// Target.Namespaces or Target.NamespaceSelector.
 	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=32
 	// +listType=map
 	// +listMapKey=name
 	DependsOn []ClusterDependencyRef `json:"dependsOn"`
@@ -37,12 +38,14 @@ type ClusterMilestoneStatus struct {
 }
 
 // +kubebuilder:object:root=true
-// +kubebuilder:resource:scope=Cluster
+// +kubebuilder:resource:scope=Cluster,shortName=cmile,categories={all,gitops}
 // +kubebuilder:subresource:status
 // +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
 // +kubebuilder:printcolumn:name="Reason",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].reason"
 // +kubebuilder:printcolumn:name="Total",type="integer",JSONPath=".status.summary.total"
 // +kubebuilder:printcolumn:name="Current",type="integer",JSONPath=".status.summary.current"
+// +kubebuilder:printcolumn:name="Failed",type="integer",priority=1,JSONPath=".status.summary.failed"
+// +kubebuilder:printcolumn:name="Stalled",type="string",priority=1,JSONPath=".status.conditions[?(@.type=='Stalled')].status"
 // +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // ClusterMilestone aggregates the kstatus of resources matching its

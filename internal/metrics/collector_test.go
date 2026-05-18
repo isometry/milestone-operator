@@ -98,7 +98,6 @@ func newReadyMilestone(ns, name string) apiv1.Milestone {
 				Summary:            apiv1.Summary{Total: 5, Current: 5},
 				Conditions: []metav1.Condition{
 					{Type: apiv1.ConditionReady, Status: metav1.ConditionTrue, Reason: apiv1.ReasonAllDependenciesReady},
-					{Type: apiv1.ConditionReconciling, Status: metav1.ConditionFalse},
 					{Type: apiv1.ConditionStalled, Status: metav1.ConditionFalse},
 				},
 				DependsOn: []apiv1.DependencyStatus{
