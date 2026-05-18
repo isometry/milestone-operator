@@ -353,6 +353,43 @@ func TestReconcile_MemberResolveError_SetsStalled(t *testing.T) {
 	}
 }
 
+// TestReconcile_AdapterErrorDependency_PresentInDependsOn pins the
+// adapter-rejected-dependency contract: every named DependencyError must
+// surface as a placeholder entry in status.dependsOn, even when the
+// dependency was filtered out before evaluateDependencies. Otherwise the
+// broken dep would silently disappear from the listmap and only the
+// aggregate Stalled message would name it.
+func TestReconcile_AdapterErrorDependency_PresentInDependsOn(t *testing.T) {
+	ech := newMilestone("e1")
+	ech.Finalizers = []string{apiv1.Finalizer}
+	fa := &fakeAdapter{
+		obj: ech,
+		errs: []controller.DependencyError{{
+			Name: depLate, Group: groupMissing, Version: "v1", Kind: kindLate,
+			Reason: apiv1.ReasonGVKNotEstablished,
+			Err:    errors.New("not established"),
+		}},
+	}
+	r := newFixture(t, ech, fa, newFakeRegistry())
+
+	if _, err := r.ReconcileObject(t.Context(), ech); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	got, ok := depStatusByName(ech, depLate)
+	if !ok {
+		t.Fatalf("DependsOn[%q] missing; status.dependsOn=%+v", depLate, ech.Status.DependsOn)
+	}
+	if got.Ready != metav1.ConditionUnknown {
+		t.Errorf("DependsOn[%q].Ready = %s, want Unknown", depLate, got.Ready)
+	}
+	if got.Reason != apiv1.ReasonGVKNotEstablished {
+		t.Errorf("DependsOn[%q].Reason = %q, want %q", depLate, got.Reason, apiv1.ReasonGVKNotEstablished)
+	}
+	if got.Group != groupMissing || got.Kind != kindLate {
+		t.Errorf("DependsOn[%q] GVK = %s/%s, want %s/%s", depLate, got.Group, got.Kind, groupMissing, kindLate)
+	}
+}
+
 // TestReconcile_StalledMessage_TruncatesManyErrors guards the API-server
 // condition-message size limit: even a pathological owner with hundreds of
 // misconfigured members must produce a bounded Stalled message with an
@@ -735,8 +772,8 @@ func TestReconcile_ListFailure_DoesNotPromoteToReady(t *testing.T) {
 	if got.Ready != metav1.ConditionUnknown {
 		t.Errorf("DependsOn[%q].Ready = %s, want Unknown", depKustomizations, got.Ready)
 	}
-	if got.Reason != apiv1.ReasonWatchSetupFailed {
-		t.Errorf("DependsOn[%q].Reason = %q, want %q", depKustomizations, got.Reason, apiv1.ReasonWatchSetupFailed)
+	if got.Reason != apiv1.ReasonListFailed {
+		t.Errorf("DependsOn[%q].Reason = %q, want %q", depKustomizations, got.Reason, apiv1.ReasonListFailed)
 	}
 	if !hasCondition(ech, apiv1.ConditionStalled, metav1.ConditionTrue) {
 		t.Errorf("Stalled should be True after list failure; conditions=%+v", ech.Status.Conditions)

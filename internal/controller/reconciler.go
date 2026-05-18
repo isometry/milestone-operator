@@ -49,6 +49,17 @@ const defaultResourceCap = 50
 // Stalled condition message. Beyond this we append a "... N more" suffix.
 const defaultStalledErrorCap = 50
 
+// maxStalledErrChars caps the length of an individual underlying-error string
+// embedded in the Stalled condition message. Apiserver errors can carry long
+// detail (request IDs, partial response dumps); truncating per-entry keeps the
+// composite message bounded.
+const maxStalledErrChars = 256
+
+// maxStalledTotalChars caps the assembled Stalled condition message. Combined
+// with defaultStalledErrorCap this keeps status objects well clear of the
+// 1MiB etcd limit even under pathological adversarial input.
+const maxStalledTotalChars = 4096
+
 // Reconciler is the GVK-agnostic reconcile pipeline shared by Milestone and
 // ClusterMilestone controllers. Behavioural variation is encapsulated in
 // OwnerAdapter implementations passed by the per-controller wiring.
@@ -98,6 +109,12 @@ func (r *Reconciler[T]) ReconcileObject(ctx context.Context, obj T) (ctrl.Result
 	if !controllerutil.ContainsFinalizer(obj, apiv1.Finalizer) {
 		controllerutil.AddFinalizer(obj, apiv1.Finalizer)
 		if err := r.Client.Update(ctx, obj); err != nil {
+			// Object deleted between our Get and Update — nothing to
+			// finalise. controller-runtime would otherwise wrap and retry
+			// the NotFound forever.
+			if apierrors.IsNotFound(err) {
+				return ctrl.Result{}, nil
+			}
 			return ctrl.Result{}, fmt.Errorf("add finalizer: %w", err)
 		}
 		// The Update emits a Watch event on the owner; controller-runtime
@@ -276,13 +293,13 @@ func (r *Reconciler[T]) evaluateDependencies(deps []NormalizedDependency, failed
 		}
 		resources, err := r.listAndCompute(d)
 		if err != nil {
-			rollups[d.Name] = failedRollup(d.Name, d.GVK, apiv1.ReasonWatchSetupFailed)
+			rollups[d.Name] = failedRollup(d.Name, d.GVK, apiv1.ReasonListFailed)
 			listErrs = append(listErrs, DependencyError{
 				Name:    d.Name,
 				Group:   d.GVK.Group,
 				Version: d.GVK.Version,
 				Kind:    d.GVK.Kind,
-				Reason:  apiv1.ReasonWatchSetupFailed,
+				Reason:  apiv1.ReasonListFailed,
 				Err:     err,
 			})
 			continue
@@ -357,6 +374,25 @@ func failedDependencyReasons(errs []DependencyError) map[string]string {
 }
 
 func (r *Reconciler[T]) applyStatus(sb *apiv1.MilestoneStatusBase, generation int64, rollups map[string]apiv1.DependencyStatus, notReady []apiv1.ResourceStatus, errs []DependencyError) {
+	// Synthesize a placeholder rollup for any named error that the pipeline
+	// didn't already produce a rollup for (discovery / scope / selector
+	// failures bypass evaluateDependencies, so without this their dependency
+	// would silently vanish from status.dependsOn). Subscribe and list
+	// failures already create their own failed rollup downstream.
+	for _, e := range errs {
+		if e.Name == "" {
+			continue
+		}
+		if _, ok := rollups[e.Name]; ok {
+			continue
+		}
+		rollups[e.Name] = failedRollup(e.Name, schema.GroupVersionKind{
+			Group:   e.Group,
+			Version: e.Version,
+			Kind:    e.Kind,
+		}, e.Reason)
+	}
+
 	sb.ObservedGeneration = generation
 	sb.DependsOn = sortedDependencyStatuses(rollups)
 	sb.Summary = status.SummarizeOwner(rollups)
@@ -392,6 +428,12 @@ func (r *Reconciler[T]) patchStatus(ctx context.Context, adapter OwnerAdapter) e
 // no Ready condition; readyConditionStatus returns Unknown for that case, so
 // the first computed True/False fires (desirable — Flux's initial healthcheck
 // dedupes via lastHandledReconcileAt).
+//
+// The notifier reads the Flux owner labels off obj's in-memory snapshot
+// (captured by the controller-runtime Get earlier in the pipeline). If those
+// labels mutated between Get and notify, the wrong parent would be poked;
+// the window is tight and Flux's own dedup via lastHandledReconcileAt makes
+// the cost trivial, so no compensating refetch is performed.
 func (r *Reconciler[T]) notifyFluxOnTransition(ctx context.Context, obj T, priorReady metav1.ConditionStatus, current *apiv1.MilestoneStatusBase) {
 	if r.FluxNotifier == nil {
 		return
@@ -449,7 +491,10 @@ func dependencyAdmits(d NormalizedDependency, namespace string, lbls map[string]
 }
 
 func notReadyResourcesOf(resources []status.Resource) []apiv1.ResourceStatus {
-	out := make([]apiv1.ResourceStatus, 0)
+	// Stay nil until we actually append: a non-nil empty slice would
+	// round-trip through status DeepCopy as != nil and trigger spurious
+	// patches when prior state was nil.
+	var out []apiv1.ResourceStatus
 	for _, m := range resources {
 		if m.Status == "Current" {
 			continue
@@ -473,6 +518,25 @@ func capResources(in []apiv1.ResourceStatus, cap int) ([]apiv1.ResourceStatus, b
 		return in, false
 	}
 	return in[:cap], true
+}
+
+// sanitiseErrText flattens newlines and truncates an underlying error string
+// so it can safely participate in a Stalled condition message without inflating
+// the status object or breaking line-oriented downstream parsers.
+func sanitiseErrText(err error) string {
+	if err == nil {
+		return ""
+	}
+	s := err.Error()
+	if strings.ContainsAny(s, "\r\n") {
+		s = strings.ReplaceAll(s, "\r\n", " ")
+		s = strings.ReplaceAll(s, "\n", " ")
+		s = strings.ReplaceAll(s, "\r", " ")
+	}
+	if len(s) > maxStalledErrChars {
+		return s[:maxStalledErrChars-1] + "…"
+	}
+	return s
 }
 
 func setCondition(sb *apiv1.MilestoneStatusBase, condType string, st metav1.ConditionStatus, reason, message string) {
@@ -514,11 +578,14 @@ func (r *Reconciler[T]) applyStalledFromErrors(sb *apiv1.MilestoneStatusBase, er
 	}
 	parts := make([]string, 0, len(visible))
 	for _, e := range visible {
-		parts = append(parts, fmt.Sprintf("%s.%s/%s [%s]: %v", e.Group, e.Version, e.Kind, e.Reason, e.Err))
+		parts = append(parts, fmt.Sprintf("%s.%s/%s [%s]: %s", e.Group, e.Version, e.Kind, e.Reason, sanitiseErrText(e.Err)))
 	}
 	message := strings.Join(parts, "; ")
 	if overflow > 0 {
 		message = fmt.Sprintf("%s; … %d more", message, overflow)
+	}
+	if len(message) > maxStalledTotalChars {
+		message = message[:maxStalledTotalChars-1] + "…"
 	}
 	apimeta.SetStatusCondition(&sb.Conditions, metav1.Condition{
 		Type:               apiv1.ConditionStalled,
