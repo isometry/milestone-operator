@@ -227,10 +227,23 @@ condition reason is unconstrained.
 `internal/watcher/registry.go` holds one dynamic informer per unique GVK,
 refcounted across Milestone and ClusterMilestone owners. The Subscriber
 shape carries multiple `Matcher`s so two dependencies sharing a GVK with
-different selectors collapse into one informer + two matchers. Per-GVK
-informer events are translated to `event.GenericEvent` on per-controller
-channels (`milestoneEvents`, `cmilestoneEvents`) so each controller pulls
-its own queue.
+different selectors collapse into one informer + two matchers. The
+Registry implements `manager.Runnable` so all informers stop cleanly when
+the manager shuts down.
+
+Per-GVK informer events are dispatched to a per-controller
+`watcher.EnqueueSource` (`internal/watcher/enqueue_source.go`), a
+`source.TypedSource[reconcile.Request]` that captures the controller's
+workqueue at Start time. The registry calls `EnqueueSource.Enqueue(req)`
+directly — no intermediate channel, no blocking, and the workqueue
+dedupes by key so an event storm for the same owner collapses to a
+single reconcile.
+
+`Registry.InvalidateGVK(gvk)` drops both the informer entry and the
+subscriber-index entries for a GVK, used by the CRD watcher when a CRD is
+removed or de-Established. A subsequent reconcile for any owner that
+still references the kind re-runs discovery and re-Subscribes from a
+clean state.
 
 A separate `CRDWatcher` controller (`internal/controller/crd_watcher.go`)
 watches `CustomResourceDefinition` and, on every `Established=True`

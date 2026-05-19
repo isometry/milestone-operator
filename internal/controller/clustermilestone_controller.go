@@ -15,6 +15,7 @@ import (
 	"maps"
 
 	apiv1 "github.com/isometry/milestone-operator/api/v1"
+	"github.com/isometry/milestone-operator/internal/watcher"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -24,16 +25,18 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
-	"sigs.k8s.io/controller-runtime/pkg/source"
 )
 
 // ClusterMilestoneReconciler is the thin per-CRD wrapper around the generic
 // Reconciler for the cluster-scoped CRD.
 type ClusterMilestoneReconciler struct {
 	client.Client
-	Scheme        *runtime.Scheme
-	Reconciler    *Reconciler[*apiv1.ClusterMilestone]
-	EnqueueEvents <-chan event.GenericEvent
+	Scheme     *runtime.Scheme
+	Reconciler *Reconciler[*apiv1.ClusterMilestone]
+	// EventSource bridges informer and CRD-watcher wakes directly into this
+	// controller's workqueue. controller-runtime calls EventSource.Start at
+	// controller construction to capture the queue.
+	EventSource *watcher.EnqueueSource
 }
 
 // +kubebuilder:rbac:groups=milestone.as-code.io,resources=clustermilestones,verbs=get;list;watch;create;update;patch;delete
@@ -57,8 +60,8 @@ func (r *ClusterMilestoneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			handler.EnqueueRequestsFromMapFunc(r.namespaceToClusterMilestones),
 			builder.WithPredicates(namespaceMembershipPredicate{}),
 		)
-	if r.EnqueueEvents != nil {
-		b = b.WatchesRawSource(source.Channel(r.EnqueueEvents, &handler.EnqueueRequestForObject{}))
+	if r.EventSource != nil {
+		b = b.WatchesRawSource(r.EventSource)
 	}
 	return b.Complete(r)
 }

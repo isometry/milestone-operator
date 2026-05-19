@@ -16,12 +16,13 @@ import (
 	apiv1 "github.com/isometry/milestone-operator/api/v1"
 	"github.com/isometry/milestone-operator/internal/discovery"
 	"github.com/isometry/milestone-operator/internal/metrics"
+	"github.com/isometry/milestone-operator/internal/watcher"
 	apiextv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/event"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
 // CRDWatcher watches CustomResourceDefinitions and, on every Established=True
@@ -34,9 +35,12 @@ import (
 // CRD shows up.
 type CRDWatcher struct {
 	client.Client
-	Resolver         discovery.Resolver
-	MilestoneEvents  chan<- event.GenericEvent
-	CMilestoneEvents chan<- event.GenericEvent
+	Resolver discovery.Resolver
+	// MilestoneEnqueue and ClusterMilestoneEnqueue forward wake events
+	// directly into each controller's workqueue. The workqueue dedupes by
+	// key so an event storm collapses to a single reconcile.
+	MilestoneEnqueue        *watcher.EnqueueSource
+	ClusterMilestoneEnqueue *watcher.EnqueueSource
 }
 
 // +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch
@@ -77,6 +81,9 @@ func (w *CRDWatcher) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 }
 
 func (w *CRDWatcher) wakeMilestones(ctx context.Context, group, kind string) error {
+	if w.MilestoneEnqueue == nil {
+		return nil
+	}
 	list := &apiv1.MilestoneList{}
 	if err := w.List(ctx, list); err != nil {
 		return err
@@ -86,13 +93,16 @@ func (w *CRDWatcher) wakeMilestones(ctx context.Context, group, kind string) err
 		if !ownsKind(m.Spec.DependsOn, group, kind) {
 			continue
 		}
-		w.MilestoneEvents <- event.GenericEvent{Object: m}
+		w.MilestoneEnqueue.Enqueue(reconcile.Request{NamespacedName: client.ObjectKeyFromObject(m)})
 		metrics.OwnersWoken.WithLabelValues("crd_established").Inc()
 	}
 	return nil
 }
 
 func (w *CRDWatcher) wakeClusterMilestones(ctx context.Context, group, kind string) error {
+	if w.ClusterMilestoneEnqueue == nil {
+		return nil
+	}
 	list := &apiv1.ClusterMilestoneList{}
 	if err := w.List(ctx, list); err != nil {
 		return err
@@ -102,7 +112,7 @@ func (w *CRDWatcher) wakeClusterMilestones(ctx context.Context, group, kind stri
 		if !ownsClusterKind(cm.Spec.DependsOn, group, kind) {
 			continue
 		}
-		w.CMilestoneEvents <- event.GenericEvent{Object: cm}
+		w.ClusterMilestoneEnqueue.Enqueue(reconcile.Request{NamespacedName: client.ObjectKeyFromObject(cm)})
 		metrics.OwnersWoken.WithLabelValues("crd_established").Inc()
 	}
 	return nil

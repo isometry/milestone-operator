@@ -23,7 +23,6 @@ import (
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
 	apiextv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/discovery"
@@ -32,12 +31,12 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/certwatcher"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	ctrlmetrics "sigs.k8s.io/controller-runtime/pkg/metrics"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/filters"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 
 	apiv1 "github.com/isometry/milestone-operator/api/v1"
@@ -62,9 +61,8 @@ func init() {
 }
 
 const (
-	enqueueChannelSize = 1024
-	informerResync     = 10 * time.Minute
-	discoveryTTL       = 60 * time.Second
+	informerResync = 10 * time.Minute
+	discoveryTTL   = 60 * time.Second
 
 	controllerMilestone        = "Milestone"
 	controllerClusterMilestone = "ClusterMilestone"
@@ -194,22 +192,30 @@ func main() {
 	}
 	dynFactory := watcher.NewDynamicFactory(dynClient, mgr.GetRESTMapper(), informerResync)
 
-	// Per-controller enqueue channels fed by the watcher.Registry's EnqueueFunc.
-	milestoneEvents := make(chan event.GenericEvent, enqueueChannelSize)
-	cmilestoneEvents := make(chan event.GenericEvent, enqueueChannelSize)
+	// Per-controller workqueue-backed sources. Each source captures the
+	// controller's RateLimitingInterface at Start time; the registry and the
+	// CRD watcher push reconcile.Requests directly without an intermediate
+	// channel. The workqueue dedupes by key, so an event storm for the same
+	// owner collapses to a single reconcile.
+	milestoneSource := watcher.NewEnqueueSource()
+	cmilestoneSource := watcher.NewEnqueueSource()
 	enqueue := func(o watcher.OwnerKey) {
 		switch o.Kind {
 		case controllerMilestone:
-			milestoneEvents <- event.GenericEvent{Object: &apiv1.Milestone{
-				ObjectMeta: metav1.ObjectMeta{Namespace: o.Namespace, Name: o.Name},
-			}}
+			milestoneSource.Enqueue(reconcile.Request{NamespacedName: client.ObjectKey{
+				Namespace: o.Namespace, Name: o.Name,
+			}})
 		case controllerClusterMilestone:
-			cmilestoneEvents <- event.GenericEvent{Object: &apiv1.ClusterMilestone{
-				ObjectMeta: metav1.ObjectMeta{Name: o.Name},
-			}}
+			cmilestoneSource.Enqueue(reconcile.Request{NamespacedName: client.ObjectKey{
+				Name: o.Name,
+			}})
 		}
 	}
 	registry := watcher.NewRegistry(dynFactory, enqueue)
+	if err := mgr.Add(registry); err != nil {
+		setupLog.Error(err, "register watcher.Registry as manager.Runnable")
+		os.Exit(1)
+	}
 
 	// FluxCD notify side-effect: one Notifier per controller so that emitted
 	// metrics carry the correct controller label. Both share the manager's
@@ -249,19 +255,19 @@ func main() {
 	}
 
 	if err := (&controller.MilestoneReconciler{
-		Client:        mgr.GetClient(),
-		Scheme:        mgr.GetScheme(),
-		Reconciler:    milestoneReconciler,
-		EnqueueEvents: milestoneEvents,
+		Client:      mgr.GetClient(),
+		Scheme:      mgr.GetScheme(),
+		Reconciler:  milestoneReconciler,
+		EventSource: milestoneSource,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", controllerMilestone)
 		os.Exit(1)
 	}
 	if err := (&controller.ClusterMilestoneReconciler{
-		Client:        mgr.GetClient(),
-		Scheme:        mgr.GetScheme(),
-		Reconciler:    clusterMilestoneReconciler,
-		EnqueueEvents: cmilestoneEvents,
+		Client:      mgr.GetClient(),
+		Scheme:      mgr.GetScheme(),
+		Reconciler:  clusterMilestoneReconciler,
+		EventSource: cmilestoneSource,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", controllerClusterMilestone)
 		os.Exit(1)
@@ -269,10 +275,10 @@ func main() {
 
 	// CRD watcher: wakes stalled owners on Established=True.
 	if err := (&controller.CRDWatcher{
-		Client:           mgr.GetClient(),
-		Resolver:         resolver,
-		MilestoneEvents:  milestoneEvents,
-		CMilestoneEvents: cmilestoneEvents,
+		Client:                  mgr.GetClient(),
+		Resolver:                resolver,
+		MilestoneEnqueue:        milestoneSource,
+		ClusterMilestoneEnqueue: cmilestoneSource,
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "CRDWatcher")
 		os.Exit(1)

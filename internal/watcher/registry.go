@@ -242,6 +242,53 @@ func (r *Registry) GVKsByOwner(owner OwnerKey) []schema.GroupVersionKind {
 	return r.index.GVKsByOwner(owner)
 }
 
+// InvalidateGVK drops the informer entry for gvk and clears the subscriber
+// index for it, regardless of current refcount. Used by the CRD watcher
+// when a CRD is removed or de-Established: a subsequent reconcile for an
+// owner that still references this kind will re-Subscribe from a clean
+// state, starting a fresh informer (which will likely fail until the CRD
+// re-Establishes, at which point another wake comes through).
+//
+// Safe to call when there is no informer for gvk (no-op).
+func (r *Registry) InvalidateGVK(gvk schema.GroupVersionKind) {
+	r.mu.Lock()
+	entry, ok := r.informers[gvk]
+	if ok {
+		delete(r.informers, gvk)
+		delete(r.refcount, gvk)
+	}
+	r.mu.Unlock()
+	r.index.ClearGVK(gvk)
+	if ok {
+		entry.Stop()
+	}
+	metrics.Informers.DeleteLabelValues(gvk.Group, gvk.Version, gvk.Kind)
+	metrics.Subscribers.DeleteLabelValues(gvk.Group, gvk.Version, gvk.Kind)
+}
+
+// Start implements manager.Runnable. The Registry participates in manager
+// lifecycle so that all informers stop cleanly when the manager shuts down
+// (otherwise informer dispatch goroutines outlive the controllers and would
+// either deadlock on a closed workqueue or pile up event-handler closures
+// against a stale subscriber index).
+//
+// Returns when ctx is cancelled. The default-leader-election semantics
+// apply (i.e. the registry runs only on the leader manager), matching the
+// controllers that consume it.
+func (r *Registry) Start(ctx context.Context) error {
+	<-ctx.Done()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for gvk, entry := range r.informers {
+		entry.Stop()
+		delete(r.informers, gvk)
+		metrics.Informers.DeleteLabelValues(gvk.Group, gvk.Version, gvk.Kind)
+		metrics.Subscribers.DeleteLabelValues(gvk.Group, gvk.Version, gvk.Kind)
+	}
+	r.refcount = make(map[schema.GroupVersionKind]int)
+	return nil
+}
+
 func (r *Registry) hasSubscriberLocked(gvk schema.GroupVersionKind, owner OwnerKey) bool {
 	return r.index.Has(gvk, owner)
 }

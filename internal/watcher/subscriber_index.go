@@ -160,6 +160,29 @@ func (s *SubscriberIndex) Has(gvk schema.GroupVersionKind, owner OwnerKey) bool 
 	return has
 }
 
+// ClearGVK removes every subscriber for gvk and updates the reverse index.
+// Used by Registry.InvalidateGVK when a CRD is removed or de-Established:
+// the next reconcile re-runs discovery and re-Subscribes, so the existing
+// subscriber bookkeeping would otherwise leave the new Subscribe call
+// counting as a re-registration (refcount stays at zero, informer never
+// starts).
+func (s *SubscriberIndex) ClearGVK(gvk schema.GroupVersionKind) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	owners := s.byGVK[gvk]
+	delete(s.byGVK, gvk)
+	for owner := range owners {
+		gvks, ok := s.byOwner[owner]
+		if !ok {
+			continue
+		}
+		delete(gvks, gvk)
+		if len(gvks) == 0 {
+			delete(s.byOwner, owner)
+		}
+	}
+}
+
 // GVKsByOwner lists every GVK owner is subscribed to.
 func (s *SubscriberIndex) GVKsByOwner(owner OwnerKey) []schema.GroupVersionKind {
 	s.mu.RLock()
