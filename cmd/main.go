@@ -273,10 +273,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	// CRD watcher: wakes stalled owners on Established=True.
+	// CRD watcher: wakes stalled owners on Established=True transitions and
+	// invalidates discovery + registry state on CRD removal / de-Establish.
 	if err := (&controller.CRDWatcher{
 		Client:                  mgr.GetClient(),
 		Resolver:                resolver,
+		Registry:                registry,
 		MilestoneEnqueue:        milestoneSource,
 		ClusterMilestoneEnqueue: cmilestoneSource,
 	}).SetupWithManager(mgr); err != nil {

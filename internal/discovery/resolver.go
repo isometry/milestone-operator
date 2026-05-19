@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/isometry/milestone-operator/internal/metrics"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -63,7 +64,13 @@ func (c *clientDiscoverer) ServerResourcesForGroupVersion(_ context.Context, gv 
 // Resolver maps target identities to concrete GVK + scope.
 type Resolver interface {
 	Resolve(ctx context.Context, group, kind, version string) (schema.GroupVersionKind, apimeta.RESTScopeName, error)
+	// Invalidate clears the entire cache. Used on broad signals (e.g.
+	// apiserver discovery refresh).
 	Invalidate()
+	// InvalidateGroupKind drops every cache entry that matches (group, kind),
+	// regardless of stored version. Used by the CRD watcher when a single
+	// CRD is removed or de-Established.
+	InvalidateGroupKind(group, kind string)
 }
 
 type cacheKey struct{ group, kind, version string }
@@ -98,6 +105,7 @@ func NewResolver(d Discoverer, ttl time.Duration) Resolver {
 func (r *resolver) Resolve(ctx context.Context, group, kind, version string) (schema.GroupVersionKind, apimeta.RESTScopeName, error) {
 	key := cacheKey{group, kind, version}
 	if hit, ok := r.lookup(key); ok {
+		metrics.DiscoveryResolveTotal.WithLabelValues(metrics.DiscoveryResolveHit).Inc()
 		return hit.gvk, hit.scope, nil
 	}
 
@@ -110,6 +118,7 @@ func (r *resolver) Resolve(ctx context.Context, group, kind, version string) (sc
 		} else {
 			v, err := r.preferredVersion(ctx, group)
 			if err != nil {
+				metrics.DiscoveryResolveTotal.WithLabelValues(metrics.DiscoveryResolveNotEstablished).Inc()
 				return schema.GroupVersionKind{}, "", err
 			}
 			resolvedVersion = v
@@ -119,6 +128,7 @@ func (r *resolver) Resolve(ctx context.Context, group, kind, version string) (sc
 	gv := groupVersionString(group, resolvedVersion)
 	rl, err := r.d.ServerResourcesForGroupVersion(ctx, gv)
 	if err != nil {
+		metrics.DiscoveryResolveTotal.WithLabelValues(metrics.DiscoveryResolveNotEstablished).Inc()
 		return schema.GroupVersionKind{}, "", fmt.Errorf("%w: %s: %w", ErrGVKNotEstablished, gv, err)
 	}
 	for _, res := range rl.APIResources {
@@ -131,15 +141,32 @@ func (r *resolver) Resolve(ctx context.Context, group, kind, version string) (sc
 			scope = apimeta.RESTScopeNameNamespace
 		}
 		r.store(key, cacheEntry{gvk: gvk, scope: scope, expiry: r.now().Add(r.ttl)})
+		metrics.DiscoveryResolveTotal.WithLabelValues(metrics.DiscoveryResolveMiss).Inc()
 		return gvk, scope, nil
 	}
+	metrics.DiscoveryResolveTotal.WithLabelValues(metrics.DiscoveryResolveNotEstablished).Inc()
 	return schema.GroupVersionKind{}, "", fmt.Errorf("%w: kind %q not found in %s", ErrGVKNotEstablished, kind, gv)
 }
 
 func (r *resolver) Invalidate() {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.cache = make(map[cacheKey]cacheEntry)
+	r.mu.Unlock()
+	metrics.DiscoveryCacheSize.Set(0)
+}
+
+// InvalidateGroupKind drops every cache entry whose (group, kind) matches,
+// regardless of stored version. Safe to call when no matching entry exists.
+func (r *resolver) InvalidateGroupKind(group, kind string) {
+	r.mu.Lock()
+	for k := range r.cache {
+		if k.group == group && k.kind == kind {
+			delete(r.cache, k)
+		}
+	}
+	size := len(r.cache)
+	r.mu.Unlock()
+	metrics.DiscoveryCacheSize.Set(float64(size))
 }
 
 func (r *resolver) lookup(k cacheKey) (cacheEntry, bool) {
@@ -154,8 +181,10 @@ func (r *resolver) lookup(k cacheKey) (cacheEntry, bool) {
 
 func (r *resolver) store(k cacheKey, e cacheEntry) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.cache[k] = e
+	size := len(r.cache)
+	r.mu.Unlock()
+	metrics.DiscoveryCacheSize.Set(float64(size))
 }
 
 func (r *resolver) preferredVersion(ctx context.Context, group string) (string, error) {

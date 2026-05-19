@@ -242,28 +242,40 @@ func (r *Registry) GVKsByOwner(owner OwnerKey) []schema.GroupVersionKind {
 	return r.index.GVKsByOwner(owner)
 }
 
-// InvalidateGVK drops the informer entry for gvk and clears the subscriber
-// index for it, regardless of current refcount. Used by the CRD watcher
-// when a CRD is removed or de-Established: a subsequent reconcile for an
-// owner that still references this kind will re-Subscribe from a clean
-// state, starting a fresh informer (which will likely fail until the CRD
-// re-Establishes, at which point another wake comes through).
+// InvalidateGroupKind drops every informer entry whose group and kind match
+// and clears the subscriber index for each. Used by the CRD watcher when a
+// CRD is removed or de-Established: a CRD can serve multiple versions, so
+// the right unit is (group, kind), not a single GVK. A subsequent reconcile
+// for any owner that still references this kind will re-Subscribe from a
+// clean state.
 //
-// Safe to call when there is no informer for gvk (no-op).
-func (r *Registry) InvalidateGVK(gvk schema.GroupVersionKind) {
+// Safe to call when no matching informer exists (no-op).
+func (r *Registry) InvalidateGroupKind(group, kind string) {
 	r.mu.Lock()
-	entry, ok := r.informers[gvk]
-	if ok {
+	matched := make([]schema.GroupVersionKind, 0, 1)
+	for gvk := range r.informers {
+		if gvk.Group == group && gvk.Kind == kind {
+			matched = append(matched, gvk)
+		}
+	}
+	entries := make([]InformerEntry, 0, len(matched))
+	for _, gvk := range matched {
+		entries = append(entries, r.informers[gvk])
 		delete(r.informers, gvk)
 		delete(r.refcount, gvk)
 	}
 	r.mu.Unlock()
-	r.index.ClearGVK(gvk)
-	if ok {
+
+	for _, gvk := range matched {
+		r.index.ClearGVK(gvk)
+	}
+	for _, entry := range entries {
 		entry.Stop()
 	}
-	metrics.Informers.DeleteLabelValues(gvk.Group, gvk.Version, gvk.Kind)
-	metrics.Subscribers.DeleteLabelValues(gvk.Group, gvk.Version, gvk.Kind)
+	for _, gvk := range matched {
+		metrics.Informers.DeleteLabelValues(gvk.Group, gvk.Version, gvk.Kind)
+		metrics.Subscribers.DeleteLabelValues(gvk.Group, gvk.Version, gvk.Kind)
+	}
 }
 
 // Start implements manager.Runnable. The Registry participates in manager

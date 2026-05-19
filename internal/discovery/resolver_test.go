@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"github.com/isometry/milestone-operator/internal/discovery"
+	"github.com/isometry/milestone-operator/internal/metrics"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -242,6 +244,77 @@ func TestResolve_CoreGroupOmittedVersion(t *testing.T) {
 	}
 	if g := fd.groupsCalls.Load(); g != 0 {
 		t.Errorf("ServerGroups invoked %d times for core-group short-circuit; want 0", g)
+	}
+}
+
+// TestResolve_EmitsResolveOutcomes pins HI-1: every Resolve call must
+// increment milestone_discovery_resolve_total with the right outcome label
+// (hit, miss, not_established). Previously the counter was declared but
+// never written, so the metric was permanently zero.
+func TestResolve_EmitsResolveOutcomes(t *testing.T) {
+	fd := newFluxFake()
+	r := newResolver(t, fd, time.Hour)
+
+	miss := testutil.ToFloat64(metrics.DiscoveryResolveTotal.WithLabelValues(metrics.DiscoveryResolveMiss))
+	hit := testutil.ToFloat64(metrics.DiscoveryResolveTotal.WithLabelValues(metrics.DiscoveryResolveHit))
+	notEst := testutil.ToFloat64(metrics.DiscoveryResolveTotal.WithLabelValues(metrics.DiscoveryResolveNotEstablished))
+
+	// First Resolve: cache miss + successful refresh.
+	if _, _, err := r.Resolve(t.Context(), groupKustomize, kindKustomization, ""); err != nil {
+		t.Fatalf("first Resolve: %v", err)
+	}
+	// Second Resolve (same key): cache hit.
+	if _, _, err := r.Resolve(t.Context(), groupKustomize, kindKustomization, ""); err != nil {
+		t.Fatalf("second Resolve: %v", err)
+	}
+	// Third Resolve (unknown kind): not_established.
+	if _, _, err := r.Resolve(t.Context(), groupKustomize, "Missing", "v1"); err == nil {
+		t.Fatalf("expected error for missing kind")
+	}
+
+	if got := testutil.ToFloat64(metrics.DiscoveryResolveTotal.WithLabelValues(metrics.DiscoveryResolveMiss)); got != miss+1 {
+		t.Errorf("miss counter delta = %v, want 1", got-miss)
+	}
+	if got := testutil.ToFloat64(metrics.DiscoveryResolveTotal.WithLabelValues(metrics.DiscoveryResolveHit)); got != hit+1 {
+		t.Errorf("hit counter delta = %v, want 1", got-hit)
+	}
+	if got := testutil.ToFloat64(metrics.DiscoveryResolveTotal.WithLabelValues(metrics.DiscoveryResolveNotEstablished)); got != notEst+1 {
+		t.Errorf("not_established counter delta = %v, want 1", got-notEst)
+	}
+}
+
+// TestResolve_InvalidateGroupKind_DropsOnlyMatchingEntries pins MD-7's
+// resolver counterpart: invalidating one (group, kind) must not flush the
+// rest of the cache. Verified by inserting two cached entries and then
+// invalidating one.
+func TestResolve_InvalidateGroupKind_DropsOnlyMatchingEntries(t *testing.T) {
+	fd := newFluxFake()
+	r := newResolver(t, fd, time.Hour)
+	if _, _, err := r.Resolve(t.Context(), groupKustomize, kindKustomization, ""); err != nil {
+		t.Fatalf("Resolve kustomization: %v", err)
+	}
+	if _, _, err := r.Resolve(t.Context(), groupRBAC, "Role", ""); err != nil {
+		t.Fatalf("Resolve role: %v", err)
+	}
+
+	r.InvalidateGroupKind(groupKustomize, kindKustomization)
+
+	// The other entry should still be a hit (no additional ServerResources call).
+	before := fd.resourceCalls.Load()
+	if _, _, err := r.Resolve(t.Context(), groupRBAC, "Role", ""); err != nil {
+		t.Fatalf("Resolve role post-invalidate: %v", err)
+	}
+	if got := fd.resourceCalls.Load(); got != before {
+		t.Errorf("ServerResources called %d times after invalidate; want unchanged %d", got, before)
+	}
+
+	// The invalidated entry should be a miss (a fresh ServerResources call).
+	before = fd.resourceCalls.Load()
+	if _, _, err := r.Resolve(t.Context(), groupKustomize, kindKustomization, ""); err != nil {
+		t.Fatalf("Resolve kustomization post-invalidate: %v", err)
+	}
+	if got := fd.resourceCalls.Load(); got != before+1 {
+		t.Errorf("ServerResources delta = %d, want 1 (cache miss after InvalidateGroupKind)", got-before)
 	}
 }
 

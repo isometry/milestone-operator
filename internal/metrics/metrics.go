@@ -53,6 +53,22 @@ const (
 	FluxNotifyError     = "error"
 )
 
+// Result values for DiscoveryResolveTotal.
+const (
+	// DiscoveryResolveHit covers a successful cache hit (no apiserver call).
+	DiscoveryResolveHit = "hit"
+	// DiscoveryResolveMiss covers a cache miss that successfully refreshed.
+	DiscoveryResolveMiss = "miss"
+	// DiscoveryResolveNotEstablished covers a resolve that failed with
+	// ErrGVKNotEstablished — typically because the CRD is not installed.
+	DiscoveryResolveNotEstablished = "not_established"
+	// DiscoveryResolveError is reserved for future use when the resolver
+	// distinguishes apiserver-side errors (DiscoveryUnavailable) from
+	// missing-CRD errors. Today the resolver wraps every error as
+	// ErrGVKNotEstablished, so this bucket stays at zero.
+	DiscoveryResolveError = "error"
+)
+
 var (
 	// Informers gauges the number of active dynamic informers per GVK.
 	Informers = prometheus.NewGaugeVec(prometheus.GaugeOpts{

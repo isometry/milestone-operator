@@ -12,72 +12,145 @@ package controller
 
 import (
 	"context"
+	"errors"
+	"sync"
 
+	"github.com/go-logr/logr"
 	apiv1 "github.com/isometry/milestone-operator/api/v1"
 	"github.com/isometry/milestone-operator/internal/discovery"
 	"github.com/isometry/milestone-operator/internal/metrics"
 	"github.com/isometry/milestone-operator/internal/watcher"
 	apiextv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
-// CRDWatcher watches CustomResourceDefinitions and, on every Established=True
-// transition, invalidates the discovery cache and enqueues every Milestone
-// and ClusterMilestone that references the now-Established (group, kind).
-// Spec references are resolved by listing both CRDs and matching by group+kind.
+// RegistryInvalidator is the subset of *watcher.Registry the CRD watcher
+// depends on. Defined as an interface so tests can substitute a fake.
+type RegistryInvalidator interface {
+	InvalidateGroupKind(group, kind string)
+}
+
+// CRDWatcher watches CustomResourceDefinitions and reconciles the operator's
+// discovery cache and informer registry against the lifecycle of every CRD
+// that any Milestone or ClusterMilestone references.
 //
-// This complements the per-reconcile retry-with-backoff that would otherwise
-// be needed: instead of polling, we wake stalled owners precisely when the
-// CRD shows up.
+// Two transition kinds matter:
+//   - Established=True (CRD has just become resolvable): clear the cached
+//     discovery entry for (group, kind), drop any stale informer for the
+//     same, and wake every owner that references the kind so they
+//     re-resolve and re-subscribe.
+//   - Established=True → anything else (CRD removed, NamesAccepted lost,
+//     etc.): same actions, using the previously-recorded (group, kind).
+//     Without this the informer keeps a now-empty cache and combined with
+//     emptySetPolicy=Ready would flip the dependency to True against a
+//     vanished API surface.
+//
+// Transition tracking is per CRD name (== reconcile.Request name). Repeated
+// observations of the same Established=True state are idempotent — the cache
+// invalidate and wake only fire when state actually changes.
 type CRDWatcher struct {
 	client.Client
 	Resolver discovery.Resolver
+	// Registry drops informer entries for (group, kind) on CRD removal /
+	// de-Establish. Optional in tests.
+	Registry RegistryInvalidator
 	// MilestoneEnqueue and ClusterMilestoneEnqueue forward wake events
 	// directly into each controller's workqueue. The workqueue dedupes by
 	// key so an event storm collapses to a single reconcile.
 	MilestoneEnqueue        *watcher.EnqueueSource
 	ClusterMilestoneEnqueue *watcher.EnqueueSource
+
+	mu              sync.Mutex
+	lastEstablished map[string]groupKind // keyed by CRD metadata.name
 }
+
+type groupKind struct{ group, kind string }
 
 // +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch
 
-// Reconcile is invoked for every CRD change. We only react to Established=True
-// CRDs; absent or NotEstablished CRDs are ignored.
+// Reconcile is invoked for every CRD change. It computes the (prior, current)
+// state pair for this CRD and runs the cache-invalidate + owner-wake side
+// effects only on transitions.
 func (w *CRDWatcher) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
 	crd := &apiextv1.CustomResourceDefinition{}
-	if err := w.Get(ctx, req.NamespacedName, crd); err != nil {
-		if client.IgnoreNotFound(err) != nil {
+	getErr := w.Get(ctx, req.NamespacedName, crd)
+	if getErr != nil && client.IgnoreNotFound(getErr) != nil {
+		return ctrl.Result{}, getErr
+	}
+	missing := getErr != nil // NotFound: CRD has been deleted
+
+	var current groupKind
+	currentEstablished := false
+	if !missing {
+		current = groupKind{group: crd.Spec.Group, kind: crd.Spec.Names.Kind}
+		currentEstablished = crdEstablished(crd)
+	}
+
+	prior, hadPrior := w.swapLastEstablished(req.Name, current, currentEstablished, missing)
+
+	switch {
+	case currentEstablished && (!hadPrior || prior != current):
+		// Transition to Established (or the (group, kind) changed under us —
+		// unusual but possible with apiserver edits).
+		metrics.CRDEstablishedEvents.WithLabelValues(current.group, current.kind).Inc()
+		if err := w.applyTransition(ctx, log, current); err != nil {
 			return ctrl.Result{}, err
 		}
-		return ctrl.Result{}, nil
-	}
-	if !crdEstablished(crd) {
-		return ctrl.Result{}, nil
-	}
-
-	group := crd.Spec.Group
-	kind := crd.Spec.Names.Kind
-	metrics.CRDEstablishedEvents.WithLabelValues(group, kind).Inc()
-
-	// New CRD: clear the discovery cache so the next reconcile sees it.
-	if w.Resolver != nil {
-		w.Resolver.Invalidate()
+	case hadPrior && !currentEstablished:
+		// Transition away from Established (CRD gone, or status changed). Use
+		// the previously-recorded (group, kind) since `current` is empty when
+		// the CRD is missing.
+		if err := w.applyTransition(ctx, log, prior); err != nil {
+			return ctrl.Result{}, err
+		}
 	}
 
-	// Wake every Milestone and ClusterMilestone that references this kind.
-	if err := w.wakeMilestones(ctx, group, kind); err != nil {
-		log.Error(err, "wake milestones", "group", group, "kind", kind)
-	}
-	if err := w.wakeClusterMilestones(ctx, group, kind); err != nil {
-		log.Error(err, "wake clustermilestones", "group", group, "kind", kind)
-	}
 	return ctrl.Result{}, nil
+}
+
+// applyTransition runs the invalidate-and-wake side effects for a (group,
+// kind). Wake errors are joined and returned so controller-runtime backs
+// off and retries; otherwise a transient apiserver hiccup would leave
+// stalled owners waiting on the 30s stalled-requeue safety net.
+func (w *CRDWatcher) applyTransition(ctx context.Context, log logr.Logger, gk groupKind) error {
+	if w.Resolver != nil {
+		w.Resolver.InvalidateGroupKind(gk.group, gk.kind)
+	}
+	if w.Registry != nil {
+		w.Registry.InvalidateGroupKind(gk.group, gk.kind)
+	}
+	mErr := w.wakeMilestones(ctx, gk.group, gk.kind)
+	if mErr != nil {
+		log.Error(mErr, "wake milestones", "group", gk.group, "kind", gk.kind)
+	}
+	cErr := w.wakeClusterMilestones(ctx, gk.group, gk.kind)
+	if cErr != nil {
+		log.Error(cErr, "wake clustermilestones", "group", gk.group, "kind", gk.kind)
+	}
+	return errors.Join(mErr, cErr)
+}
+
+// swapLastEstablished records the latest observed (group, kind) for the CRD
+// and returns the prior state so the caller can decide whether a transition
+// fired. When the CRD is missing or not Established, the entry is cleared.
+func (w *CRDWatcher) swapLastEstablished(name string, current groupKind, currentEstablished, missing bool) (groupKind, bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.lastEstablished == nil {
+		w.lastEstablished = make(map[string]groupKind)
+	}
+	prior, had := w.lastEstablished[name]
+	if currentEstablished {
+		w.lastEstablished[name] = current
+	} else if missing || !currentEstablished {
+		delete(w.lastEstablished, name)
+	}
+	return prior, had
 }
 
 func (w *CRDWatcher) wakeMilestones(ctx context.Context, group, kind string) error {
@@ -152,7 +225,3 @@ func ownsClusterKind(deps []apiv1.ClusterDependencyRef, group, kind string) bool
 	}
 	return false
 }
-
-// Avoid an unused-import nag if the struct grows; metav1 is referenced by RBAC
-// markers that controller-gen rewrites during code generation.
-var _ = metav1.Now

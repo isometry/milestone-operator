@@ -46,4 +46,6 @@ const (
 	depHelmreleases   = "helmreleases"
 	widgetPlural      = "widgets"
 	depRoles          = "roles"
+	nameWave0         = "wave-0"
+	nameWave1         = "wave-1"
 )
