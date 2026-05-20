@@ -502,6 +502,95 @@ spec:
 			}, 1*time.Minute, 2*time.Second).Should(Succeed())
 		})
 
+		It("should grow Summary.Total when a namespace gains the selector label", func() {
+			nsA := "e2e-cm-evol-a"
+			nsB := "e2e-cm-evol-b"
+			cmName := "evol-test"
+
+			By("creating two namespaces, one labelled tier=platform")
+			Expect(kubectlApplyYAML(`
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ` + nsA + `
+  labels:
+    tier: platform
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ` + nsB + `
+`)).To(Succeed())
+			DeferCleanup(func() {
+				for _, ns := range []string{nsA, nsB} {
+					cmd := exec.Command("kubectl", "delete", "ns", ns, "--wait=false")
+					_, _ = utils.Run(cmd)
+				}
+				cmd := exec.Command("kubectl", "delete", "clustermilestone", cmName, "--ignore-not-found")
+				_, _ = utils.Run(cmd)
+			})
+
+			By("applying matching ConfigMaps in both namespaces")
+			Expect(kubectlApplyYAML(`
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cm-a
+  namespace: ` + nsA + `
+  labels:
+    milestone-test: evol
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cm-b
+  namespace: ` + nsB + `
+  labels:
+    milestone-test: evol
+`)).To(Succeed())
+
+			By("applying a ClusterMilestone scoped by namespaceSelector tier=platform")
+			Expect(kubectlApplyYAML(`
+apiVersion: milestone.as-code.io/v1
+kind: ClusterMilestone
+metadata:
+  name: ` + cmName + `
+spec:
+  dependsOn:
+    - name: configmaps
+      emptySetPolicy: NotReady
+      target:
+        kind: ConfigMap
+        selector:
+          matchLabels:
+            milestone-test: evol
+        namespaceSelector:
+          matchLabels:
+            tier: platform
+`)).To(Succeed())
+
+			By("expecting Summary.Total == 1 (only namespace a counts)")
+			Eventually(func(g Gomega) {
+				total, err := utils.Run(exec.Command("kubectl", "get", "clustermilestone", cmName,
+					"-o", "jsonpath={.status.summary.total}"))
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(total).To(Equal("1"), "Summary.Total pre-label")
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("labelling namespace b with tier=platform")
+			cmd := exec.Command("kubectl", "label", "ns", nsB, "tier=platform", "--overwrite")
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "label namespace b")
+
+			By("expecting Summary.Total to grow to 2")
+			Eventually(func(g Gomega) {
+				total, err := utils.Run(exec.Command("kubectl", "get", "clustermilestone", cmName,
+					"-o", "jsonpath={.status.summary.total}"))
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(total).To(Equal("2"), "Summary.Total post-label")
+			}, 1*time.Minute, 2*time.Second).Should(Succeed())
+		})
+
 		// TODO: Customize the e2e test suite with scenarios specific to your project.
 		// Consider applying sample/CR(s) and check their status and/or verifying
 		// the reconciliation by using the metrics, i.e.:
