@@ -32,7 +32,7 @@ type MilestoneReconciler struct {
 	EventSource *watcher.EnqueueSource
 }
 
-// +kubebuilder:rbac:groups=milestone.as-code.io,resources=milestones,verbs=get;list;watch;create;update;patch;delete
+// +kubebuilder:rbac:groups=milestone.as-code.io,resources=milestones,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups=milestone.as-code.io,resources=milestones/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=milestone.as-code.io,resources=milestones/finalizers,verbs=update
 

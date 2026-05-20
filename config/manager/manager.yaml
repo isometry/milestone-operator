@@ -61,7 +61,6 @@ spec:
       - command:
         - /manager
         args:
-          - --leader-elect
           - --health-probe-bind-address=:8081
         image: controller:latest
         name: manager
@@ -70,7 +69,13 @@ spec:
           allowPrivilegeEscalation: false
           capabilities:
             drop:
-            - "ALL"
+            - ALL
+          readOnlyRootFilesystem: true
+          runAsUser: 65532
+          runAsGroup: 65532
+          runAsNonRoot: true
+          seccompProfile:
+            type: RuntimeDefault
         livenessProbe:
           httpGet:
             path: /healthz
@@ -83,15 +88,16 @@ spec:
             port: 8081
           initialDelaySeconds: 5
           periodSeconds: 10
-        # TODO(user): Configure the resources accordingly based on the project requirements.
-        # More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+        # Starting point for a fleet of ~500 Milestones. Larger fleets should
+        # bump both request and limit; observe milestone_reconcile_stage_duration
+        # and the container's working set before tuning.
         resources:
           limits:
             cpu: 500m
-            memory: 128Mi
+            memory: 512Mi
           requests:
             cpu: 10m
-            memory: 64Mi
+            memory: 128Mi
         volumeMounts: []
       volumes: []
       serviceAccountName: controller-manager
