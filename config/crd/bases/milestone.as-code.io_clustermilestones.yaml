@@ -228,7 +228,8 @@ spec:
                       type: object
                       x-kubernetes-validations:
                       - message: namespaces and namespaceSelector are mutually exclusive
-                        rule: '!(size(self.namespaces) > 0 && has(self.namespaceSelector))'
+                        rule: '!(has(self.namespaces) && size(self.namespaces) > 0
+                          && has(self.namespaceSelector))'
                   required:
                   - name
                   - target
@@ -246,7 +247,10 @@ spec:
             description: ClusterMilestoneStatus is the observed state of ClusterMilestone.
             properties:
               conditions:
-                description: Conditions exposes Ready, Reconciling, and Stalled (kstatus-compatible).
+                description: |-
+                  Conditions exposes Ready and Stalled (kstatus-compatible). The
+                  operator may add additional condition types in future releases as
+                  additive (non-breaking) API changes.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.

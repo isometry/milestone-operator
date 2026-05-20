@@ -186,7 +186,10 @@ spec:
             description: MilestoneStatus is the observed state of Milestone.
             properties:
               conditions:
-                description: Conditions exposes Ready, Reconciling, and Stalled (kstatus-compatible).
+                description: |-
+                  Conditions exposes Ready and Stalled (kstatus-compatible). The
+                  operator may add additional condition types in future releases as
+                  additive (non-breaking) API changes.
                 items:
                   description: Condition contains details for one aspect of the current
                     state of this API Resource.

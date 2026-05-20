@@ -67,7 +67,7 @@ type TargetSpec struct {
 // one of Namespaces or NamespaceSelector may be set; both empty means
 // "all namespaces".
 //
-// +kubebuilder:validation:XValidation:rule="!(size(self.namespaces) > 0 && has(self.namespaceSelector))",message="namespaces and namespaceSelector are mutually exclusive"
+// +kubebuilder:validation:XValidation:rule="!(has(self.namespaces) && size(self.namespaces) > 0 && has(self.namespaceSelector))",message="namespaces and namespaceSelector are mutually exclusive"
 type ClusterTargetSpec struct {
 	TargetSpec `json:",inline"`
 
