@@ -330,6 +330,95 @@ spec:
 			}, 2*time.Minute, 5*time.Second).Should(Succeed())
 		})
 
+		It("should clear Stalled and converge after a late CRD install", func() {
+			testNS := "e2e-late-crd"
+			By("creating the test namespace")
+			cmd := exec.Command("kubectl", "create", "ns", testNS)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "create test namespace")
+			DeferCleanup(func() {
+				cmd := exec.Command("kubectl", "delete", "ns", testNS, "--wait=false")
+				_, _ = utils.Run(cmd)
+				cmd = exec.Command("kubectl", "delete", "crd", "lates.late.example.com", "--ignore-not-found")
+				_, _ = utils.Run(cmd)
+			})
+
+			By("applying a Milestone that targets a not-yet-installed CRD")
+			Expect(kubectlApplyYAML(`
+apiVersion: milestone.as-code.io/v1
+kind: Milestone
+metadata:
+  name: late-test
+  namespace: ` + testNS + `
+spec:
+  dependsOn:
+    - name: lates
+      emptySetPolicy: Unknown
+      target:
+        group: late.example.com
+        kind: Late
+`)).To(Succeed())
+
+			By("expecting Stalled=True before the CRD exists")
+			Eventually(func(g Gomega) {
+				status, err := utils.Run(exec.Command("kubectl", "get", "milestone", "late-test",
+					"-n", testNS,
+					"-o", `jsonpath={.status.conditions[?(@.type=="Stalled")].status}`))
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(status).To(Equal("True"), "Stalled condition")
+			}, 1*time.Minute, 5*time.Second).Should(Succeed())
+
+			By("installing the Late CRD")
+			Expect(kubectlApplyYAML(`
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: lates.late.example.com
+spec:
+  group: late.example.com
+  scope: Namespaced
+  names:
+    plural: lates
+    singular: late
+    kind: Late
+    listKind: LateList
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          x-kubernetes-preserve-unknown-fields: true
+      subresources:
+        status: {}
+`)).To(Succeed())
+
+			By("applying a matching Late resource")
+			Expect(kubectlApplyYAML(`
+apiVersion: late.example.com/v1
+kind: Late
+metadata:
+  name: late-1
+  namespace: ` + testNS + `
+`)).To(Succeed())
+
+			By("expecting Stalled to clear and Ready to converge")
+			Eventually(func(g Gomega) {
+				stalled, err := utils.Run(exec.Command("kubectl", "get", "milestone", "late-test",
+					"-n", testNS,
+					"-o", `jsonpath={.status.conditions[?(@.type=="Stalled")].status}`))
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(stalled).NotTo(Equal("True"), "Stalled should clear")
+
+				ready, err := utils.Run(exec.Command("kubectl", "get", "milestone", "late-test",
+					"-n", testNS,
+					"-o", `jsonpath={.status.conditions[?(@.type=="Ready")].status}`))
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(ready).To(Equal("True"), "Ready condition")
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
 		// TODO: Customize the e2e test suite with scenarios specific to your project.
 		// Consider applying sample/CR(s) and check their status and/or verifying
 		// the reconciliation by using the metrics, i.e.:
