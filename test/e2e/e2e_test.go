@@ -419,6 +419,89 @@ metadata:
 			}, 2*time.Minute, 5*time.Second).Should(Succeed())
 		})
 
+		It("should poke the Flux parent on Ready transition", func() {
+			testNS := "e2e-flux-poke"
+			By("installing the stub Kustomization CRD")
+			cmd := exec.Command("kubectl", "apply", "-f", "test/e2e/testdata/kustomization-crd.yaml")
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "install stub Kustomization CRD")
+			DeferCleanup(func() {
+				cmd := exec.Command("kubectl", "delete", "ns", testNS, "--wait=false")
+				_, _ = utils.Run(cmd)
+				cmd = exec.Command("kubectl", "delete", "-f", "test/e2e/testdata/kustomization-crd.yaml", "--ignore-not-found")
+				_, _ = utils.Run(cmd)
+			})
+
+			By("waiting for the CRD to become Established")
+			Eventually(func(g Gomega) {
+				status, err := utils.Run(exec.Command("kubectl", "get", "crd",
+					"kustomizations.kustomize.toolkit.fluxcd.io",
+					"-o", `jsonpath={.status.conditions[?(@.type=="Established")].status}`))
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(status).To(Equal("True"), "CRD Established")
+			}, 30*time.Second, 2*time.Second).Should(Succeed())
+
+			By("creating the test namespace")
+			cmd = exec.Command("kubectl", "create", "ns", testNS)
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "create test namespace")
+
+			By("applying a parent Kustomization and a matching ConfigMap")
+			Expect(kubectlApplyYAML(`
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: parent
+  namespace: ` + testNS + `
+spec:
+  interval: 5m
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: noop
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cm-flux
+  namespace: ` + testNS + `
+  labels:
+    milestone-test: flux-poke
+`)).To(Succeed())
+
+			By("applying a child Milestone labelled with the Flux parent reference")
+			Expect(kubectlApplyYAML(`
+apiVersion: milestone.as-code.io/v1
+kind: Milestone
+metadata:
+  name: child
+  namespace: ` + testNS + `
+  labels:
+    kustomize.toolkit.fluxcd.io/name: parent
+    kustomize.toolkit.fluxcd.io/namespace: ` + testNS + `
+spec:
+  dependsOn:
+    - name: configmaps
+      emptySetPolicy: NotReady
+      target:
+        kind: ConfigMap
+        selector:
+          matchLabels:
+            milestone-test: flux-poke
+`)).To(Succeed())
+
+			By("expecting the parent Kustomization to carry reconcile.fluxcd.io/requestedAt")
+			Eventually(func(g Gomega) {
+				ts, err := utils.Run(exec.Command("kubectl", "get", "kustomization", "parent",
+					"-n", testNS,
+					"-o", `jsonpath={.metadata.annotations.reconcile\.fluxcd\.io/requestedAt}`))
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(ts).NotTo(BeEmpty(), "reconcile.fluxcd.io/requestedAt annotation should be set")
+				_, perr := time.Parse(time.RFC3339Nano, ts)
+				g.Expect(perr).NotTo(HaveOccurred(), "annotation should be a valid RFC3339Nano timestamp")
+			}, 1*time.Minute, 2*time.Second).Should(Succeed())
+		})
+
 		// TODO: Customize the e2e test suite with scenarios specific to your project.
 		// Consider applying sample/CR(s) and check their status and/or verifying
 		// the reconciliation by using the metrics, i.e.:
