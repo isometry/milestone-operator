@@ -91,6 +91,8 @@ func TestRegister_AllMetricFamiliesPresent(t *testing.T) {
 	metrics.TargetResolveErrors.WithLabelValues(kindMilestone, "GVKNotEstablished").Inc()
 	metrics.CRDEstablishedEvents.WithLabelValues(groupKustomize, kindKustomization).Inc()
 	metrics.OwnersWoken.WithLabelValues("crd_established").Inc()
+	metrics.FluxNotifyTotal.WithLabelValues(kindMilestone, kindKustomization, metrics.FluxNotifySuccess).Inc()
+	metrics.StateCollectorErrors.WithLabelValues(kindMilestone).Inc()
 
 	families, err := reg.Gather()
 	if err != nil {
@@ -110,6 +112,8 @@ func TestRegister_AllMetricFamiliesPresent(t *testing.T) {
 		"milestone_target_resolve_errors_total",
 		"milestone_crd_established_events_total",
 		"milestone_owners_woken_total",
+		"milestone_flux_notify_total",
+		"milestone_state_collector_errors_total",
 	}
 	have := make(map[string]bool, len(families))
 	for _, mf := range families {

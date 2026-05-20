@@ -107,12 +107,14 @@ var (
 	}, []string{labelGroup, labelVersion, labelKind})
 
 	// EventDispatchDuration measures how long each informer event takes from
-	// receipt to enqueue completion.
+	// receipt to enqueue completion. Buckets cover the realistic in-process
+	// channel-dispatch range (1 µs to ~3 ms); the prior 0.1 ms–380 s range
+	// was inherited from a kubebuilder default and the long tail never fired.
 	EventDispatchDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: ns,
 		Name:      "event_dispatch_duration_seconds",
 		Help:      "Time from informer event receipt to subscriber enqueue completion.",
-		Buckets:   prometheus.ExponentialBuckets(0.0001, 2.5, 10),
+		Buckets:   prometheus.ExponentialBuckets(0.000001, 5, 6),
 	}, []string{labelGroup, labelVersion, labelKind})
 
 	// DiscoveryResolveTotal counts discovery resolve outcomes.
@@ -177,6 +179,17 @@ var (
 		Name:      "flux_notify_total",
 		Help:      "Reconcile-poke requests sent to Flux parents on Ready transitions.",
 	}, []string{labelController, labelParentKind, labelResult})
+
+	// StateCollectorErrors counts failures in the scrape-time state collector
+	// when listing Milestone/ClusterMilestone objects. Distinct from per-object
+	// reconcile failures: a non-zero value here means alerts that fire on the
+	// absence of Ready owners may be evaluating a stale or empty view of the
+	// cluster.
+	StateCollectorErrors = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: ns,
+		Name:      "state_collector_errors_total",
+		Help:      "Failures listing Milestone/ClusterMilestone objects at metric scrape time.",
+	}, []string{labelKind})
 )
 
 // All returns every collector defined by this package.
@@ -196,6 +209,7 @@ func All() []prometheus.Collector {
 		CRDEstablishedEvents,
 		OwnersWoken,
 		FluxNotifyTotal,
+		StateCollectorErrors,
 	}
 }
 

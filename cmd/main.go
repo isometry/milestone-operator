@@ -330,7 +330,10 @@ func main() {
 }
 
 // managerStateLister implements metrics.StateLister using the manager's cache
-// via client.Client. List errors yield empty slices so the scrape never fails.
+// via client.Client. List errors yield empty slices so the scrape never fails,
+// but the failure is logged and surfaced on the StateCollectorErrors counter
+// so alerts that watch for the absence of Ready owners can distinguish an
+// empty cluster from a broken read path.
 type managerStateLister struct {
 	client client.Client
 }
@@ -338,6 +341,8 @@ type managerStateLister struct {
 func (l *managerStateLister) ListMilestones(ctx context.Context) []apiv1.Milestone {
 	list := &apiv1.MilestoneList{}
 	if err := l.client.List(ctx, list); err != nil {
+		ctrl.Log.WithName("state-collector").Error(err, "list milestones for scrape")
+		metrics.StateCollectorErrors.WithLabelValues(controllerMilestone).Inc()
 		return nil
 	}
 	return list.Items
@@ -346,6 +351,8 @@ func (l *managerStateLister) ListMilestones(ctx context.Context) []apiv1.Milesto
 func (l *managerStateLister) ListClusterMilestones(ctx context.Context) []apiv1.ClusterMilestone {
 	list := &apiv1.ClusterMilestoneList{}
 	if err := l.client.List(ctx, list); err != nil {
+		ctrl.Log.WithName("state-collector").Error(err, "list clustermilestones for scrape")
+		metrics.StateCollectorErrors.WithLabelValues(controllerClusterMilestone).Inc()
 		return nil
 	}
 	return list.Items

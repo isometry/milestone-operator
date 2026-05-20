@@ -218,7 +218,6 @@ func TestStateCollector_DependencyResourcesPerStatusBucket(t *testing.T) {
 		"current":    1,
 		"inProgress": 2,
 		"failed":     1,
-		"total":      4,
 	}
 	for status, want := range cases {
 		got := valueAt(t, col, "milestone_dependency_resources", map[string]string{
@@ -228,6 +227,30 @@ func TestStateCollector_DependencyResourcesPerStatusBucket(t *testing.T) {
 		})
 		if got != want {
 			t.Errorf("status=%q gauge = %v, want %v", status, got, want)
+		}
+	}
+
+	// Total is intentionally not emitted — it's a derived quantity (sum of the
+	// other buckets). Verify no series carries status=total so the cardinality
+	// reduction is pinned.
+	reg := prometheus.NewRegistry()
+	if err := reg.Register(col); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() != "milestone_dependency_resources" {
+			continue
+		}
+		for _, m := range mf.GetMetric() {
+			for _, lp := range m.GetLabel() {
+				if lp.GetName() == keyStatus && lp.GetValue() == "total" {
+					t.Errorf("status=total series unexpectedly emitted: %v", m.GetLabel())
+				}
+			}
 		}
 	}
 }

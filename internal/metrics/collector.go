@@ -65,7 +65,7 @@ func NewStateCollector(ctx context.Context, lister StateLister) *StateCollector 
 		),
 		dependencyResources: prometheus.NewDesc(
 			"milestone_dependency_resources",
-			"Per-dependency resource counts by kstatus bucket; status label includes 'total'.",
+			"Per-dependency resource counts by kstatus bucket (current, inProgress, failed, notFound, terminating, unknown). Total is the sum across buckets and is derived at query time rather than emitted.",
 			[]string{labelOwnerKind, labelNamespace, labelName, labelDependency, labelTargetGroup, labelTargetKind, labelStatus}, nil,
 		),
 		dependencyReady: prometheus.NewDesc(
@@ -123,7 +123,6 @@ func (c *StateCollector) emit(ch chan<- prometheus.Metric, kind, namespace, name
 		emit := func(bucket string, v int32) {
 			ch <- prometheus.MustNewConstMetric(c.dependencyResources, prometheus.GaugeValue, float64(v), kind, namespace, name, d.Name, d.Group, d.Kind, bucket)
 		}
-		emit("total", d.Summary.Total)
 		emit("current", d.Summary.Current)
 		emit("inProgress", d.Summary.InProgress)
 		emit("failed", d.Summary.Failed)
