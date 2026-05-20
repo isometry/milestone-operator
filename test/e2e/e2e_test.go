@@ -22,6 +22,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -194,7 +195,7 @@ var _ = Describe("Manager", Ordered, func() {
 				cmd := exec.Command("kubectl", "get", "endpoints", metricsServiceName, "-n", namespace)
 				output, err := utils.Run(cmd)
 				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(ContainSubstring("8443"), "Metrics endpoint is not ready")
+				g.Expect(output).To(ContainSubstring("8080"), "Metrics endpoint is not ready")
 			}
 			Eventually(verifyMetricsEndpointReady).Should(Succeed())
 
@@ -219,7 +220,7 @@ var _ = Describe("Manager", Ordered, func() {
 							"name": "curl",
 							"image": "curlimages/curl:latest",
 							"command": ["/bin/sh", "-c"],
-							"args": ["curl -v -k -H 'Authorization: Bearer %s' https://%s.%s.svc.cluster.local:8443/metrics"],
+							"args": ["curl -v -H 'Authorization: Bearer %s' http://%s.%s.svc.cluster.local:8080/metrics"],
 							"securityContext": {
 								"allowPrivilegeEscalation": false,
 								"capabilities": {
@@ -258,6 +259,77 @@ var _ = Describe("Manager", Ordered, func() {
 
 		// +kubebuilder:scaffold:e2e-webhooks-checks
 
+		It("should reach Ready=True when its dependencies converge", func() {
+			testNS := "e2e-ready"
+			By("creating the test namespace")
+			cmd := exec.Command("kubectl", "create", "ns", testNS)
+			_, err := utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "create test namespace")
+			DeferCleanup(func() {
+				cmd := exec.Command("kubectl", "delete", "ns", testNS, "--wait=false")
+				_, _ = utils.Run(cmd)
+			})
+
+			By("applying three labelled ConfigMaps")
+			Expect(kubectlApplyYAML(`
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cm-a
+  namespace: ` + testNS + `
+  labels:
+    milestone-test: ready
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cm-b
+  namespace: ` + testNS + `
+  labels:
+    milestone-test: ready
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cm-c
+  namespace: ` + testNS + `
+  labels:
+    milestone-test: ready
+`)).To(Succeed())
+
+			By("applying a Milestone that targets the ConfigMaps")
+			Expect(kubectlApplyYAML(`
+apiVersion: milestone.as-code.io/v1
+kind: Milestone
+metadata:
+  name: ready-test
+  namespace: ` + testNS + `
+spec:
+  dependsOn:
+    - name: configmaps
+      emptySetPolicy: NotReady
+      target:
+        kind: ConfigMap
+        selector:
+          matchLabels:
+            milestone-test: ready
+`)).To(Succeed())
+
+			By("expecting Ready=True and Summary.Total == 3")
+			Eventually(func(g Gomega) {
+				status, err := utils.Run(exec.Command("kubectl", "get", "milestone", "ready-test",
+					"-n", testNS,
+					"-o", `jsonpath={.status.conditions[?(@.type=="Ready")].status}`))
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(status).To(Equal("True"), "Ready condition")
+
+				total, err := utils.Run(exec.Command("kubectl", "get", "milestone", "ready-test",
+					"-n", testNS, "-o", "jsonpath={.status.summary.total}"))
+				g.Expect(err).NotTo(HaveOccurred())
+				g.Expect(total).To(Equal("3"), "Summary.Total")
+			}, 2*time.Minute, 5*time.Second).Should(Succeed())
+		})
+
 		// TODO: Customize the e2e test suite with scenarios specific to your project.
 		// Consider applying sample/CR(s) and check their status and/or verifying
 		// the reconciliation by using the metrics, i.e.:
@@ -268,6 +340,14 @@ var _ = Describe("Manager", Ordered, func() {
 		// ))
 	})
 })
+
+// kubectlApplyYAML pipes the provided YAML manifest to `kubectl apply -f -`.
+func kubectlApplyYAML(manifest string) error {
+	cmd := exec.Command("kubectl", "apply", "-f", "-")
+	cmd.Stdin = strings.NewReader(manifest)
+	_, err := utils.Run(cmd)
+	return err
+}
 
 // serviceAccountToken returns a token for the specified service account in the given namespace.
 // It uses the Kubernetes TokenRequest API to generate a token by directly sending a request
