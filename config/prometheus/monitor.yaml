@@ -1,4 +1,11 @@
 # Prometheus Monitor Service (Metrics)
+#
+# Default install scrapes plain HTTP on :8080. The endpoint is still gated by
+# bearer-token authentication via the WithAuthenticationAndAuthorization
+# filter when --metrics-secure=true is set on the manager; here we scrape
+# without TLS so the kustomize default stays portable on clusters that don't
+# run cert-manager. Enable TLS by uncommenting monitor_tls_patch in
+# config/prometheus/kustomization.yaml.
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
@@ -11,16 +18,9 @@ metadata:
 spec:
   endpoints:
     - path: /metrics
-      port: https # Ensure this is the name of the port that exposes HTTPS metrics
-      scheme: https
+      port: http
+      scheme: http
       bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
-      tlsConfig:
-        # TODO(user): The option insecureSkipVerify: true is not recommended for production since it disables
-        # certificate verification, exposing the system to potential man-in-the-middle attacks.
-        # For production environments, it is recommended to use cert-manager for automatic TLS certificate management.
-        # To apply this configuration, enable cert-manager and use the patch located at config/prometheus/servicemonitor_tls_patch.yaml,
-        # which securely references the certificate from the 'metrics-server-cert' secret.
-        insecureSkipVerify: true
   selector:
     matchLabels:
       control-plane: controller-manager

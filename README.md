@@ -115,6 +115,24 @@ A starter `ServiceMonitor` and `PrometheusRule` ship in
 [`config/prometheus/`](./config/prometheus/); a sample Grafana dashboard
 JSON is in [`config/grafana/`](./config/grafana/).
 
+### Metrics endpoint posture
+
+The default install exposes `/metrics` over plain HTTP on `:8080`. The
+endpoint is still gated by bearer-token authentication and authorization
+via controller-runtime's `WithAuthenticationAndAuthorization` filter
+whenever `--metrics-secure=true`; that gate is independent of TLS.
+
+To enable TLS with cert-manager-managed certificates:
+
+1. Install cert-manager in the target cluster.
+2. In [`config/default/kustomization.yaml`](./config/default/kustomization.yaml),
+   uncomment the `cert_metrics_manager_patch.yaml` and
+   `metrics_service_tls_patch.yaml` patches.
+3. In [`config/prometheus/kustomization.yaml`](./config/prometheus/kustomization.yaml),
+   uncomment the `monitor_tls_patch.yaml` entry under `patches`.
+4. Re-deploy. The manager will then listen on `:8443` and the
+   `ServiceMonitor` will scrape HTTPS with mTLS.
+
 ## Getting started
 
 ### Prerequisites
@@ -157,6 +175,13 @@ and re-deploy.
 For restricted clusters, replace that ClusterRoleBinding with a narrower
 role covering only the kinds you intend to reference from
 `spec.dependsOn[].target.group/kind`.
+
+### Resource baseline
+
+The shipped Deployment requests `128Mi` memory and limits to `512Mi`. That
+is a starting point for a fleet of roughly 500 Milestones; observe
+`milestone_reconcile_stage_duration_seconds` and container working-set
+size before tuning for larger fleets.
 
 ## Design
 

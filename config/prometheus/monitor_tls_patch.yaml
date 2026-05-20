@@ -1,19 +1,28 @@
-# Patch for Prometheus ServiceMonitor to enable secure TLS configuration
-# using certificates managed by cert-manager
+# Promotes the ServiceMonitor scrape from plain HTTP (the default) to HTTPS
+# with cert-manager-managed certificates. Apply by uncommenting the
+# `monitor_tls_patch.yaml` entry in config/prometheus/kustomization.yaml
+# alongside the metrics_service_tls_patch.yaml and cert_metrics_manager_patch
+# in config/default.
 - op: replace
-  path: /spec/endpoints/0/tlsConfig
+  path: /spec/endpoints/0
   value:
-    # SERVICE_NAME and SERVICE_NAMESPACE will be substituted by kustomize
-    serverName: SERVICE_NAME.SERVICE_NAMESPACE.svc
-    insecureSkipVerify: false
-    ca:
-      secret:
+    path: /metrics
+    port: https
+    scheme: https
+    bearerTokenFile: /var/run/secrets/kubernetes.io/serviceaccount/token
+    tlsConfig:
+      # SERVICE_NAME and SERVICE_NAMESPACE will be substituted by kustomize
+      # replacements when cert_metrics_manager_patch.yaml is enabled.
+      serverName: SERVICE_NAME.SERVICE_NAMESPACE.svc
+      insecureSkipVerify: false
+      ca:
+        secret:
+          name: metrics-server-cert
+          key: ca.crt
+      cert:
+        secret:
+          name: metrics-server-cert
+          key: tls.crt
+      keySecret:
         name: metrics-server-cert
-        key: ca.crt
-    cert:
-      secret:
-        name: metrics-server-cert
-        key: tls.crt
-    keySecret:
-      name: metrics-server-cert
-      key: tls.key
+        key: tls.key

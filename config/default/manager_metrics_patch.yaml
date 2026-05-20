@@ -1,4 +1,12 @@
-# This patch adds the args to allow exposing the metrics endpoint using HTTPS
+# Exposes the metrics endpoint on plain HTTP. Bearer-token authentication and
+# authorization still gate access via WithAuthenticationAndAuthorization when
+# --metrics-secure=true; here we ship with HTTP and rely on the bearer-token
+# filter being a no-op. Enable TLS by uncommenting cert_metrics_manager_patch
+# in config/default/kustomization.yaml and monitor_tls_patch in
+# config/prometheus/kustomization.yaml.
 - op: add
   path: /spec/template/spec/containers/0/args/0
-  value: --metrics-bind-address=:8443
+  value: --metrics-bind-address=:8080
+- op: add
+  path: /spec/template/spec/containers/0/args/1
+  value: --metrics-secure=false

@@ -1,0 +1,10 @@
+# Renames the metrics Service port from http/8080 to https/8443 for the TLS
+# opt-in path. Uncomment in config/default/kustomization.yaml alongside
+# cert_metrics_manager_patch.yaml and config/prometheus/monitor_tls_patch.yaml.
+- op: replace
+  path: /spec/ports/0
+  value:
+    name: https
+    port: 8443
+    protocol: TCP
+    targetPort: 8443

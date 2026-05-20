@@ -1,5 +1,6 @@
 # Build the manager binary
-FROM golang:1.24 AS builder
+FROM golang:1.26 AS builder
+ENV GOTOOLCHAIN=local
 ARG TARGETOS
 ARG TARGETARCH
 

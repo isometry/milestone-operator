@@ -42,11 +42,16 @@ patches:
     kind: Deployment
 
 # Uncomment the patches line if you enable Metrics and CertManager
-# [METRICS-WITH-CERTS] To enable metrics protected with certManager, uncomment the following line.
-# This patch will protect the metrics with certManager self-signed certs.
+# [METRICS-WITH-CERTS] To enable metrics protected with certManager, uncomment
+# both of the following patches. They flip the manager args + Service port
+# from plain HTTP :8080 to HTTPS :8443 and mount the cert-manager certs.
 #- path: cert_metrics_manager_patch.yaml
 #  target:
 #    kind: Deployment
+#- path: metrics_service_tls_patch.yaml
+#  target:
+#    kind: Service
+#    name: controller-manager-metrics-service
 
 # [WEBHOOK] To enable webhook, uncomment all the sections with [WEBHOOK] prefix including the one in
 # crd/kustomization.yaml

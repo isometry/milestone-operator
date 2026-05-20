@@ -1,6 +1,18 @@
-# This patch adds the args, volumes, and ports to allow the manager to use the metrics-server certs.
+# Promotes the metrics endpoint from plain HTTP (the default) to HTTPS with
+# cert-manager-managed certificates. Apply via kustomize by uncommenting the
+# `cert_metrics_manager_patch.yaml` entry in config/default/kustomization.yaml
+# alongside the cert-manager resources, the metrics_service_tls_patch.yaml,
+# and config/prometheus/monitor_tls_patch.yaml.
 
-# Add the volumeMount for the metrics-server certs
+# Replace the plain-HTTP bind-address baseline from manager_metrics_patch.yaml.
+- op: replace
+  path: /spec/template/spec/containers/0/args/0
+  value: --metrics-bind-address=:8443
+- op: replace
+  path: /spec/template/spec/containers/0/args/1
+  value: --metrics-secure=true
+
+# Mount the cert-manager-issued certs at /tmp/k8s-metrics-server/metrics-certs.
 - op: add
   path: /spec/template/spec/containers/0/volumeMounts/-
   value:
@@ -8,12 +20,10 @@
     name: metrics-certs
     readOnly: true
 
-# Add the --metrics-cert-path argument for the metrics server
 - op: add
   path: /spec/template/spec/containers/0/args/-
   value: --metrics-cert-path=/tmp/k8s-metrics-server/metrics-certs
 
-# Add the metrics-server certs volume configuration
 - op: add
   path: /spec/template/spec/volumes/-
   value:
