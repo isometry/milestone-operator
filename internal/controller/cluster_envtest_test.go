@@ -15,6 +15,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"maps"
 	"strings"
 	"testing"
 	"time"
@@ -85,10 +86,7 @@ func nsName(t *testing.T, suffix string) string {
 	base := strings.ReplaceAll(strings.ToLower(t.Name()), "_", "-")
 	// Reserve room for "-<suffix>" plus a 9-char hash hop ("-xxxxxxxx").
 	const tagLen = 9
-	maxBase := 63 - len(suffix) - 1 - tagLen
-	if maxBase < 1 {
-		maxBase = 1
-	}
+	maxBase := max(63-len(suffix)-1-tagLen, 1)
 	if len(base) > maxBase {
 		sum := sha256.Sum256([]byte(base))
 		base = base[:maxBase] + "-" + hex.EncodeToString(sum[:4])
@@ -118,9 +116,7 @@ func labelNamespace(t *testing.T, name string, labels map[string]string) {
 	if ns.Labels == nil {
 		ns.Labels = map[string]string{}
 	}
-	for k, v := range labels {
-		ns.Labels[k] = v
-	}
+	maps.Copy(ns.Labels, labels)
 	if err := envtestClient.Update(context.Background(), ns); err != nil {
 		t.Fatalf("label namespace %s: %v", name, err)
 	}

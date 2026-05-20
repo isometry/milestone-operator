@@ -237,7 +237,7 @@ func TestCRDWatcher_RepeatEstablishedTrue_Idempotent(t *testing.T) {
 	w := &controller.CRDWatcher{Client: c, Resolver: res, Registry: reg, MilestoneEnqueue: mSrc, ClusterMilestoneEnqueue: cSrc}
 	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: crd.Name}}
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if _, err := w.Reconcile(context.Background(), req); err != nil {
 			t.Fatalf("Reconcile %d: %v", i, err)
 		}

@@ -34,8 +34,7 @@ func TestEnqueueSource_PostStartEnqueueLandsInWorkqueue(t *testing.T) {
 	q := newReconcileQueue()
 	defer q.ShutDown()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 	if err := src.Start(ctx, q); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
