@@ -30,12 +30,16 @@ The watcher layer is the load-bearing piece: **one dynamic informer per
 unique GVK** (`internal/watcher/registry.go`), refcounted across
 Milestone/ClusterMilestone owners. A separate CRD-watch controller wakes
 stalled owners on `Established=True` instead of polling. Dependency events
-flow back to owners via per-controller `event.GenericEvent` channels fed
-by the registry's `EnqueueFunc`.
+flow back to owners via per-controller `*watcher.EnqueueSource` (a
+`source.TypedSource[reconcile.Request]`) that pushes directly into each
+controller's workqueue; the workqueue dedupes by key so event storms
+collapse to a single reconcile.
 
-Status surfaces three kstatus-compatible conditions: `Ready` (aggregate),
-`Reconciling`, and `Stalled` (independent of Ready). Per-dependency
-`emptySetPolicy` controls how an empty resource set is reported. Status
+Status surfaces two kstatus-compatible conditions: `Ready` (aggregate) and
+`Stalled` (independent of Ready). `Reconciling` is reserved
+(`api/v1/shared_types.go`) but intentionally not emitted today — a
+future two-phase patch may use it. Per-dependency `emptySetPolicy`
+controls how an empty resource set is reported. Status
 patching is idempotent: identical reconciles produce no resourceVersion
 churn (verified in tests). `status.dependsOn` is a listmap keyed by `name`,
 sorted by `name` before assignment so `reflect.DeepEqual` stays stable.
@@ -45,7 +49,7 @@ Spec shape: `spec.dependsOn[]` is a non-atomic list of
 label selector (plus `namespaces` / `namespaceSelector` on
 ClusterMilestone). `name` is the listmap key — kebab-case, RFC-1123 label.
 
-Metrics are first-class. `internal/metrics/metrics.go` defines a 13-family
+Metrics are first-class. `internal/metrics/metrics.go` defines a 15-family
 inventory; `internal/metrics/collector.go` is a lister-backed collector
 emitting per-object gauges at scrape time. All registered against the
 controller-runtime registry — never a separate `/metrics` server.

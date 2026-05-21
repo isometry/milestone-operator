@@ -25,3 +25,7 @@ go.work
 *.swp
 *.swo
 *~
+
+# local agent/tooling state
+/.serena/
+/.claude/
