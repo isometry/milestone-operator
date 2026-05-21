@@ -606,10 +606,8 @@ func (r *Reconciler[T]) applyStalledFromErrors(sb *apiv1.MilestoneStatusBase, er
 }
 
 func readyConditionStatus(sb *apiv1.MilestoneStatusBase) metav1.ConditionStatus {
-	for _, c := range sb.Conditions {
-		if c.Type == apiv1.ConditionReady {
-			return c.Status
-		}
+	if c := apimeta.FindStatusCondition(sb.Conditions, apiv1.ConditionReady); c != nil {
+		return c.Status
 	}
 	return metav1.ConditionUnknown
 }

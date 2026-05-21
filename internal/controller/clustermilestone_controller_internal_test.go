@@ -13,6 +13,7 @@ package controller
 import (
 	"testing"
 
+	apiv1 "github.com/isometry/milestone-operator/api/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/event"
@@ -44,5 +45,48 @@ func TestNamespaceMembershipPredicate(t *testing.T) {
 	}
 	if p.Generic(event.GenericEvent{Object: nsA}) {
 		t.Errorf("Generic events have no membership semantics; must not wake the controller")
+	}
+}
+
+func TestReadyConditionStatus(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []metav1.Condition
+		want metav1.ConditionStatus
+	}{
+		{name: "nil conditions", in: nil, want: metav1.ConditionUnknown},
+		{name: "empty conditions", in: []metav1.Condition{}, want: metav1.ConditionUnknown},
+		{
+			name: "only Stalled present",
+			in:   []metav1.Condition{{Type: apiv1.ConditionStalled, Status: metav1.ConditionFalse}},
+			want: metav1.ConditionUnknown,
+		},
+		{
+			name: "Ready=True",
+			in: []metav1.Condition{
+				{Type: apiv1.ConditionStalled, Status: metav1.ConditionFalse},
+				{Type: apiv1.ConditionReady, Status: metav1.ConditionTrue},
+			},
+			want: metav1.ConditionTrue,
+		},
+		{
+			name: "Ready=False",
+			in:   []metav1.Condition{{Type: apiv1.ConditionReady, Status: metav1.ConditionFalse}},
+			want: metav1.ConditionFalse,
+		},
+		{
+			name: "Ready=Unknown",
+			in:   []metav1.Condition{{Type: apiv1.ConditionReady, Status: metav1.ConditionUnknown}},
+			want: metav1.ConditionUnknown,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sb := &apiv1.MilestoneStatusBase{Conditions: tc.in}
+			got := readyConditionStatus(sb)
+			if got != tc.want {
+				t.Errorf("readyConditionStatus = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }

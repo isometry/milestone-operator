@@ -106,6 +106,13 @@ type DependencyRef struct {
 	Target TargetSpec `json:"target"`
 }
 
+// TargetGroupKind returns the (group, kind) pair of this dependency's
+// target. Used by callers that index dependencies by API identity without
+// caring about the surrounding spec shape.
+func (d DependencyRef) TargetGroupKind() (string, string) {
+	return d.Target.Group, d.Target.Kind
+}
+
 // ClusterDependencyRef is the cluster-scoped variant of DependencyRef.
 type ClusterDependencyRef struct {
 	// Name identifies this dependency. Used as the listmap key in
@@ -127,6 +134,13 @@ type ClusterDependencyRef struct {
 	// including per-dependency namespace scoping.
 	// +kubebuilder:validation:Required
 	Target ClusterTargetSpec `json:"target"`
+}
+
+// TargetGroupKind returns the (group, kind) pair of this dependency's
+// target. Mirrors DependencyRef.TargetGroupKind so a generic predicate
+// can range over either ref type.
+func (d ClusterDependencyRef) TargetGroupKind() (string, string) {
+	return d.Target.Group, d.Target.Kind
 }
 
 // Summary holds aggregate kstatus counters for a set of resources. All

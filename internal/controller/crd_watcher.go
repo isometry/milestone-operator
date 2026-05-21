@@ -163,7 +163,7 @@ func (w *CRDWatcher) wakeMilestones(ctx context.Context, group, kind string) err
 	}
 	for i := range list.Items {
 		m := &list.Items[i]
-		if !ownsKind(m.Spec.DependsOn, group, kind) {
+		if !ownsGroupKind(m.Spec.DependsOn, group, kind) {
 			continue
 		}
 		w.MilestoneEnqueue.Enqueue(reconcile.Request{NamespacedName: client.ObjectKeyFromObject(m)})
@@ -182,7 +182,7 @@ func (w *CRDWatcher) wakeClusterMilestones(ctx context.Context, group, kind stri
 	}
 	for i := range list.Items {
 		cm := &list.Items[i]
-		if !ownsClusterKind(cm.Spec.DependsOn, group, kind) {
+		if !ownsGroupKind(cm.Spec.DependsOn, group, kind) {
 			continue
 		}
 		w.ClusterMilestoneEnqueue.Enqueue(reconcile.Request{NamespacedName: client.ObjectKeyFromObject(cm)})
@@ -208,18 +208,17 @@ func crdEstablished(crd *apiextv1.CustomResourceDefinition) bool {
 	return false
 }
 
-func ownsKind(deps []apiv1.DependencyRef, group, kind string) bool {
-	for i := range deps {
-		if deps[i].Target.Group == group && deps[i].Target.Kind == kind {
-			return true
-		}
-	}
-	return false
+// targetIdentifier is the minimal shape ownsGroupKind needs: a
+// dependency entry that can report its target's (group, kind). Implemented
+// by both apiv1.DependencyRef and apiv1.ClusterDependencyRef.
+type targetIdentifier interface {
+	TargetGroupKind() (string, string)
 }
 
-func ownsClusterKind(deps []apiv1.ClusterDependencyRef, group, kind string) bool {
+func ownsGroupKind[T targetIdentifier](deps []T, group, kind string) bool {
 	for i := range deps {
-		if deps[i].Target.Group == group && deps[i].Target.Kind == kind {
+		g, k := deps[i].TargetGroupKind()
+		if g == group && k == kind {
 			return true
 		}
 	}
