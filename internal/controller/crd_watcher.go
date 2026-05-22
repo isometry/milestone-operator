@@ -21,6 +21,7 @@ import (
 	"github.com/isometry/milestone-operator/internal/metrics"
 	"github.com/isometry/milestone-operator/internal/watcher"
 	apiextv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
@@ -161,9 +162,10 @@ func (w *CRDWatcher) wakeMilestones(ctx context.Context, group, kind string) err
 	if err := w.List(ctx, list); err != nil {
 		return err
 	}
+	gk := schema.GroupKind{Group: group, Kind: kind}
 	for i := range list.Items {
 		m := &list.Items[i]
-		if !ownsGroupKind(m.Spec.DependsOn, group, kind) {
+		if !anyTargetMatches(m.Spec.DependsOn, gk) {
 			continue
 		}
 		w.MilestoneEnqueue.Enqueue(reconcile.Request{NamespacedName: client.ObjectKeyFromObject(m)})
@@ -180,9 +182,10 @@ func (w *CRDWatcher) wakeClusterMilestones(ctx context.Context, group, kind stri
 	if err := w.List(ctx, list); err != nil {
 		return err
 	}
+	gk := schema.GroupKind{Group: group, Kind: kind}
 	for i := range list.Items {
 		cm := &list.Items[i]
-		if !ownsGroupKind(cm.Spec.DependsOn, group, kind) {
+		if !anyClusterTargetMatches(cm.Spec.DependsOn, gk) {
 			continue
 		}
 		w.ClusterMilestoneEnqueue.Enqueue(reconcile.Request{NamespacedName: client.ObjectKeyFromObject(cm)})
@@ -208,17 +211,18 @@ func crdEstablished(crd *apiextv1.CustomResourceDefinition) bool {
 	return false
 }
 
-// targetIdentifier is the minimal shape ownsGroupKind needs: a
-// dependency entry that can report its target's (group, kind). Implemented
-// by both apiv1.DependencyRef and apiv1.ClusterDependencyRef.
-type targetIdentifier interface {
-	TargetGroupKind() (string, string)
+func anyTargetMatches(deps []apiv1.DependencyRef, gk schema.GroupKind) bool {
+	for i := range deps {
+		if deps[i].Target.GroupKind() == gk {
+			return true
+		}
+	}
+	return false
 }
 
-func ownsGroupKind[T targetIdentifier](deps []T, group, kind string) bool {
+func anyClusterTargetMatches(deps []apiv1.ClusterDependencyRef, gk schema.GroupKind) bool {
 	for i := range deps {
-		g, k := deps[i].TargetGroupKind()
-		if g == group && k == kind {
+		if deps[i].Target.GroupKind() == gk {
 			return true
 		}
 	}

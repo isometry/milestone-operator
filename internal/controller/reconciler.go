@@ -180,7 +180,7 @@ func (r *Reconciler[T]) ReconcileObject(ctx context.Context, obj T) (ctrl.Result
 		log.V(1).Info("status unchanged", "ready", readyConditionStatus(adapter.Status()))
 	}
 
-	if r.isStalled(adapter.Status()) {
+	if apimeta.IsStatusConditionTrue(adapter.Status().Conditions, apiv1.ConditionStalled) {
 		log.V(1).Info("stalled; requeuing", "after", stalledRequeue)
 		return ctrl.Result{RequeueAfter: stalledRequeue}, nil
 	}
@@ -476,15 +476,6 @@ func (r *Reconciler[T]) stalledErrorCap() int {
 		return defaultStalledErrorCap
 	}
 	return r.StalledErrorCap
-}
-
-func (r *Reconciler[T]) isStalled(sb *apiv1.MilestoneStatusBase) bool {
-	for _, c := range sb.Conditions {
-		if c.Type == apiv1.ConditionStalled && c.Status == metav1.ConditionTrue {
-			return true
-		}
-	}
-	return false
 }
 
 // --- helpers (pure) ---
