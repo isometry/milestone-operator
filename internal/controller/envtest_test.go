@@ -178,9 +178,17 @@ func depStatusByName(m *apiv1.Milestone, name string) (apiv1.DependencyStatus, b
 }
 
 // 1. Happy path: a Milestone with one all-Current Widget dependency
-// converges to Ready=True.
+// converges to Ready=True. Also pins two non-functional invariants against
+// regression:
+//   - M1: the Flux notifier fires exactly once on the Unknown→True transition.
+//   - M4: a second reconcile against unchanged state leaves the milestone's
+//     resourceVersion stable (apiserver-observable idempotency) and does not
+//     re-fire the notifier.
 func TestEnvtest_HappyPath_AllCurrent(t *testing.T) {
 	fix := newEnvFixture(t)
+	notifier := &fakeFluxNotifier{}
+	fix.reconciler.FluxNotifier = notifier
+
 	createWidget(t, fix.namespace, "w1", statusTrue)
 
 	m := createMilestone(t, fix.namespace, "happy", []apiv1.DependencyRef{{
@@ -203,6 +211,31 @@ func TestEnvtest_HappyPath_AllCurrent(t *testing.T) {
 		}
 		return nil
 	})
+
+	// M1: the Unknown→True transition fired the notifier exactly once over
+	// the entire convergence sequence. Subsequent idempotent reconciles in
+	// the loop must NOT have ticked the counter.
+	if got := len(notifier.calls); got != 1 {
+		t.Fatalf("flux notifier calls after convergence = %d, want 1 (M1)", got)
+	}
+
+	// M4: snapshot resourceVersion after convergence, run one more reconcile,
+	// and assert nothing reached etcd. This is stronger than the unit-test
+	// idempotency check in reconciler_test.go because it observes the live
+	// apiserver, not the operator's in-memory diff view.
+	settled := refresh(t, m)
+	rvBefore := settled.ResourceVersion
+	if _, err := fix.reconciler.ReconcileObject(t.Context(), settled); err != nil {
+		t.Fatalf("idempotent reconcile: %v", err)
+	}
+	after := refresh(t, m)
+	if after.ResourceVersion != rvBefore {
+		t.Errorf("resourceVersion changed across no-op reconcile: %q → %q (M4: status-patch idempotency leaked)",
+			rvBefore, after.ResourceVersion)
+	}
+	if got := len(notifier.calls); got != 1 {
+		t.Errorf("flux notifier calls after idempotent reconcile = %d, want 1 (M4: notifier fired despite stable state)", got)
+	}
 }
 
 // 2. Empty selector with NotReady policy yields Ready=False.

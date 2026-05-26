@@ -92,7 +92,7 @@ func (w *CRDWatcher) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 		currentEstablished = crdEstablished(crd)
 	}
 
-	prior, hadPrior := w.swapLastEstablished(req.Name, current, currentEstablished, missing)
+	prior, hadPrior := w.swapLastEstablished(req.Name, current, currentEstablished)
 
 	switch {
 	case currentEstablished && (!hadPrior || prior != current):
@@ -139,7 +139,7 @@ func (w *CRDWatcher) applyTransition(ctx context.Context, log logr.Logger, gk gr
 // swapLastEstablished records the latest observed (group, kind) for the CRD
 // and returns the prior state so the caller can decide whether a transition
 // fired. When the CRD is missing or not Established, the entry is cleared.
-func (w *CRDWatcher) swapLastEstablished(name string, current groupKind, currentEstablished, missing bool) (groupKind, bool) {
+func (w *CRDWatcher) swapLastEstablished(name string, current groupKind, currentEstablished bool) (groupKind, bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	if w.lastEstablished == nil {
@@ -148,7 +148,7 @@ func (w *CRDWatcher) swapLastEstablished(name string, current groupKind, current
 	prior, had := w.lastEstablished[name]
 	if currentEstablished {
 		w.lastEstablished[name] = current
-	} else if missing || !currentEstablished {
+	} else {
 		delete(w.lastEstablished, name)
 	}
 	return prior, had
