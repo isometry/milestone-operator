@@ -44,8 +44,6 @@ const metricsServiceName = "milestone-operator-controller-manager-metrics-servic
 const metricsRoleBindingName = "milestone-operator-metrics-binding"
 
 var _ = Describe("Manager", Ordered, func() {
-	var controllerPodName string
-
 	// Before running the tests, set up the environment by creating the namespace,
 	// enforce the restricted security policy to the namespace, installing CRDs,
 	// and deploying the controller.
@@ -98,7 +96,8 @@ var _ = Describe("Manager", Ordered, func() {
 		specReport := CurrentSpecReport()
 		if specReport.Failed() {
 			By("Fetching controller manager pod logs")
-			cmd := exec.Command("kubectl", "logs", controllerPodName, "-n", namespace)
+			cmd := exec.Command("kubectl", "logs", "-l", "control-plane=controller-manager",
+				"-n", namespace, "--tail=-1")
 			controllerLogs, err := utils.Run(cmd)
 			if err == nil {
 				_, _ = fmt.Fprintf(GinkgoWriter, "Controller logs:\n %s", controllerLogs)
@@ -125,7 +124,8 @@ var _ = Describe("Manager", Ordered, func() {
 			}
 
 			By("Fetching controller manager pod description")
-			cmd = exec.Command("kubectl", "describe", "pod", controllerPodName, "-n", namespace)
+			cmd = exec.Command("kubectl", "describe", "pods", "-l", "control-plane=controller-manager",
+				"-n", namespace)
 			podDescription, err := utils.Run(cmd)
 			if err == nil {
 				fmt.Println("Pod description:\n", podDescription)
@@ -142,26 +142,11 @@ var _ = Describe("Manager", Ordered, func() {
 		It("should run successfully", func() {
 			By("validating that the controller-manager pod is running as expected")
 			verifyControllerUp := func(g Gomega) {
-				// Get the name of the controller-manager pod
-				cmd := exec.Command("kubectl", "get",
-					"pods", "-l", "control-plane=controller-manager",
-					"-o", "go-template={{ range .items }}"+
-						"{{ if not .metadata.deletionTimestamp }}"+
-						"{{ .metadata.name }}"+
-						"{{ \"\\n\" }}{{ end }}{{ end }}",
-					"-n", namespace,
-				)
-
-				podOutput, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred(), "Failed to retrieve controller-manager pod information")
-				podNames := utils.GetNonEmptyLines(podOutput)
-				g.Expect(podNames).To(HaveLen(1), "expected 1 controller pod running")
-				controllerPodName = podNames[0]
-				g.Expect(controllerPodName).To(ContainSubstring("controller-manager"))
+				podName := getControllerPodName(g)
 
 				// Validate the pod's status
-				cmd = exec.Command("kubectl", "get",
-					"pods", controllerPodName, "-o", "jsonpath={.status.phase}",
+				cmd := exec.Command("kubectl", "get",
+					"pods", podName, "-o", "jsonpath={.status.phase}",
 					"-n", namespace,
 				)
 				output, err := utils.Run(cmd)
@@ -190,26 +175,19 @@ var _ = Describe("Manager", Ordered, func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(token).NotTo(BeEmpty())
 
-			By("waiting for the metrics endpoint to be ready")
-			verifyMetricsEndpointReady := func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "endpoints", metricsServiceName, "-n", namespace)
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(ContainSubstring("8080"), "Metrics endpoint is not ready")
-			}
-			Eventually(verifyMetricsEndpointReady).Should(Succeed())
-
-			By("verifying that the controller manager is serving the metrics server")
-			verifyMetricsServerStarted := func(g Gomega) {
-				cmd := exec.Command("kubectl", "logs", controllerPodName, "-n", namespace)
-				output, err := utils.Run(cmd)
-				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(ContainSubstring("controller-runtime.metrics\tServing metrics server"),
-					"Metrics server not yet started")
-			}
-			Eventually(verifyMetricsServerStarted).Should(Succeed())
+			By("waiting for the controller pod to be Ready before scraping metrics")
+			// An address only lands in the metrics Service endpoint once the pod's
+			// readiness condition flips, so waiting on condition=Ready is the same
+			// gate as the old endpoints check without the legacy Endpoints API.
+			cmd = exec.Command("kubectl", "wait", "--for=condition=Ready",
+				"pod", "-l", "control-plane=controller-manager",
+				"-n", namespace, "--timeout=2m")
+			_, err = utils.Run(cmd)
+			Expect(err).NotTo(HaveOccurred(), "controller pod not Ready")
 
 			By("creating the curl-metrics pod to access the metrics endpoint")
+			// curl --fail-with-body (needs curl >= 7.76) exits non-zero on a non-2xx
+			// response, so the pod phase becomes the HTTP-success signal: Succeeded == 200.
 			cmd = exec.Command("kubectl", "run", "curl-metrics", "--restart=Never",
 				"--namespace", namespace,
 				"--image=curlimages/curl:latest",
@@ -220,7 +198,7 @@ var _ = Describe("Manager", Ordered, func() {
 							"name": "curl",
 							"image": "curlimages/curl:latest",
 							"command": ["/bin/sh", "-c"],
-							"args": ["curl -v -H 'Authorization: Bearer %s' http://%s.%s.svc.cluster.local:8080/metrics"],
+							"args": ["curl -sS --fail-with-body -H 'Authorization: Bearer %s' http://%s.%s.svc.cluster.local:8080/metrics"],
 							"securityContext": {
 								"allowPrivilegeEscalation": false,
 								"capabilities": {
@@ -239,16 +217,17 @@ var _ = Describe("Manager", Ordered, func() {
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create curl-metrics pod")
 
-			By("waiting for the curl-metrics pod to complete.")
-			verifyCurlUp := func(g Gomega) {
-				cmd := exec.Command("kubectl", "get", "pods", "curl-metrics",
+			By("waiting for the curl-metrics pod to reach a terminal phase")
+			var curlPhase string
+			Eventually(func(g Gomega) {
+				output, err := utils.Run(exec.Command("kubectl", "get", "pods", "curl-metrics",
 					"-o", "jsonpath={.status.phase}",
-					"-n", namespace)
-				output, err := utils.Run(cmd)
+					"-n", namespace))
 				g.Expect(err).NotTo(HaveOccurred())
-				g.Expect(output).To(Equal("Succeeded"), "curl pod in wrong status")
-			}
-			Eventually(verifyCurlUp, 5*time.Minute).Should(Succeed())
+				curlPhase = output
+				g.Expect(curlPhase).To(Or(Equal("Succeeded"), Equal("Failed")), "curl pod still running")
+			}, 5*time.Minute).Should(Succeed())
+			Expect(curlPhase).To(Equal("Succeeded"), "curl --fail-with-body got a non-2xx from /metrics")
 
 			By("getting the metrics by checking curl-metrics logs")
 			metricsOutput := getMetricsOutput()
@@ -602,6 +581,25 @@ spec:
 	})
 })
 
+// getControllerPodName resolves the single controller-manager pod by label. It takes a Gomega so
+// that a transient "0 pods" window during rollout retries within an Eventually rather than failing.
+func getControllerPodName(g Gomega) string {
+	cmd := exec.Command("kubectl", "get",
+		"pods", "-l", "control-plane=controller-manager",
+		"-o", "go-template={{ range .items }}"+
+			"{{ if not .metadata.deletionTimestamp }}"+
+			"{{ .metadata.name }}"+
+			"{{ \"\\n\" }}{{ end }}{{ end }}",
+		"-n", namespace,
+	)
+	podOutput, err := utils.Run(cmd)
+	g.Expect(err).NotTo(HaveOccurred(), "Failed to retrieve controller-manager pod information")
+	podNames := utils.GetNonEmptyLines(podOutput)
+	g.Expect(podNames).To(HaveLen(1), "expected 1 controller pod running")
+	g.Expect(podNames[0]).To(ContainSubstring("controller-manager"))
+	return podNames[0]
+}
+
 // kubectlApplyYAML pipes the provided YAML manifest to `kubectl apply -f -`.
 func kubectlApplyYAML(manifest string) error {
 	cmd := exec.Command("kubectl", "apply", "-f", "-")
@@ -652,12 +650,13 @@ func serviceAccountToken() (string, error) {
 }
 
 // getMetricsOutput retrieves and returns the logs from the curl pod used to access the metrics endpoint.
+// The curl pod runs with -sS, so its stdout is the raw metrics body; the HTTP-200 guarantee comes from
+// --fail-with-body gating the pod's Succeeded phase, not from parsing verbose curl output.
 func getMetricsOutput() string {
 	By("getting the curl-metrics logs")
 	cmd := exec.Command("kubectl", "logs", "curl-metrics", "-n", namespace)
 	metricsOutput, err := utils.Run(cmd)
 	Expect(err).NotTo(HaveOccurred(), "Failed to retrieve logs from curl pod")
-	Expect(metricsOutput).To(ContainSubstring("< HTTP/1.1 200 OK"))
 	return metricsOutput
 }
 
