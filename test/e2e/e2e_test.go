@@ -59,13 +59,22 @@ var _ = Describe("Manager", Ordered, func() {
 		cmd = exec.Command("make", "deploy", fmt.Sprintf("IMG=%s", projectImage))
 		_, err = utils.Run(cmd)
 		Expect(err).NotTo(HaveOccurred(), "Failed to deploy the controller-manager")
+
+		By("granting dynamic-watch read on the target kinds via an aggregated ClusterRole")
+		cmd = exec.Command("kubectl", "apply", "-f", "test/e2e/testdata/dynamic_watch_e2e.yaml")
+		_, err = utils.Run(cmd)
+		Expect(err).NotTo(HaveOccurred(), "Failed to apply e2e dynamic-watch ClusterRole")
 	})
 
 	// After all tests have been executed, clean up by undeploying the controller, uninstalling CRDs,
 	// and deleting the namespace.
 	AfterAll(func() {
+		By("removing the e2e dynamic-watch ClusterRole")
+		cmd := exec.Command("kubectl", "delete", "-f", "test/e2e/testdata/dynamic_watch_e2e.yaml", "--ignore-not-found")
+		_, _ = utils.Run(cmd)
+
 		By("undeploying the controller-manager")
-		cmd := exec.Command("make", "undeploy")
+		cmd = exec.Command("make", "undeploy")
 		_, _ = utils.Run(cmd)
 
 		By("uninstalling CRDs")

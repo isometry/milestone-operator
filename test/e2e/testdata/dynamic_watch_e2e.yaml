@@ -1,0 +1,21 @@
+# e2e-only aggregated member role: grants the operator's dynamic informers
+# list/watch on the target kinds exercised by the behavioural specs — core
+# ConfigMaps and the late.example.com/Late CRD. The aggregation label unions
+# these rules into manager-dynamic-watch-role. Applied in BeforeAll and removed
+# in AfterAll; kubectl apply/delete are idempotent so reruns on a reused cluster
+# do not collide. (RBAC may name a resource whose CRD is not yet installed, so
+# granting `lates` ahead of the late-CRD spec is fine.)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: milestone-e2e-dynamic-watch
+  labels:
+    app.kubernetes.io/name: milestone-operator
+    milestone.as-code.io/aggregate-to-dynamic-watch: "true"
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [get, list, watch]
+  - apiGroups: [late.example.com]
+    resources: [lates]
+    verbs: [get, list, watch]

@@ -251,6 +251,28 @@ transition, invalidates the discovery cache and enqueues every Milestone /
 ClusterMilestone whose `spec.dependsOn[*].target.group + kind` matches the
 newly-established CRD.
 
+### Dynamic-informer RBAC (aggregated)
+
+The dynamic informers `list`/`watch` whatever GVK a `spec.dependsOn[].target`
+names — not knowable at compile time — so the read grant is supplied at deploy
+time via an **aggregated ClusterRole**. `config/rbac/dynamic_watch_role.yaml`
+ships three objects: the `manager-dynamic-watch-role` umbrella
+(`aggregationRule`, no rules — the kube-controller-manager owns them), its
+binding to the manager ServiceAccount, and a default `manager-dynamic-watch-flux`
+member granting `get;list;watch` on the FluxCD target groups (the operator's
+primary use case). The intrinsic `manager-role` (controller-gen-generated from
+the kubebuilder markers) is deliberately left out of aggregation — a role with
+an `aggregationRule` has its rules overwritten, which would clobber the
+generated rules.
+
+Cluster admins extend coverage to other target kinds (e.g. core `configmaps`,
+`argoproj.io`, `cert-manager.io`) by shipping further ClusterRoles labelled
+`milestone.as-code.io/aggregate-to-dynamic-watch: "true"`; their rules union
+into the umbrella. No labelled role for a target → the informer's `list` is
+`forbidden`, the dependency stays `Unknown`, and the operator logs the watch
+error (it does not crash). The e2e suite supplies its own member for
+`configmaps` + `lates` (`test/e2e/testdata/dynamic_watch_e2e.yaml`).
+
 ## Reconcile pipeline
 
 `Reconciler[T client.Object]` in `internal/controller/reconciler.go` is

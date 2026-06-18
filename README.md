@@ -167,14 +167,42 @@ kubectl apply -k config/samples/  # sample Milestone and ClusterMilestone
 
 ### Watching custom resource kinds
 
-The default install grants the operator's dynamic informers `get,list,watch`
-on the FluxCD resource groups. To watch additional kinds, edit
-[`config/rbac/dynamic_watch_role.yaml`](./config/rbac/dynamic_watch_role.yaml)
-and re-deploy.
+The operator's dynamic informers `get,list,watch` whatever GVK a
+`spec.dependsOn[].target` names. Because those kinds are not known until a
+Milestone is applied, read access is granted through an **aggregated
+ClusterRole**. The default install
+([`config/rbac/dynamic_watch_role.yaml`](./config/rbac/dynamic_watch_role.yaml))
+ships:
 
-For restricted clusters, replace that ClusterRoleBinding with a narrower
-role covering only the kinds you intend to reference from
-`spec.dependsOn[].target.group/kind`.
+- `manager-dynamic-watch-role` — the aggregation umbrella, bound to the
+  controller's ServiceAccount. Its rules are owned by the
+  kube-controller-manager; **do not edit them directly**.
+- `manager-dynamic-watch-flux` — a member granting the FluxCD resource groups,
+  labelled so its rules union into the umbrella.
+
+To let the operator watch **any other kind**, ship a ClusterRole that carries
+the aggregation label — no binding of your own is needed, and you never touch
+the umbrella:
+
+```yaml
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: milestone-watch-configmaps
+  labels:
+    milestone.as-code.io/aggregate-to-dynamic-watch: "true"
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    verbs: [get, list, watch]
+```
+
+The kube-controller-manager unions every labelled role into
+`manager-dynamic-watch-role`. If a target kind has no matching grant, the
+informer's `list` is `forbidden`, the dependency stays `Unknown`, and the
+operator logs the watch error (it does not crash). For a restricted cluster,
+drop the `manager-dynamic-watch-flux` member and ship only the narrow
+ClusterRoles for the kinds you actually reference.
 
 ### Resource baseline
 

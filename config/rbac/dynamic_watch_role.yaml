@@ -1,11 +1,9 @@
-# Sample ClusterRole granting the operator's dynamic informers list/watch
-# access to common GitOps resource kinds. Bound separately so cluster
-# administrators can replace it with a narrower role for restricted
-# environments.
-#
-# Rule of thumb: every group/kind that may appear under
-# spec.dependsOn[].target.group/kind must be reachable by these rules. Add
-# or remove groups to suit your deployment.
+# Aggregation umbrella for the operator's dynamic informers. Its rules are owned
+# by the kube-controller-manager, which unions in the rules of every ClusterRole
+# labelled `milestone.as-code.io/aggregate-to-dynamic-watch: "true"`. To let the
+# operator watch a target group/kind named under spec.dependsOn[].target, create
+# (or extend) such a labelled ClusterRole — do NOT add rules to this role, the
+# controller-manager would overwrite them.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
@@ -13,24 +11,10 @@ metadata:
   labels:
     app.kubernetes.io/name: milestone-operator
     app.kubernetes.io/component: rbac
-rules:
-  - apiGroups: [kustomize.toolkit.fluxcd.io]
-    resources: [kustomizations]
-    verbs: [get, list, watch]
-  - apiGroups: [helm.toolkit.fluxcd.io]
-    resources: [helmreleases]
-    verbs: [get, list, watch]
-  - apiGroups: [source.toolkit.fluxcd.io]
-    resources: [gitrepositories, helmrepositories, ocirepositories, helmcharts, buckets]
-    verbs: [get, list, watch]
-  - apiGroups: [image.toolkit.fluxcd.io]
-    resources: [imagepolicies, imagerepositories, imageupdateautomations]
-    verbs: [get, list, watch]
-  - apiGroups: [notification.toolkit.fluxcd.io]
-    resources: [alerts, providers, receivers]
-    verbs: [get, list, watch]
-  # Add additional groups (e.g. argoproj.io, cert-manager.io) as needed by
-  # binding a separate ClusterRole to this controller's ServiceAccount.
+aggregationRule:
+  clusterRoleSelectors:
+    - matchLabels:
+        milestone.as-code.io/aggregate-to-dynamic-watch: "true"
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -47,3 +31,33 @@ subjects:
   - kind: ServiceAccount
     name: controller-manager
     namespace: system
+---
+# Default member role: out-of-the-box list/watch coverage for FluxCD target
+# kinds (the operator's primary use case). The aggregation label unions these
+# rules into manager-dynamic-watch-role. Grant additional target groups (e.g.
+# "" for configmaps, argoproj.io, cert-manager.io) by shipping further
+# ClusterRoles carrying the same label.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: manager-dynamic-watch-flux
+  labels:
+    app.kubernetes.io/name: milestone-operator
+    app.kubernetes.io/component: rbac
+    milestone.as-code.io/aggregate-to-dynamic-watch: "true"
+rules:
+  - apiGroups: [kustomize.toolkit.fluxcd.io]
+    resources: [kustomizations]
+    verbs: [get, list, watch]
+  - apiGroups: [helm.toolkit.fluxcd.io]
+    resources: [helmreleases]
+    verbs: [get, list, watch]
+  - apiGroups: [source.toolkit.fluxcd.io]
+    resources: [gitrepositories, helmrepositories, ocirepositories, helmcharts, buckets]
+    verbs: [get, list, watch]
+  - apiGroups: [image.toolkit.fluxcd.io]
+    resources: [imagepolicies, imagerepositories, imageupdateautomations]
+    verbs: [get, list, watch]
+  - apiGroups: [notification.toolkit.fluxcd.io]
+    resources: [alerts, providers, receivers]
+    verbs: [get, list, watch]
