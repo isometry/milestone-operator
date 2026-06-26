@@ -428,3 +428,22 @@ reasons require a CRD update before the binary that emits them.
 
 Pre-v1.0.0 internal APIs (function signatures, package layout, interface
 shapes) are not stable and may change without notice.
+
+## Supply chain
+
+Releases must be verifiable end-to-end (SLSA). The `v*.*.*` publish
+workflow keyless-signs both the container image and the OCI Helm chart with
+Sigstore (GitHub OIDC — no long-lived keys) and attaches SLSA build
+provenance to each; the image additionally gets an SBOM attestation. Two
+referrers are produced per artifact because they serve different consumers:
+the cosign **signature** is what Flux `.spec.verify` and a Kyverno
+signature gate check, while the **provenance/SBOM attestations** are what
+`gh attestation verify` / `cosign verify-attestation` / Kyverno
+`verifyImages.attestations` consume.
+
+The trust anchor is the workflow identity, not a key: OIDC issuer
+`https://token.actions.githubusercontent.com` + the `publish.yaml` SAN on a
+version tag. Consumer verification commands and ready-to-apply Flux/Kyverno
+enforcement policies live in [`docs/verification.md`](./docs/verification.md)
+and [`deploy/policies/`](./deploy/policies/). The operator chart does not
+install those policies — runtime enforcement is opt-in per cluster.

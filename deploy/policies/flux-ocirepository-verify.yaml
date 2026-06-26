@@ -1,0 +1,34 @@
+---
+# Verify the milestone-operator Helm chart's cosign signature before Flux
+# reconciles it. source-controller refuses to fetch the chart unless it
+# carries a keyless signature from this repo's release workflow.
+#
+# Requires Flux >= 2.3 (HelmRelease .spec.chartRef -> OCIRepository).
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: milestone-operator
+  namespace: flux-system
+spec:
+  interval: 1h
+  url: oci://ghcr.io/isometry/charts/milestone-operator
+  ref:
+    semver: ">=0.1.0"
+  verify:
+    provider: cosign
+    matchOIDCIdentity:
+      - issuer: "^https://token\\.actions\\.githubusercontent\\.com$"
+        subject: "^https://github\\.com/isometry/milestone-operator/\\.github/workflows/publish\\.yaml@refs/tags/v.+$"
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: milestone-operator
+  namespace: milestone-operator-system
+spec:
+  interval: 1h
+  chartRef:
+    kind: OCIRepository
+    name: milestone-operator
+    namespace: flux-system
+  # values: {}

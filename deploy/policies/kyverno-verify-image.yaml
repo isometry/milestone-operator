@@ -1,0 +1,52 @@
+---
+# Reject any Pod running the milestone-operator image unless it carries a
+# valid keyless cosign signature AND SLSA build provenance from this repo's
+# release workflow. Kyverno mutates the image reference to its verified
+# digest on admission.
+#
+# Requires Kyverno. Set validationFailureAction to Audit first to observe
+# impact, then switch to Enforce.
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: verify-milestone-operator
+spec:
+  validationFailureAction: Enforce
+  background: false
+  webhookTimeoutSeconds: 30
+  rules:
+    - name: verify-signature-and-provenance
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+      verifyImages:
+        - imageReferences:
+            - "ghcr.io/isometry/milestone-operator*"
+          mutateDigest: true
+          verifyDigest: true
+          required: true
+          attestors:
+            - count: 1
+              entries:
+                - keyless:
+                    issuer: "https://token.actions.githubusercontent.com"
+                    subject: "https://github.com/isometry/milestone-operator/.github/workflows/publish.yaml@refs/tags/*"
+                    rekor:
+                      url: https://rekor.sigstore.dev
+          attestations:
+            - type: https://slsa.dev/provenance/v1
+              attestors:
+                - count: 1
+                  entries:
+                    - keyless:
+                        issuer: "https://token.actions.githubusercontent.com"
+                        subject: "https://github.com/isometry/milestone-operator/.github/workflows/publish.yaml@refs/tags/*"
+                        rekor:
+                          url: https://rekor.sigstore.dev
+              conditions:
+                - all:
+                    - key: "{{ buildDefinition.externalParameters.workflow.repository }}"
+                      operator: Equals
+                      value: "https://github.com/isometry/milestone-operator"

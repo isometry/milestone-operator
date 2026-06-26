@@ -16,6 +16,18 @@ helm install milestone-operator \
   oci://ghcr.io/isometry/charts/milestone-operator
 ```
 
+## Verifying the chart
+
+Releases are keyless-signed (Sigstore) and carry SLSA build provenance.
+Verify before installing:
+
+```sh
+helm pull oci://ghcr.io/isometry/charts/milestone-operator --version <version> --verify
+```
+
+See [`docs/verification.md`](../../../docs/verification.md) for cosign
+commands and ready-to-apply Flux/Kyverno enforcement policies.
+
 ## Uninstalling the Chart
 
 ```sh

@@ -133,6 +133,15 @@ To enable TLS with cert-manager-managed certificates:
 4. Re-deploy. The manager will then listen on `:8443` and the
    `ServiceMonitor` will scrape HTTPS with mTLS.
 
+## Supply chain
+
+Tagged releases publish a keyless-signed (Sigstore) container image and OCI
+Helm chart, each with SLSA build provenance; the image also carries an SBOM
+attestation. [`docs/verification.md`](./docs/verification.md) documents how
+to verify them — `gh attestation verify`, `cosign`, and `helm --verify` —
+and [`deploy/policies/`](./deploy/policies/) ships ready-to-apply Flux and
+Kyverno policies to enforce verification at runtime.
+
 ## Getting started
 
 ### Prerequisites
