@@ -95,6 +95,7 @@ help: ## Display this help.
 .PHONY: manifests
 manifests: controller-gen ## Generate WebhookConfiguration, ClusterRole and CustomResourceDefinition objects.
 	$(CONTROLLER_GEN) rbac:roleName=manager-role crd webhook paths="./..." output:crd:artifacts:config=config/crd/bases
+	./hack/sync-crds.sh
 
 .PHONY: generate
 generate: controller-gen ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
@@ -161,7 +162,7 @@ build: manifests generate fmt vet ## Build manager binary.
 
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
-	go run ./cmd/main.go
+	go run ./cmd/main.go --leader-elect=false
 
 # If you wish to build the manager image targeting other platforms you can use the --platform flag.
 # (i.e. docker build --platform linux/arm64). However, you must enable docker buildKit for it.
@@ -196,6 +197,19 @@ build-installer: manifests generate kustomize ## Generate a consolidated YAML wi
 	mkdir -p dist
 	cd config/manager && $(KUSTOMIZE) edit set image controller=${IMG}
 	$(KUSTOMIZE) build config/default > dist/install.yaml
+
+##@ Helm
+
+HELM ?= helm
+CHART_DIR ?= deploy/charts/milestone-operator
+
+.PHONY: helm-lint
+helm-lint: manifests ## Lint the Helm chart (regenerates chart CRDs first).
+	$(HELM) lint $(CHART_DIR)
+
+.PHONY: helm-template
+helm-template: manifests ## Render the Helm chart to stdout (regenerates chart CRDs first).
+	$(HELM) template milestone-operator $(CHART_DIR)
 
 ##@ Deployment
 

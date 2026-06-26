@@ -1,0 +1,1093 @@
+{{ if .Values.crds.install -}}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: milestones.milestone.as-code.io
+  {{- with mergeOverwrite (default dict .Values.commonAnnotations) (ternary (dict "helm.sh/resource-policy" "keep") (dict) .Values.crds.keep) }}
+  annotations:
+    {{- range $key, $value := . }}
+    {{ $key }}: {{ tpl $value $ | quote }}
+    {{- end }}
+  {{- end }}
+  labels:
+    component: crd
+    {{- include "labels" . | nindent 4 }}
+spec:
+  group: milestone.as-code.io
+  names:
+    categories:
+    - all
+    - gitops
+    kind: Milestone
+    listKind: MilestoneList
+    plural: milestones
+    shortNames:
+    - mile
+    singular: milestone
+  scope: Namespaced
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Ready')].reason
+      name: Reason
+      type: string
+    - jsonPath: .status.summary.total
+      name: Total
+      type: integer
+    - jsonPath: .status.summary.current
+      name: Current
+      type: integer
+    - jsonPath: .status.summary.failed
+      name: Failed
+      priority: 1
+      type: integer
+    - jsonPath: .status.conditions[?(@.type=='Stalled')].status
+      name: Stalled
+      priority: 1
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          Milestone aggregates the kstatus of resources matching its dependencies
+          within its own namespace, exposing a kstatus-compatible Ready condition.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: MilestoneSpec defines the desired state of Milestone.
+            properties:
+              dependsOn:
+                description: |-
+                  DependsOn is the ordered set of dependencies this Milestone
+                  aggregates. All target resources are scoped to the Milestone's own
+                  namespace.
+                items:
+                  description: |-
+                    DependencyRef is one entry in spec.dependsOn. Identified by Name; the
+                    Target carries the GVK + selector this dependency aggregates over.
+                  properties:
+                    emptySetPolicy:
+                      default: Unknown
+                      description: |-
+                        EmptySetPolicy controls Ready reporting when zero resources match.
+                        Defaults to Unknown when omitted.
+                      enum:
+                      - Unknown
+                      - Ready
+                      - NotReady
+                      type: string
+                    name:
+                      description: |-
+                        Name identifies this dependency. Used as the listmap key in
+                        spec.dependsOn and surfaced in status, condition messages, logs, and
+                        the dependency metric label.
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                    target:
+                      description: Target selects the set of resources this dependency
+                        aggregates.
+                      properties:
+                        group:
+                          description: |-
+                            Group is the API group of the target kind. Empty string means the
+                            core Kubernetes group.
+                          type: string
+                        kind:
+                          description: Kind is the target kind (e.g. "Kustomization",
+                            "HelmRelease").
+                          minLength: 1
+                          type: string
+                        selector:
+                          description: |-
+                            Selector is a standard Kubernetes label selector. Nil selects every
+                            resource of Kind in scope.
+                          properties:
+                            matchExpressions:
+                              description: matchExpressions is a list of label selector
+                                requirements. The requirements are ANDed.
+                              items:
+                                description: |-
+                                  A label selector requirement is a selector that contains values, a key, and an operator that
+                                  relates the key and values.
+                                properties:
+                                  key:
+                                    description: key is the label key that the selector
+                                      applies to.
+                                    type: string
+                                  operator:
+                                    description: |-
+                                      operator represents a key's relationship to a set of values.
+                                      Valid operators are In, NotIn, Exists and DoesNotExist.
+                                    type: string
+                                  values:
+                                    description: |-
+                                      values is an array of string values. If the operator is In or NotIn,
+                                      the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                      the values array must be empty. This array is replaced during a strategic
+                                      merge patch.
+                                    items:
+                                      type: string
+                                    type: array
+                                    x-kubernetes-list-type: atomic
+                                required:
+                                - key
+                                - operator
+                                type: object
+                              type: array
+                              x-kubernetes-list-type: atomic
+                            matchLabels:
+                              additionalProperties:
+                                type: string
+                              description: |-
+                                matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                                map is equivalent to an element of matchExpressions, whose key field is "key", the
+                                operator is "In", and the values array contains only "value". The requirements are ANDed.
+                              type: object
+                          type: object
+                          x-kubernetes-map-type: atomic
+                        version:
+                          description: |-
+                            Version is the API version of the target kind. When empty, the
+                            operator resolves the preferred version via discovery.
+                          type: string
+                      required:
+                      - kind
+                      type: object
+                  required:
+                  - name
+                  - target
+                  type: object
+                maxItems: 32
+                minItems: 1
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+            required:
+            - dependsOn
+            type: object
+          status:
+            description: MilestoneStatus is the observed state of Milestone.
+            properties:
+              conditions:
+                description: |-
+                  Conditions exposes Ready and Stalled (kstatus-compatible). The
+                  operator may add additional condition types in future releases as
+                  additive (non-breaking) API changes.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              dependsOn:
+                description: |-
+                  DependsOn carries per-dependency rollups, keyed by the same name as
+                  spec.dependsOn.
+                items:
+                  description: |-
+                    DependencyStatus is the per-dependency aggregated readiness reported on
+                    the owner. One entry is produced for every spec.dependsOn entry,
+                    regardless of whether discovery succeeded.
+                  properties:
+                    group:
+                      description: |-
+                        Group is the API group of the resolved target Kind. Empty for the core
+                        Kubernetes group.
+                      type: string
+                    kind:
+                      description: Kind is the target Kind as declared in the spec.
+                      type: string
+                    name:
+                      description: Name mirrors spec.dependsOn[].name and is the listmap
+                        key.
+                      type: string
+                    ready:
+                      description: |-
+                        Ready is True when every selected resource is Current; False when any
+                        resource is Failed or NotFound; Unknown otherwise (or per
+                        emptySetPolicy when no resources match).
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    reason:
+                      description: |-
+                        Reason is a short machine-readable code summarising why Ready has its
+                        current value. The closed enum covers every reason the operator emits
+                        at the dependency level; see the Reason* constants in this package
+                        for canonical values.
+                      enum:
+                      - AllResourcesReady
+                      - ResourcesNotReady
+                      - ResourcesInProgress
+                      - ResourcesUnknown
+                      - EmptySet
+                      - GVKNotEstablished
+                      - NamespaceScopeMismatch
+                      - DiscoveryFailed
+                      - DiscoveryUnavailable
+                      - WatchSetupFailed
+                      - ListFailed
+                      - ReconcileError
+                      type: string
+                    summary:
+                      description: Summary holds the per-kstatus-bucket counts that
+                        produced Ready.
+                      properties:
+                        current:
+                          description: Current counts resources whose kstatus is Current
+                            (steady-state ready).
+                          format: int32
+                          type: integer
+                        failed:
+                          description: Failed counts resources whose kstatus is Failed.
+                          format: int32
+                          type: integer
+                        inProgress:
+                          description: InProgress counts resources whose kstatus is
+                            InProgress (still converging).
+                          format: int32
+                          type: integer
+                        notFound:
+                          description: |-
+                            NotFound counts resources whose kstatus is NotFound (selector matched a
+                            name but the resource is absent).
+                          format: int32
+                          type: integer
+                        terminating:
+                          description: |-
+                            Terminating counts resources whose kstatus is Terminating (deletion in
+                            progress).
+                          format: int32
+                          type: integer
+                        total:
+                          description: |-
+                            Total is the count of resources currently matched by the dependency's
+                            target selector. Total == sum of all the other buckets.
+                          format: int32
+                          type: integer
+                        unknown:
+                          description: Unknown counts resources whose kstatus could
+                            not be determined.
+                          format: int32
+                          type: integer
+                      required:
+                      - current
+                      - failed
+                      - inProgress
+                      - notFound
+                      - terminating
+                      - total
+                      - unknown
+                      type: object
+                      x-kubernetes-validations:
+                      - message: Summary.Total must equal the sum of all buckets
+                        rule: self.total == self.current + self.inProgress + self.failed
+                          + self.notFound + self.terminating + self.unknown
+                    version:
+                      description: |-
+                        Version is the API version resolved via discovery (the target's
+                        version when set; otherwise the group's preferred version).
+                      type: string
+                  required:
+                  - kind
+                  - name
+                  - ready
+                  - summary
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              lastEvaluatedTime:
+                description: LastEvaluatedTime is the timestamp of the last status
+                  evaluation.
+                format: date-time
+                type: string
+              notReadyResources:
+                description: |-
+                  NotReadyResources lists resources whose kstatus is not Current.
+                  Capped to avoid object-size explosions; Truncated indicates the cap
+                  was hit. The MaxItems cap mirrors the runtime cap applied by the
+                  reconciler.
+                items:
+                  description: |-
+                    ResourceStatus identifies an individual matched resource and the kstatus
+                    computed for it. Only resources whose Status is not Current are surfaced
+                    on the owner (see MilestoneStatusBase.NotReadyResources).
+                  properties:
+                    group:
+                      description: Group is the API group of the resource. Empty for
+                        the core group.
+                      type: string
+                    kind:
+                      description: Kind is the API Kind of the resource.
+                      type: string
+                    message:
+                      description: |-
+                        Message is the kstatus message for this resource when one was
+                        provided by sigs.k8s.io/cli-utils.
+                      type: string
+                    name:
+                      description: Name is the name of the resource.
+                      type: string
+                    namespace:
+                      description: |-
+                        Namespace is the namespace of the resource. Empty when the resource
+                        is cluster-scoped.
+                      type: string
+                    reason:
+                      description: |-
+                        Reason is the first non-empty reason from the conditions emitted by
+                        sigs.k8s.io/cli-utils for this resource (typically the resource's own
+                        Ready/Reconciling/Stalled condition reason — e.g. LessReplicas,
+                        ProgressDeadlineExceeded).
+                      type: string
+                    status:
+                      description: |-
+                        Status is the kstatus computed by sigs.k8s.io/cli-utils for this
+                        resource.
+                      enum:
+                      - Current
+                      - InProgress
+                      - Failed
+                      - NotFound
+                      - Terminating
+                      - Unknown
+                      type: string
+                    version:
+                      description: Version is the API version of the resource.
+                      type: string
+                  required:
+                  - kind
+                  - name
+                  - status
+                  - version
+                  type: object
+                maxItems: 50
+                type: array
+              observedGeneration:
+                description: |-
+                  ObservedGeneration mirrors metadata.generation at the time of the
+                  last successful reconcile.
+                format: int64
+                type: integer
+              summary:
+                description: Summary aggregates resource counters across all dependencies.
+                properties:
+                  current:
+                    description: Current counts resources whose kstatus is Current
+                      (steady-state ready).
+                    format: int32
+                    type: integer
+                  failed:
+                    description: Failed counts resources whose kstatus is Failed.
+                    format: int32
+                    type: integer
+                  inProgress:
+                    description: InProgress counts resources whose kstatus is InProgress
+                      (still converging).
+                    format: int32
+                    type: integer
+                  notFound:
+                    description: |-
+                      NotFound counts resources whose kstatus is NotFound (selector matched a
+                      name but the resource is absent).
+                    format: int32
+                    type: integer
+                  terminating:
+                    description: |-
+                      Terminating counts resources whose kstatus is Terminating (deletion in
+                      progress).
+                    format: int32
+                    type: integer
+                  total:
+                    description: |-
+                      Total is the count of resources currently matched by the dependency's
+                      target selector. Total == sum of all the other buckets.
+                    format: int32
+                    type: integer
+                  unknown:
+                    description: Unknown counts resources whose kstatus could not
+                      be determined.
+                    format: int32
+                    type: integer
+                required:
+                - current
+                - failed
+                - inProgress
+                - notFound
+                - terminating
+                - total
+                - unknown
+                type: object
+                x-kubernetes-validations:
+                - message: Summary.Total must equal the sum of all buckets
+                  rule: self.total == self.current + self.inProgress + self.failed
+                    + self.notFound + self.terminating + self.unknown
+              truncated:
+                description: Truncated is true when NotReadyResources was capped.
+                type: boolean
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: clustermilestones.milestone.as-code.io
+  {{- with mergeOverwrite (default dict .Values.commonAnnotations) (ternary (dict "helm.sh/resource-policy" "keep") (dict) .Values.crds.keep) }}
+  annotations:
+    {{- range $key, $value := . }}
+    {{ $key }}: {{ tpl $value $ | quote }}
+    {{- end }}
+  {{- end }}
+  labels:
+    component: crd
+    {{- include "labels" . | nindent 4 }}
+spec:
+  group: milestone.as-code.io
+  names:
+    categories:
+    - all
+    - gitops
+    kind: ClusterMilestone
+    listKind: ClusterMilestoneList
+    plural: clustermilestones
+    shortNames:
+    - cmile
+    singular: clustermilestone
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - jsonPath: .status.conditions[?(@.type=='Ready')].status
+      name: Ready
+      type: string
+    - jsonPath: .status.conditions[?(@.type=='Ready')].reason
+      name: Reason
+      type: string
+    - jsonPath: .status.summary.total
+      name: Total
+      type: integer
+    - jsonPath: .status.summary.current
+      name: Current
+      type: integer
+    - jsonPath: .status.summary.failed
+      name: Failed
+      priority: 1
+      type: integer
+    - jsonPath: .status.conditions[?(@.type=='Stalled')].status
+      name: Stalled
+      priority: 1
+      type: string
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1
+    schema:
+      openAPIV3Schema:
+        description: |-
+          ClusterMilestone aggregates the kstatus of resources matching its
+          dependencies across namespaces, exposing a kstatus-compatible Ready
+          condition.
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            description: ClusterMilestoneSpec defines the desired state of ClusterMilestone.
+            properties:
+              dependsOn:
+                description: |-
+                  DependsOn is the ordered set of dependencies this ClusterMilestone
+                  aggregates. Each dependency may scope its search via
+                  Target.Namespaces or Target.NamespaceSelector.
+                items:
+                  description: ClusterDependencyRef is the cluster-scoped variant
+                    of DependencyRef.
+                  properties:
+                    emptySetPolicy:
+                      default: Unknown
+                      description: |-
+                        EmptySetPolicy controls Ready reporting when zero resources match.
+                        Defaults to Unknown when omitted.
+                      enum:
+                      - Unknown
+                      - Ready
+                      - NotReady
+                      type: string
+                    name:
+                      description: |-
+                        Name identifies this dependency. Used as the listmap key in
+                        spec.dependsOn and surfaced in status, condition messages, logs, and
+                        the dependency metric label.
+                      maxLength: 63
+                      minLength: 1
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                      type: string
+                    target:
+                      description: |-
+                        Target selects the set of resources this dependency aggregates,
+                        including per-dependency namespace scoping.
+                      properties:
+                        group:
+                          description: |-
+                            Group is the API group of the target kind. Empty string means the
+                            core Kubernetes group.
+                          type: string
+                        kind:
+                          description: Kind is the target kind (e.g. "Kustomization",
+                            "HelmRelease").
+                          minLength: 1
+                          type: string
+                        namespaceSelector:
+                          description: |-
+                            NamespaceSelector matches namespaces by label. Mutually exclusive
+                            with Namespaces.
+                          properties:
+                            matchExpressions:
+                              description: matchExpressions is a list of label selector
+                                requirements. The requirements are ANDed.
+                              items:
+                                description: |-
+                                  A label selector requirement is a selector that contains values, a key, and an operator that
+                                  relates the key and values.
+                                properties:
+                                  key:
+                                    description: key is the label key that the selector
+                                      applies to.
+                                    type: string
+                                  operator:
+                                    description: |-
+                                      operator represents a key's relationship to a set of values.
+                                      Valid operators are In, NotIn, Exists and DoesNotExist.
+                                    type: string
+                                  values:
+                                    description: |-
+                                      values is an array of string values. If the operator is In or NotIn,
+                                      the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                      the values array must be empty. This array is replaced during a strategic
+                                      merge patch.
+                                    items:
+                                      type: string
+                                    type: array
+                                    x-kubernetes-list-type: atomic
+                                required:
+                                - key
+                                - operator
+                                type: object
+                              type: array
+                              x-kubernetes-list-type: atomic
+                            matchLabels:
+                              additionalProperties:
+                                type: string
+                              description: |-
+                                matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                                map is equivalent to an element of matchExpressions, whose key field is "key", the
+                                operator is "In", and the values array contains only "value". The requirements are ANDed.
+                              type: object
+                          type: object
+                          x-kubernetes-map-type: atomic
+                        namespaces:
+                          description: |-
+                            Namespaces is an explicit allow-list of namespaces to search.
+                            Mutually exclusive with NamespaceSelector.
+                          items:
+                            type: string
+                          type: array
+                          x-kubernetes-list-type: set
+                        selector:
+                          description: |-
+                            Selector is a standard Kubernetes label selector. Nil selects every
+                            resource of Kind in scope.
+                          properties:
+                            matchExpressions:
+                              description: matchExpressions is a list of label selector
+                                requirements. The requirements are ANDed.
+                              items:
+                                description: |-
+                                  A label selector requirement is a selector that contains values, a key, and an operator that
+                                  relates the key and values.
+                                properties:
+                                  key:
+                                    description: key is the label key that the selector
+                                      applies to.
+                                    type: string
+                                  operator:
+                                    description: |-
+                                      operator represents a key's relationship to a set of values.
+                                      Valid operators are In, NotIn, Exists and DoesNotExist.
+                                    type: string
+                                  values:
+                                    description: |-
+                                      values is an array of string values. If the operator is In or NotIn,
+                                      the values array must be non-empty. If the operator is Exists or DoesNotExist,
+                                      the values array must be empty. This array is replaced during a strategic
+                                      merge patch.
+                                    items:
+                                      type: string
+                                    type: array
+                                    x-kubernetes-list-type: atomic
+                                required:
+                                - key
+                                - operator
+                                type: object
+                              type: array
+                              x-kubernetes-list-type: atomic
+                            matchLabels:
+                              additionalProperties:
+                                type: string
+                              description: |-
+                                matchLabels is a map of {key,value} pairs. A single {key,value} in the matchLabels
+                                map is equivalent to an element of matchExpressions, whose key field is "key", the
+                                operator is "In", and the values array contains only "value". The requirements are ANDed.
+                              type: object
+                          type: object
+                          x-kubernetes-map-type: atomic
+                        version:
+                          description: |-
+                            Version is the API version of the target kind. When empty, the
+                            operator resolves the preferred version via discovery.
+                          type: string
+                      required:
+                      - kind
+                      type: object
+                      x-kubernetes-validations:
+                      - message: namespaces and namespaceSelector are mutually exclusive
+                        rule: '!(has(self.namespaces) && size(self.namespaces) > 0
+                          && has(self.namespaceSelector))'
+                  required:
+                  - name
+                  - target
+                  type: object
+                maxItems: 32
+                minItems: 1
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+            required:
+            - dependsOn
+            type: object
+          status:
+            description: ClusterMilestoneStatus is the observed state of ClusterMilestone.
+            properties:
+              conditions:
+                description: |-
+                  Conditions exposes Ready and Stalled (kstatus-compatible). The
+                  operator may add additional condition types in future releases as
+                  additive (non-breaking) API changes.
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              dependsOn:
+                description: |-
+                  DependsOn carries per-dependency rollups, keyed by the same name as
+                  spec.dependsOn.
+                items:
+                  description: |-
+                    DependencyStatus is the per-dependency aggregated readiness reported on
+                    the owner. One entry is produced for every spec.dependsOn entry,
+                    regardless of whether discovery succeeded.
+                  properties:
+                    group:
+                      description: |-
+                        Group is the API group of the resolved target Kind. Empty for the core
+                        Kubernetes group.
+                      type: string
+                    kind:
+                      description: Kind is the target Kind as declared in the spec.
+                      type: string
+                    name:
+                      description: Name mirrors spec.dependsOn[].name and is the listmap
+                        key.
+                      type: string
+                    ready:
+                      description: |-
+                        Ready is True when every selected resource is Current; False when any
+                        resource is Failed or NotFound; Unknown otherwise (or per
+                        emptySetPolicy when no resources match).
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    reason:
+                      description: |-
+                        Reason is a short machine-readable code summarising why Ready has its
+                        current value. The closed enum covers every reason the operator emits
+                        at the dependency level; see the Reason* constants in this package
+                        for canonical values.
+                      enum:
+                      - AllResourcesReady
+                      - ResourcesNotReady
+                      - ResourcesInProgress
+                      - ResourcesUnknown
+                      - EmptySet
+                      - GVKNotEstablished
+                      - NamespaceScopeMismatch
+                      - DiscoveryFailed
+                      - DiscoveryUnavailable
+                      - WatchSetupFailed
+                      - ListFailed
+                      - ReconcileError
+                      type: string
+                    summary:
+                      description: Summary holds the per-kstatus-bucket counts that
+                        produced Ready.
+                      properties:
+                        current:
+                          description: Current counts resources whose kstatus is Current
+                            (steady-state ready).
+                          format: int32
+                          type: integer
+                        failed:
+                          description: Failed counts resources whose kstatus is Failed.
+                          format: int32
+                          type: integer
+                        inProgress:
+                          description: InProgress counts resources whose kstatus is
+                            InProgress (still converging).
+                          format: int32
+                          type: integer
+                        notFound:
+                          description: |-
+                            NotFound counts resources whose kstatus is NotFound (selector matched a
+                            name but the resource is absent).
+                          format: int32
+                          type: integer
+                        terminating:
+                          description: |-
+                            Terminating counts resources whose kstatus is Terminating (deletion in
+                            progress).
+                          format: int32
+                          type: integer
+                        total:
+                          description: |-
+                            Total is the count of resources currently matched by the dependency's
+                            target selector. Total == sum of all the other buckets.
+                          format: int32
+                          type: integer
+                        unknown:
+                          description: Unknown counts resources whose kstatus could
+                            not be determined.
+                          format: int32
+                          type: integer
+                      required:
+                      - current
+                      - failed
+                      - inProgress
+                      - notFound
+                      - terminating
+                      - total
+                      - unknown
+                      type: object
+                      x-kubernetes-validations:
+                      - message: Summary.Total must equal the sum of all buckets
+                        rule: self.total == self.current + self.inProgress + self.failed
+                          + self.notFound + self.terminating + self.unknown
+                    version:
+                      description: |-
+                        Version is the API version resolved via discovery (the target's
+                        version when set; otherwise the group's preferred version).
+                      type: string
+                  required:
+                  - kind
+                  - name
+                  - ready
+                  - summary
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - name
+                x-kubernetes-list-type: map
+              lastEvaluatedTime:
+                description: LastEvaluatedTime is the timestamp of the last status
+                  evaluation.
+                format: date-time
+                type: string
+              notReadyResources:
+                description: |-
+                  NotReadyResources lists resources whose kstatus is not Current.
+                  Capped to avoid object-size explosions; Truncated indicates the cap
+                  was hit. The MaxItems cap mirrors the runtime cap applied by the
+                  reconciler.
+                items:
+                  description: |-
+                    ResourceStatus identifies an individual matched resource and the kstatus
+                    computed for it. Only resources whose Status is not Current are surfaced
+                    on the owner (see MilestoneStatusBase.NotReadyResources).
+                  properties:
+                    group:
+                      description: Group is the API group of the resource. Empty for
+                        the core group.
+                      type: string
+                    kind:
+                      description: Kind is the API Kind of the resource.
+                      type: string
+                    message:
+                      description: |-
+                        Message is the kstatus message for this resource when one was
+                        provided by sigs.k8s.io/cli-utils.
+                      type: string
+                    name:
+                      description: Name is the name of the resource.
+                      type: string
+                    namespace:
+                      description: |-
+                        Namespace is the namespace of the resource. Empty when the resource
+                        is cluster-scoped.
+                      type: string
+                    reason:
+                      description: |-
+                        Reason is the first non-empty reason from the conditions emitted by
+                        sigs.k8s.io/cli-utils for this resource (typically the resource's own
+                        Ready/Reconciling/Stalled condition reason — e.g. LessReplicas,
+                        ProgressDeadlineExceeded).
+                      type: string
+                    status:
+                      description: |-
+                        Status is the kstatus computed by sigs.k8s.io/cli-utils for this
+                        resource.
+                      enum:
+                      - Current
+                      - InProgress
+                      - Failed
+                      - NotFound
+                      - Terminating
+                      - Unknown
+                      type: string
+                    version:
+                      description: Version is the API version of the resource.
+                      type: string
+                  required:
+                  - kind
+                  - name
+                  - status
+                  - version
+                  type: object
+                maxItems: 50
+                type: array
+              observedGeneration:
+                description: |-
+                  ObservedGeneration mirrors metadata.generation at the time of the
+                  last successful reconcile.
+                format: int64
+                type: integer
+              summary:
+                description: Summary aggregates resource counters across all dependencies.
+                properties:
+                  current:
+                    description: Current counts resources whose kstatus is Current
+                      (steady-state ready).
+                    format: int32
+                    type: integer
+                  failed:
+                    description: Failed counts resources whose kstatus is Failed.
+                    format: int32
+                    type: integer
+                  inProgress:
+                    description: InProgress counts resources whose kstatus is InProgress
+                      (still converging).
+                    format: int32
+                    type: integer
+                  notFound:
+                    description: |-
+                      NotFound counts resources whose kstatus is NotFound (selector matched a
+                      name but the resource is absent).
+                    format: int32
+                    type: integer
+                  terminating:
+                    description: |-
+                      Terminating counts resources whose kstatus is Terminating (deletion in
+                      progress).
+                    format: int32
+                    type: integer
+                  total:
+                    description: |-
+                      Total is the count of resources currently matched by the dependency's
+                      target selector. Total == sum of all the other buckets.
+                    format: int32
+                    type: integer
+                  unknown:
+                    description: Unknown counts resources whose kstatus could not
+                      be determined.
+                    format: int32
+                    type: integer
+                required:
+                - current
+                - failed
+                - inProgress
+                - notFound
+                - terminating
+                - total
+                - unknown
+                type: object
+                x-kubernetes-validations:
+                - message: Summary.Total must equal the sum of all buckets
+                  rule: self.total == self.current + self.inProgress + self.failed
+                    + self.notFound + self.terminating + self.unknown
+              truncated:
+                description: Truncated is true when NotReadyResources was capped.
+                type: boolean
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}
+{{- end }}

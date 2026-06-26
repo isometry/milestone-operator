@@ -1,0 +1,85 @@
+{{- if .Values.rbac.create }}
+---
+# Aggregation umbrella for the operator's dynamic informers. It carries NO rules
+# of its own: the kube-controller-manager unions in the rules of every
+# ClusterRole labelled milestone.as-code.io/aggregate-to-dynamic-watch: "true"
+# (the per-target member roles below, plus any shipped out-of-band). The chart
+# never emits .rules here, so this object is byte-stable across upgrades — if a
+# GitOps drift-detector (Argo CD / Flux) flags the controller-populated rules,
+# configure it to ignore /rules on this ClusterRole.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "chart.fullname" . }}-dynamic-watch-role
+  {{- with (default dict .Values.commonAnnotations) }}
+  annotations:
+    {{- range $key, $value := . }}
+    {{ $key }}: {{ tpl $value $ | quote }}
+    {{- end }}
+  {{- end }}
+  labels:
+    component: rbac
+    {{- include "labels" . | nindent 4 }}
+aggregationRule:
+  clusterRoleSelectors:
+    - matchLabels:
+        milestone.as-code.io/aggregate-to-dynamic-watch: "true"
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "chart.fullname" . }}-dynamic-watch-rolebinding
+  {{- with (default dict .Values.commonAnnotations) }}
+  annotations:
+    {{- range $key, $value := . }}
+    {{ $key }}: {{ tpl $value $ | quote }}
+    {{- end }}
+  {{- end }}
+  labels:
+    component: rbac
+    {{- include "labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "chart.fullname" . }}-dynamic-watch-role
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "chart.serviceAccountName" . }}
+    namespace: {{ include "chart.namespace" . }}
+{{- range $name, $target := .Values.rbac.dynamicWatch.targets }}
+{{- if $target.enabled }}
+---
+# Member role aggregated into {{ include "chart.fullname" $ }}-dynamic-watch-role
+# via the aggregation label. verbs default to [get, list, watch] when omitted.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "chart.fullname" $ }}-dynamic-watch-{{ $name }}
+  {{- with (default dict $.Values.commonAnnotations) }}
+  annotations:
+    {{- range $key, $value := . }}
+    {{ $key }}: {{ tpl $value $ | quote }}
+    {{- end }}
+  {{- end }}
+  labels:
+    component: rbac
+    milestone.as-code.io/aggregate-to-dynamic-watch: "true"
+    {{- include "labels" $ | nindent 4 }}
+rules:
+  {{- range $target.rules }}
+  - apiGroups:
+      {{- toYaml .apiGroups | nindent 6 }}
+    resources:
+      {{- toYaml .resources | nindent 6 }}
+    verbs:
+      {{- with .verbs }}
+      {{- toYaml . | nindent 6 }}
+      {{- else }}
+      - get
+      - list
+      - watch
+      {{- end }}
+  {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

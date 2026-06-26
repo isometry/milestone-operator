@@ -1,0 +1,7 @@
+---
+apiVersion: v2
+name: milestone-operator
+description: A Helm chart for milestone-operator
+
+type: application
+version: 0.1.0

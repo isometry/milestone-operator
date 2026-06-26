@@ -1,0 +1,25 @@
+{{- if .Values.metrics.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "chart.fullname" . }}-metrics-service
+  {{- with (default dict .Values.commonAnnotations) }}
+  annotations:
+    {{- range $key, $value := . }}
+    {{ $key }}: {{ tpl $value $ | quote }}
+    {{- end }}
+  {{- end }}
+  labels:
+    component: service
+    {{- include "labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.metrics.service.type }}
+  ports:
+    - name: metrics
+      port: {{ .Values.metrics.listen.port }}
+      protocol: TCP
+      targetPort: {{ .Values.metrics.listen.port }}
+  selector:
+    {{- include "selectorLabels" . | nindent 4 }}
+{{- end }}

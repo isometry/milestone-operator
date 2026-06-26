@@ -1,0 +1,22 @@
+{{ include "chart.fullname" . }} has been installed.
+
+The milestone-operator manager is deploying into namespace {{ include "chart.namespace" . }}.
+
+Check rollout status:
+  kubectl -n {{ include "chart.namespace" . }} rollout status deployment/{{ include "chart.fullname" . }}
+
+{{- if .Values.crds.install }}
+
+CRDs installed: milestones.milestone.as-code.io, clustermilestones.milestone.as-code.io
+{{- if .Values.crds.keep }}
+(annotated helm.sh/resource-policy: keep — a `helm uninstall` will NOT remove them.)
+{{- end }}
+{{- else }}
+
+CRDs were NOT installed by this release (crds.install=false); ensure they exist
+in the cluster before creating Milestone/ClusterMilestone resources.
+{{- end }}
+
+To let the operator watch additional dependency target kinds, add an entry under
+rbac.dynamicWatch.targets — see the chart README ("Granting watch access to new
+target kinds").

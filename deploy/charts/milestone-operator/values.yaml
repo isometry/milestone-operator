@@ -1,0 +1,132 @@
+---
+# Common values
+commonLabels: {}
+commonAnnotations: {}
+nameOverride: ~
+fullnameOverride: ~
+
+## namespace: defaults to the namespace where the chart is deployed if not specified
+namespace: ~
+
+## crds
+##   install: true | false
+##     true: install the CRDs
+##     false: do not install the CRDs (e.g. when managed out-of-band)
+##   keep: true | false
+##     true: annotate CRDs with helm.sh/resource-policy: keep so a `helm uninstall`
+##           leaves them (and your Milestone/ClusterMilestone resources) in place
+##     false: allow helm to delete the CRDs when the chart is uninstalled
+crds:
+  install: true
+  keep: true
+
+## leaderElection: run a single active manager via a coordination.k8s.io Lease
+leaderElection:
+  enabled: true
+
+## fluxNotify: poke the FluxCD parent (Kustomization/HelmRelease) on Milestone
+## Ready transitions. This toggles BOTH the --flux-notify manager arg AND the
+## patch permissions on those resources in the operator's core ClusterRole, so
+## disabling it drops the grant too. Independent of rbac.dynamicWatch.targets.flux
+## (which grants get/list/watch for using Flux objects as dependency targets).
+fluxNotify: true
+
+## rbac
+rbac:
+  ## create: install the operator's ServiceAccount, Roles and Bindings
+  create: true
+  serviceAccount:
+    ## name: defaults to the chart fullname when unset
+    name: ~
+    annotations: {}
+
+  ## extraClusterRoleBindings: bind pre-existing (out-of-band) ClusterRoles to
+  ## the operator's ServiceAccount, e.g. [view, my-shared-reader].
+  extraClusterRoleBindings: []
+
+  ## dynamicWatch: grant the operator's dynamic informers list/watch on the
+  ## target kinds referenced by spec.dependsOn[].target.
+  ##
+  ## Each entry under `targets` renders one ClusterRole carrying the aggregation
+  ## label milestone.as-code.io/aggregate-to-dynamic-watch: "true"; the
+  ## kube-controller-manager unions all such roles into the operator's umbrella
+  ## ClusterRole. Add an entry to grant a new target group — `verbs` defaults to
+  ## [get, list, watch] when omitted (all the operator ever needs).
+  ##
+  ## Cluster admins can equivalently ship their own labelled ClusterRole
+  ## out-of-band; the chart's targets are just the ergonomic path.
+  dynamicWatch:
+    targets:
+      flux:
+        enabled: true
+        rules:
+          - apiGroups: [kustomize.toolkit.fluxcd.io]
+            resources: [kustomizations]
+          - apiGroups: [helm.toolkit.fluxcd.io]
+            resources: [helmreleases]
+          - apiGroups: [source.toolkit.fluxcd.io]
+            resources: [gitrepositories, helmrepositories, ocirepositories, helmcharts, buckets]
+          - apiGroups: [image.toolkit.fluxcd.io]
+            resources: [imagepolicies, imagerepositories, imageupdateautomations]
+          - apiGroups: [notification.toolkit.fluxcd.io]
+            resources: [alerts, providers, receivers]
+      # argocd:
+      #   enabled: true
+      #   rules:
+      #     - apiGroups: [argoproj.io]
+      #       resources: [applications]   # verbs default to [get, list, watch]
+      # certManager:
+      #   enabled: true
+      #   rules:
+      #     - apiGroups: [cert-manager.io]
+      #       resources: [certificates, issuers, clusterissuers]
+      # core:
+      #   enabled: true
+      #   rules:
+      #     - apiGroups: [""]
+      #       resources: [configmaps]
+
+## metrics
+##   enabled: serve and expose the controller-runtime /metrics endpoint
+##   listen.port: port for --metrics-bind-address=:<port>
+##   secure: serve metrics over HTTPS with a bearer-token AuthN/AuthZ filter
+##           (--metrics-secure); false = plain HTTP
+##   service.type: ClusterIP | NodePort | LoadBalancer
+##   serviceMonitor.enabled: render a monitoring.coreos.com/v1 ServiceMonitor
+##           (requires the Prometheus Operator CRDs)
+metrics:
+  enabled: true
+  listen:
+    port: 8080
+  secure: false
+  service:
+    type: ClusterIP
+  serviceMonitor:
+    enabled: false
+
+## manager
+##   repository: image repository
+##   tag: image tag (a sha256:... value is treated as a digest); defaults to the
+##        chart appVersion, then "latest"
+##   replicas: number of replicas
+##   extraArgs: map of additional CLI flags rendered as --key=value (or --key for
+##              a null value)
+##   env: additional environment variables for the manager container
+manager:
+  repository: ghcr.io/isometry/milestone-operator
+  tag: ~
+  replicas: 1
+  annotations: {}
+  extraLabels: {}
+  nodeSelector: ~
+  tolerations: ~
+  affinity: ~
+  env: []
+  extraArgs: {}
+  resources:
+    requests:
+      cpu: 10m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
