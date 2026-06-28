@@ -73,6 +73,19 @@ var _ = Describe("Manager", Ordered, func() {
 		cmd := exec.Command("kubectl", "delete", "-f", "test/e2e/testdata/dynamic_watch_e2e.yaml", "--ignore-not-found")
 		_, _ = utils.Run(cmd)
 
+		// Drain all instances while the controller is still running so it can
+		// remove the milestone.as-code.io/finalizer. Otherwise `make undeploy`
+		// deletes the CRDs and the controller concurrently; if the controller
+		// loses the race, the finalizers are stuck forever and the blocking
+		// `kubectl delete` hangs until the Go test deadline.
+		By("draining Milestone/ClusterMilestone instances while the controller is live")
+		cmd = exec.Command("kubectl", "delete", "milestones.milestone.as-code.io",
+			"--all", "--all-namespaces", "--ignore-not-found", "--wait", "--timeout=60s")
+		_, _ = utils.Run(cmd)
+		cmd = exec.Command("kubectl", "delete", "clustermilestones.milestone.as-code.io",
+			"--all", "--ignore-not-found", "--wait", "--timeout=60s")
+		_, _ = utils.Run(cmd)
+
 		By("undeploying the controller-manager")
 		cmd = exec.Command("make", "undeploy")
 		_, _ = utils.Run(cmd)
