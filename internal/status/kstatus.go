@@ -15,6 +15,12 @@ import (
 	kstatus "sigs.k8s.io/cli-utils/pkg/kstatus/status"
 )
 
+// IsCurrent reports whether the resource's computed kstatus is Current
+// (steady-state ready).
+func (r Resource) IsCurrent() bool {
+	return r.Status == kstatus.CurrentStatus.String()
+}
+
 // Compute computes the kstatus of an unstructured resource and lifts it into
 // a Resource ready for reduction. Errors and nil results are reported as Unknown.
 func Compute(u *unstructured.Unstructured) Resource {
@@ -28,12 +34,12 @@ func Compute(u *unstructured.Unstructured) Resource {
 	}
 	res, err := kstatus.Compute(u)
 	if err != nil {
-		r.Status = "Unknown"
+		r.Status = kstatus.UnknownStatus.String()
 		r.Message = err.Error()
 		return r
 	}
 	if res == nil {
-		r.Status = "Unknown"
+		r.Status = kstatus.UnknownStatus.String()
 		return r
 	}
 	r.Status = res.Status.String()

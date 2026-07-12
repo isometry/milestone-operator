@@ -31,6 +31,16 @@ func StatusEqualIgnoringTimestamp(a, b apiv1.MilestoneStatusBase) bool {
 	return statusEqualIgnoringTimestamp(a, b)
 }
 
+// DedupeAndSortResources exposes dedupeAndSortResources for test access.
+func DedupeAndSortResources(in []apiv1.ResourceStatus) []apiv1.ResourceStatus {
+	return dedupeAndSortResources(in)
+}
+
+// TruncateWithEllipsis exposes truncateWithEllipsis for test access.
+func TruncateWithEllipsis(s string, maxBytes int) string {
+	return truncateWithEllipsis(s, maxBytes)
+}
+
 // MaxStalledErrChars exposes the truncation constant so tests can assert
 // against the contract rather than hardcoding the number.
 const MaxStalledErrChars = maxStalledErrChars

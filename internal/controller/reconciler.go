@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	apiv1 "github.com/isometry/milestone-operator/api/v1"
 	"github.com/isometry/milestone-operator/internal/discovery"
@@ -405,7 +406,7 @@ func (r *Reconciler[T]) applyStatus(sb *apiv1.MilestoneStatusBase, generation in
 	sb.ObservedGeneration = generation
 	sb.DependsOn = sortedDependencyStatuses(rollups)
 	sb.Summary = status.SummarizeOwner(rollups)
-	sb.NotReadyResources, sb.Truncated = capResources(notReady, r.resourceCap())
+	sb.NotReadyResources, sb.Truncated = capResources(dedupeAndSortResources(notReady), r.resourceCap())
 
 	readyStatus, readyReason, readyMessage := status.ReduceOwner(rollups)
 	setCondition(sb, apiv1.ConditionReady, readyStatus, readyReason, readyMessage)
@@ -496,7 +497,7 @@ func notReadyResourcesOf(resources []status.Resource) []apiv1.ResourceStatus {
 	// patches when prior state was nil.
 	var out []apiv1.ResourceStatus
 	for _, m := range resources {
-		if m.Status == "Current" {
+		if m.IsCurrent() {
 			continue
 		}
 		out = append(out, apiv1.ResourceStatus{
@@ -520,6 +521,46 @@ func capResources(in []apiv1.ResourceStatus, cap int) ([]apiv1.ResourceStatus, b
 	return in[:cap], true
 }
 
+// dedupeAndSortResources canonicalises the owner-level not-ready list.
+// The informer lister iterates a map, so input order is nondeterministic —
+// left unsorted, consecutive identical reconciles DeepEqual-differ and every
+// patch's watch event triggers the next reconcile. Dedup handles overlapping
+// dependency selectors matching the same object twice, which would otherwise
+// burn the resource cap early. status.summary deliberately keeps
+// per-dependency counting and is not deduped here.
+func dedupeAndSortResources(in []apiv1.ResourceStatus) []apiv1.ResourceStatus {
+	if len(in) == 0 {
+		return nil
+	}
+	type identity struct{ group, version, kind, namespace, name string }
+	seen := make(map[identity]struct{}, len(in))
+	out := make([]apiv1.ResourceStatus, 0, len(in))
+	for _, r := range in {
+		id := identity{r.Group, r.Version, r.Kind, r.Namespace, r.Name}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, r)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		switch {
+		case a.Group != b.Group:
+			return a.Group < b.Group
+		case a.Kind != b.Kind:
+			return a.Kind < b.Kind
+		case a.Namespace != b.Namespace:
+			return a.Namespace < b.Namespace
+		case a.Name != b.Name:
+			return a.Name < b.Name
+		default:
+			return a.Version < b.Version
+		}
+	})
+	return out
+}
+
 // sanitiseErrText flattens newlines and truncates an underlying error string
 // so it can safely participate in a Stalled condition message without inflating
 // the status object or breaking line-oriented downstream parsers.
@@ -533,10 +574,27 @@ func sanitiseErrText(err error) string {
 		s = strings.ReplaceAll(s, "\n", " ")
 		s = strings.ReplaceAll(s, "\r", " ")
 	}
-	if len(s) > maxStalledErrChars {
-		return s[:maxStalledErrChars-1] + "…"
+	return truncateWithEllipsis(s, maxStalledErrChars)
+}
+
+// truncateWithEllipsis truncates s to at most maxBytes bytes, appending "…"
+// when truncation occurs. The cut never splits a multi-byte rune: the
+// apiserver coerces invalid UTF-8 to U+FFFD on write, so a mid-rune cut would
+// make the stored message permanently unequal to the recomputed one and break
+// reconcile idempotency.
+func truncateWithEllipsis(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
 	}
-	return s
+	const ellipsis = "…"
+	if maxBytes < len(ellipsis) {
+		return ""
+	}
+	cut := maxBytes - len(ellipsis)
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + ellipsis
 }
 
 func setCondition(sb *apiv1.MilestoneStatusBase, condType string, st metav1.ConditionStatus, reason, message string) {
@@ -584,9 +642,7 @@ func (r *Reconciler[T]) applyStalledFromErrors(sb *apiv1.MilestoneStatusBase, er
 	if overflow > 0 {
 		message = fmt.Sprintf("%s; … %d more", message, overflow)
 	}
-	if len(message) > maxStalledTotalChars {
-		message = message[:maxStalledTotalChars-1] + "…"
-	}
+	message = truncateWithEllipsis(message, maxStalledTotalChars)
 	apimeta.SetStatusCondition(&sb.Conditions, metav1.Condition{
 		Type:               apiv1.ConditionStalled,
 		Status:             metav1.ConditionTrue,

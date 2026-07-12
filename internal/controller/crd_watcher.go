@@ -39,19 +39,31 @@ type RegistryInvalidator interface {
 // that any Milestone or ClusterMilestone references.
 //
 // Two transition kinds matter:
-//   - Established=True (CRD has just become resolvable): clear the cached
-//     discovery entry for (group, kind), drop any stale informer for the
-//     same, and wake every owner that references the kind so they
-//     re-resolve and re-subscribe.
+//   - observed not-Established → Established (CRD has just become
+//     resolvable): clear the cached discovery entry for (group, kind), drop
+//     any stale informer for the same, and wake every owner that references
+//     the kind so they re-resolve and re-subscribe.
 //   - Established=True → anything else (CRD removed, NamesAccepted lost,
 //     etc.): same actions, using the previously-recorded (group, kind).
 //     Without this the informer keeps a now-empty cache and combined with
 //     emptySetPolicy=Ready would flip the dependency to True against a
 //     vanished API surface.
 //
-// Transition tracking is per CRD name (== reconcile.Request name). Repeated
-// observations of the same Established=True state are idempotent — the cache
-// invalidate and wake only fire when state actually changes.
+// Transition tracking is per CRD name (== reconcile.Request name) and only
+// fires on observed state *changes*. The first observation of a CRD —
+// notably the informer replay of every pre-existing CRD at operator startup
+// or leader change — seeds the state silently: controller-runtime already
+// reconciles every owner at startup, so firing per-CRD invalidations and
+// full owner list scans there is pure churn (and would inflate
+// milestone_crd_established_events_total on every restart). The narrow race
+// this concedes — a CRD reaching Established before its very first observed
+// event — converges via the owners' 30s stalled requeue.
+//
+// State is committed only after the transition side effects succeed
+// (peek-then-commit), so a failed wake surfaces as a Reconcile error and the
+// controller-runtime retry re-fires the same transition instead of matching
+// "no change". Reconciles for one key are never concurrent, so peeking then
+// committing is race-free.
 type CRDWatcher struct {
 	client.Client
 	Resolver discovery.Resolver
@@ -64,17 +76,24 @@ type CRDWatcher struct {
 	MilestoneEnqueue        *watcher.EnqueueSource
 	ClusterMilestoneEnqueue *watcher.EnqueueSource
 
-	mu              sync.Mutex
-	lastEstablished map[string]groupKind // keyed by CRD metadata.name
+	mu           sync.Mutex
+	lastObserved map[string]crdState // keyed by CRD metadata.name
 }
 
 type groupKind struct{ group, kind string }
+
+// crdState is the last-observed identity and Established condition of one CRD.
+type crdState struct {
+	gk          groupKind
+	established bool
+}
 
 // +kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch
 
 // Reconcile is invoked for every CRD change. It computes the (prior, current)
 // state pair for this CRD and runs the cache-invalidate + owner-wake side
-// effects only on transitions.
+// effects only on observed transitions, committing the new state only once
+// those side effects succeed.
 func (w *CRDWatcher) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 
@@ -85,32 +104,46 @@ func (w *CRDWatcher) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Resu
 	}
 	missing := getErr != nil // NotFound: CRD has been deleted
 
-	var current groupKind
-	currentEstablished := false
+	var current crdState
 	if !missing {
-		current = groupKind{group: crd.Spec.Group, kind: crd.Spec.Names.Kind}
-		currentEstablished = crdEstablished(crd)
+		current = crdState{
+			gk:          groupKind{group: crd.Spec.Group, kind: crd.Spec.Names.Kind},
+			established: crdEstablished(crd),
+		}
 	}
 
-	prior, hadPrior := w.swapLastEstablished(req.Name, current, currentEstablished)
+	prior, seen := w.peekObserved(req.Name)
 
+	var fire *groupKind
+	establishing := false
 	switch {
-	case currentEstablished && (!hadPrior || prior != current):
+	case !seen:
+		// First observation (startup / leader-change informer replay, or a
+		// brand-new CRD's create event): seed silently below.
+	case current.established && (!prior.established || prior.gk != current.gk):
 		// Transition to Established (or the (group, kind) changed under us —
 		// unusual but possible with apiserver edits).
-		metrics.CRDEstablishedEvents.WithLabelValues(current.group, current.kind).Inc()
-		if err := w.applyTransition(ctx, log, current); err != nil {
-			return ctrl.Result{}, err
-		}
-	case hadPrior && !currentEstablished:
+		fire = &current.gk
+		establishing = true
+	case prior.established && !current.established:
 		// Transition away from Established (CRD gone, or status changed). Use
 		// the previously-recorded (group, kind) since `current` is empty when
 		// the CRD is missing.
-		if err := w.applyTransition(ctx, log, prior); err != nil {
+		fire = &prior.gk
+	}
+
+	if fire != nil {
+		if err := w.applyTransition(ctx, log, *fire); err != nil {
+			// State deliberately not committed: the retry recomputes the same
+			// transition and re-fires the invalidate-and-wake.
 			return ctrl.Result{}, err
+		}
+		if establishing {
+			metrics.CRDEstablishedEvents.WithLabelValues(fire.group, fire.kind).Inc()
 		}
 	}
 
+	w.commitObserved(req.Name, current, missing)
 	return ctrl.Result{}, nil
 }
 
@@ -136,22 +169,28 @@ func (w *CRDWatcher) applyTransition(ctx context.Context, log logr.Logger, gk gr
 	return errors.Join(mErr, cErr)
 }
 
-// swapLastEstablished records the latest observed (group, kind) for the CRD
-// and returns the prior state so the caller can decide whether a transition
-// fired. When the CRD is missing or not Established, the entry is cleared.
-func (w *CRDWatcher) swapLastEstablished(name string, current groupKind, currentEstablished bool) (groupKind, bool) {
+// peekObserved returns the last committed observation for the CRD without
+// mutating it.
+func (w *CRDWatcher) peekObserved(name string) (crdState, bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if w.lastEstablished == nil {
-		w.lastEstablished = make(map[string]groupKind)
+	prior, seen := w.lastObserved[name]
+	return prior, seen
+}
+
+// commitObserved records the latest observation for the CRD; a missing
+// (deleted) CRD clears the entry.
+func (w *CRDWatcher) commitObserved(name string, current crdState, missing bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if missing {
+		delete(w.lastObserved, name)
+		return
 	}
-	prior, had := w.lastEstablished[name]
-	if currentEstablished {
-		w.lastEstablished[name] = current
-	} else {
-		delete(w.lastEstablished, name)
+	if w.lastObserved == nil {
+		w.lastObserved = make(map[string]crdState)
 	}
-	return prior, had
+	w.lastObserved[name] = current
 }
 
 func (w *CRDWatcher) wakeMilestones(ctx context.Context, group, kind string) error {

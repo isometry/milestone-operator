@@ -58,39 +58,22 @@ func (a *MilestoneAdapter) Dependencies(ctx context.Context, dr discovery.Resolv
 	var errs []DependencyError
 	for i := range deps {
 		d := &deps[i]
-		gvk, scope, err := dr.Resolve(ctx, d.Target.Group, d.Target.Kind, d.Target.Version)
-		if err != nil {
-			errs = append(errs, DependencyError{
-				Name:   d.Name,
-				Group:  d.Target.Group,
-				Kind:   d.Target.Kind,
-				Reason: apiv1.ReasonGVKNotEstablished,
-				Err:    err,
-			})
+		gvk, scope, derr := resolveDependencyTarget(ctx, dr, d.Name, d.Target)
+		if derr != nil {
+			errs = append(errs, *derr)
 			continue
 		}
 		// Milestones are namespaced and only ever observe resources in
 		// their own namespace. Targeting a cluster-scoped kind would
 		// silently produce an empty set after the namespace matcher.
 		if scope != apimeta.RESTScopeNameNamespace {
-			errs = append(errs, DependencyError{
-				Name:   d.Name,
-				Group:  gvk.Group,
-				Kind:   gvk.Kind,
-				Reason: apiv1.ReasonNamespaceScopeMismatch,
-				Err:    fmt.Errorf("kind %q is cluster-scoped; Milestone can only target namespaced resources (use ClusterMilestone)", gvk.Kind),
-			})
+			errs = append(errs, dependencyError(d.Name, gvk, apiv1.ReasonNamespaceScopeMismatch,
+				fmt.Errorf("kind %q is cluster-scoped; Milestone can only target namespaced resources (use ClusterMilestone)", gvk.Kind)))
 			continue
 		}
-		sel, err := labelSelectorOrEverything(d.Target.Selector)
-		if err != nil {
-			errs = append(errs, DependencyError{
-				Name:   d.Name,
-				Group:  gvk.Group,
-				Kind:   gvk.Kind,
-				Reason: apiv1.ReasonDiscoveryFailed,
-				Err:    err,
-			})
+		sel, derr := parseDependencySelector(d.Name, gvk, d.Target.Selector)
+		if derr != nil {
+			errs = append(errs, *derr)
 			continue
 		}
 		out = append(out, NormalizedDependency{

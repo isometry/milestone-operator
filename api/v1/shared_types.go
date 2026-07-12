@@ -251,7 +251,11 @@ type MilestoneStatusBase struct {
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 
-	// Summary aggregates resource counters across all dependencies.
+	// Summary aggregates resource counters across all dependencies. Counting
+	// is per dependency: a resource matched by two overlapping dependency
+	// selectors contributes to each dependency's buckets, so Total can exceed
+	// the number of distinct resources. (NotReadyResources, by contrast, is
+	// deduplicated.)
 	// +optional
 	Summary Summary `json:"summary,omitempty"`
 
@@ -262,9 +266,10 @@ type MilestoneStatusBase struct {
 	// +listMapKey=name
 	DependsOn []DependencyStatus `json:"dependsOn,omitempty"`
 
-	// NotReadyResources lists resources whose kstatus is not Current.
-	// Capped to avoid object-size explosions; Truncated indicates the cap
-	// was hit. The MaxItems cap mirrors the runtime cap applied by the
+	// NotReadyResources lists resources whose kstatus is not Current,
+	// deduplicated across dependencies and sorted by group, kind, namespace,
+	// name. Capped to avoid object-size explosions; Truncated indicates the
+	// cap was hit. The MaxItems cap mirrors the runtime cap applied by the
 	// reconciler.
 	// +optional
 	// +kubebuilder:validation:MaxItems=50

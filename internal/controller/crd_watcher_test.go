@@ -18,7 +18,9 @@ import (
 
 	apiv1 "github.com/isometry/milestone-operator/api/v1"
 	"github.com/isometry/milestone-operator/internal/controller"
+	ctrmetrics "github.com/isometry/milestone-operator/internal/metrics"
 	"github.com/isometry/milestone-operator/internal/watcher"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	apiextv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -112,6 +114,7 @@ func crdEstablishedObj(name, group, kind string) *apiextv1.CustomResourceDefinit
 	}
 }
 
+//nolint:unparam // signature mirrors crdEstablishedObj for fixture symmetry
 func crdNotEstablishedObj(name, group, kind string) *apiextv1.CustomResourceDefinition {
 	crd := crdEstablishedObj(name, group, kind)
 	crd.Status.Conditions[0].Status = apiextv1.ConditionFalse
@@ -152,8 +155,26 @@ func clusterMilestoneWithDep(name, group, kind string) *apiv1.ClusterMilestone {
 	}
 }
 
-// TestCRDWatcher_EstablishedTrue_WakesAndInvalidates pins the happy path:
-// first observation of an Established=True CRD invalidates the discovery
+// setCRDEstablished flips the stored CRD's Established condition via the
+// status subresource.
+func setCRDEstablished(t *testing.T, c client.Client, name string, established bool) {
+	t.Helper()
+	stored := &apiextv1.CustomResourceDefinition{}
+	if err := c.Get(context.Background(), types.NamespacedName{Name: name}, stored); err != nil {
+		t.Fatalf("Get CRD: %v", err)
+	}
+	status := apiextv1.ConditionFalse
+	if established {
+		status = apiextv1.ConditionTrue
+	}
+	stored.Status.Conditions[0].Status = status
+	if err := c.Status().Update(context.Background(), stored); err != nil {
+		t.Fatalf("Status update: %v", err)
+	}
+}
+
+// TestCRDWatcher_EstablishedTrue_WakesAndInvalidates pins the happy path: an
+// observed not-established → Established transition invalidates the discovery
 // cache and the registry for that (group, kind), and enqueues every
 // matching Milestone / ClusterMilestone.
 func TestCRDWatcher_EstablishedTrue_WakesAndInvalidates(t *testing.T) {
@@ -161,8 +182,9 @@ func TestCRDWatcher_EstablishedTrue_WakesAndInvalidates(t *testing.T) {
 	matchM := milestoneWithDep(nameWave0, groupKustomize, kindKustomization)
 	unrelatedM := milestoneWithDep(nameWave1, "other.group", "Other")
 	matchCM := clusterMilestoneWithDep("platform-0", groupKustomize, kindKustomization)
-	crd := crdEstablishedObj("kustomizations."+groupKustomize, groupKustomize, kindKustomization)
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(matchM, unrelatedM, matchCM, crd).Build()
+	crd := crdNotEstablishedObj("kustomizations."+groupKustomize, groupKustomize, kindKustomization)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(matchM, unrelatedM, matchCM, crd).
+		WithStatusSubresource(&apiextv1.CustomResourceDefinition{}).Build()
 
 	res := &recordingResolver{}
 	reg := &recordingRegistry{}
@@ -172,8 +194,13 @@ func TestCRDWatcher_EstablishedTrue_WakesAndInvalidates(t *testing.T) {
 	cQ := startSource(t, cSrc)
 
 	w := &controller.CRDWatcher{Client: c, Resolver: res, Registry: reg, MilestoneEnqueue: mSrc, ClusterMilestoneEnqueue: cSrc}
-	if _, err := w.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: crd.Name}}); err != nil {
-		t.Fatalf("Reconcile: %v", err)
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: crd.Name}}
+	if _, err := w.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("Reconcile (seed): %v", err)
+	}
+	setCRDEstablished(t, c, crd.Name, true)
+	if _, err := w.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("Reconcile (establish): %v", err)
 	}
 
 	if got := res.calls(); len(got) != 1 || got[0] != (groupKindPair{groupKustomize, kindKustomization}) {
@@ -187,6 +214,131 @@ func TestCRDWatcher_EstablishedTrue_WakesAndInvalidates(t *testing.T) {
 	}
 	if cReqs := drainQueue(cQ); len(cReqs) != 1 || cReqs[0].Name != "platform-0" {
 		t.Errorf("clustermilestone wakes = %v, want exactly platform-0", cReqs)
+	}
+}
+
+// TestCRDWatcher_StartupReplay_EstablishedCRD_SeedsSilently: the first
+// observation of an already-Established CRD (informer replay at operator
+// startup or leader change) must seed transition state without firing side
+// effects — controller-runtime already reconciles every owner at startup, so
+// invalidating and waking per pre-existing CRD is pure churn and inflates
+// milestone_crd_established_events_total on every restart. The seeded state
+// must still drive a later de-establish transition.
+func TestCRDWatcher_StartupReplay_EstablishedCRD_SeedsSilently(t *testing.T) {
+	s := crdWatcherScheme(t)
+	m := milestoneWithDep(nameWave0, groupKustomize, kindKustomization)
+	crd := crdEstablishedObj("kustomizations."+groupKustomize, groupKustomize, kindKustomization)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(m, crd).
+		WithStatusSubresource(&apiextv1.CustomResourceDefinition{}).Build()
+
+	res := &recordingResolver{}
+	reg := &recordingRegistry{}
+	mSrc, cSrc := watcher.NewEnqueueSource(), watcher.NewEnqueueSource()
+	mQ := startSource(t, mSrc)
+	cQ := startSource(t, cSrc)
+	w := &controller.CRDWatcher{Client: c, Resolver: res, Registry: reg, MilestoneEnqueue: mSrc, ClusterMilestoneEnqueue: cSrc}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: crd.Name}}
+
+	established := testutil.ToFloat64(ctrmetrics.CRDEstablishedEvents.WithLabelValues(groupKustomize, kindKustomization))
+	if _, err := w.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("Reconcile (startup replay): %v", err)
+	}
+	if got := len(res.calls()) + len(reg.calls()) + mQ.Len() + cQ.Len(); got != 0 {
+		t.Errorf("startup replay produced side effects (counts sum = %d); want silent seed", got)
+	}
+	if got := testutil.ToFloat64(ctrmetrics.CRDEstablishedEvents.WithLabelValues(groupKustomize, kindKustomization)); got != established {
+		t.Errorf("CRDEstablishedEvents delta = %v on startup replay, want 0", got-established)
+	}
+
+	// The silent seed must have recorded (group, kind): a subsequent
+	// de-establish fires with it.
+	setCRDEstablished(t, c, crd.Name, false)
+	if _, err := w.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("Reconcile (de-establish): %v", err)
+	}
+	if got := res.calls(); len(got) != 1 || got[0] != (groupKindPair{groupKustomize, kindKustomization}) {
+		t.Errorf("post-de-establish resolver invalidations = %v, want one [%s/%s]", got, groupKustomize, kindKustomization)
+	}
+	if mReqs := drainQueue(mQ); len(mReqs) != 1 || mReqs[0].Name != nameWave0 {
+		t.Errorf("de-establish milestone wakes = %v, want exactly wave-0", mReqs)
+	}
+}
+
+// TestCRDWatcher_WakeError_RetryRefiresTransition pins the peek-then-commit
+// contract: when the wake fails (transient list error) the Reconcile error
+// must leave the transition uncommitted, so the controller-runtime retry
+// re-fires the invalidate-and-wake instead of silently matching "no
+// transition". Without this, a CRD deleted while an owner is Ready=True can
+// leave that owner reporting Ready forever against a vanished API surface.
+func TestCRDWatcher_WakeError_RetryRefiresTransition(t *testing.T) {
+	directions := []struct {
+		name       string
+		transition func(t *testing.T, c client.Client, crdName string)
+	}{
+		{name: "establish", transition: func(t *testing.T, c client.Client, crdName string) {
+			setCRDEstablished(t, c, crdName, true)
+		}},
+		{name: "delete", transition: func(t *testing.T, c client.Client, crdName string) {
+			stored := &apiextv1.CustomResourceDefinition{}
+			if err := c.Get(context.Background(), types.NamespacedName{Name: crdName}, stored); err != nil {
+				t.Fatalf("Get CRD: %v", err)
+			}
+			if err := c.Delete(context.Background(), stored); err != nil {
+				t.Fatalf("Delete CRD: %v", err)
+			}
+		}},
+	}
+	for _, dir := range directions {
+		t.Run(dir.name, func(t *testing.T) {
+			s := crdWatcherScheme(t)
+			m := milestoneWithDep(nameWave0, groupKustomize, kindKustomization)
+			// establish direction starts not-established; delete direction
+			// starts established (seeded on first observation).
+			var crd *apiextv1.CustomResourceDefinition
+			if dir.name == "establish" {
+				crd = crdNotEstablishedObj("kustomizations."+groupKustomize, groupKustomize, kindKustomization)
+			} else {
+				crd = crdEstablishedObj("kustomizations."+groupKustomize, groupKustomize, kindKustomization)
+			}
+			failOnce := true
+			c := fake.NewClientBuilder().WithScheme(s).WithObjects(m, crd).
+				WithStatusSubresource(&apiextv1.CustomResourceDefinition{}).
+				WithInterceptorFuncs(interceptor.Funcs{
+					List: func(ctx context.Context, cl client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+						if _, ok := list.(*apiv1.MilestoneList); ok && failOnce {
+							failOnce = false
+							return errors.New("apiserver: transient list failure")
+						}
+						return cl.List(ctx, list, opts...)
+					},
+				}).Build()
+
+			res := &recordingResolver{}
+			reg := &recordingRegistry{}
+			mSrc, cSrc := watcher.NewEnqueueSource(), watcher.NewEnqueueSource()
+			mQ := startSource(t, mSrc)
+			_ = startSource(t, cSrc)
+			w := &controller.CRDWatcher{Client: c, Resolver: res, Registry: reg, MilestoneEnqueue: mSrc, ClusterMilestoneEnqueue: cSrc}
+			req := ctrl.Request{NamespacedName: types.NamespacedName{Name: crd.Name}}
+
+			// Seed the initial observation (list interceptor untouched: no wake).
+			if _, err := w.Reconcile(context.Background(), req); err != nil {
+				t.Fatalf("Reconcile (seed): %v", err)
+			}
+			dir.transition(t, c, crd.Name)
+
+			// Transition reconcile: wake list fails once → error for retry.
+			if _, err := w.Reconcile(context.Background(), req); err == nil {
+				t.Fatalf("Reconcile (failed wake) returned nil; expected error for retry")
+			}
+			// Retry with no further CRD change must re-fire the wake.
+			if _, err := w.Reconcile(context.Background(), req); err != nil {
+				t.Fatalf("Reconcile (retry): %v", err)
+			}
+			if mReqs := drainQueue(mQ); len(mReqs) != 1 || mReqs[0].Name != nameWave0 {
+				t.Errorf("wakes after retry = %v, want exactly wave-0 (transition must survive the failed attempt)", mReqs)
+			}
+		})
 	}
 }
 
@@ -226,8 +378,9 @@ func TestCRDWatcher_NotEstablished_NoOp(t *testing.T) {
 func TestCRDWatcher_RepeatEstablishedTrue_Idempotent(t *testing.T) {
 	s := crdWatcherScheme(t)
 	m := milestoneWithDep(nameWave0, groupKustomize, kindKustomization)
-	crd := crdEstablishedObj("kustomizations."+groupKustomize, groupKustomize, kindKustomization)
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(m, crd).Build()
+	crd := crdNotEstablishedObj("kustomizations."+groupKustomize, groupKustomize, kindKustomization)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(m, crd).
+		WithStatusSubresource(&apiextv1.CustomResourceDefinition{}).Build()
 
 	res := &recordingResolver{}
 	reg := &recordingRegistry{}
@@ -237,16 +390,20 @@ func TestCRDWatcher_RepeatEstablishedTrue_Idempotent(t *testing.T) {
 	w := &controller.CRDWatcher{Client: c, Resolver: res, Registry: reg, MilestoneEnqueue: mSrc, ClusterMilestoneEnqueue: cSrc}
 	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: crd.Name}}
 
+	if _, err := w.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("Reconcile (seed): %v", err)
+	}
+	setCRDEstablished(t, c, crd.Name, true)
 	for i := range 3 {
 		if _, err := w.Reconcile(context.Background(), req); err != nil {
 			t.Fatalf("Reconcile %d: %v", i, err)
 		}
 	}
 	if got := len(res.calls()); got != 1 {
-		t.Errorf("resolver invalidations after 3 reconciles = %d, want 1", got)
+		t.Errorf("resolver invalidations after transition + 2 resyncs = %d, want 1", got)
 	}
 	if got := len(reg.calls()); got != 1 {
-		t.Errorf("registry invalidations after 3 reconciles = %d, want 1", got)
+		t.Errorf("registry invalidations after transition + 2 resyncs = %d, want 1", got)
 	}
 	if mQ.Len() != 1 {
 		t.Errorf("milestone queue length = %d, want 1 (single Enqueue, key-deduped)", mQ.Len())
@@ -332,25 +489,18 @@ func TestCRDWatcher_TransitionEstablishedToFalse_InvalidatesAndWakes(t *testing.
 	w := &controller.CRDWatcher{Client: c, Resolver: res, Registry: reg, MilestoneEnqueue: mSrc, ClusterMilestoneEnqueue: cSrc}
 	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: crd.Name}}
 
+	// First observation is a silent seed (startup replay semantics).
 	if _, err := w.Reconcile(context.Background(), req); err != nil {
-		t.Fatalf("Reconcile (establish): %v", err)
+		t.Fatalf("Reconcile (seed): %v", err)
 	}
 	drainQueue(mQ)
 
-	stored := &apiextv1.CustomResourceDefinition{}
-	if err := c.Get(context.Background(), types.NamespacedName{Name: crd.Name}, stored); err != nil {
-		t.Fatalf("Get: %v", err)
-	}
-	stored.Status.Conditions[0].Status = apiextv1.ConditionFalse
-	if err := c.Status().Update(context.Background(), stored); err != nil {
-		t.Fatalf("Status update: %v", err)
-	}
-
+	setCRDEstablished(t, c, crd.Name, false)
 	if _, err := w.Reconcile(context.Background(), req); err != nil {
 		t.Fatalf("Reconcile (de-establish): %v", err)
 	}
-	if got := len(res.calls()); got != 2 {
-		t.Errorf("resolver invalidations after de-establish = %d, want 2 (establish + de-establish)", got)
+	if got := len(res.calls()); got != 1 {
+		t.Errorf("resolver invalidations after de-establish = %d, want 1", got)
 	}
 	if mReqs := drainQueue(mQ); len(mReqs) != 1 || mReqs[0].Name != nameWave0 {
 		t.Errorf("de-establish milestone wakes = %v, want exactly wave-0", mReqs)
@@ -364,8 +514,9 @@ func TestCRDWatcher_OwnsKind_DistinctGroups_NoCrossWake(t *testing.T) {
 	s := crdWatcherScheme(t)
 	matchM := milestoneWithDep(nameWave0, groupKustomize, kindKustomization)
 	otherM := milestoneWithDep(nameWave1, "other.group", kindKustomization)
-	crd := crdEstablishedObj("kustomizations."+groupKustomize, groupKustomize, kindKustomization)
-	c := fake.NewClientBuilder().WithScheme(s).WithObjects(matchM, otherM, crd).Build()
+	crd := crdNotEstablishedObj("kustomizations."+groupKustomize, groupKustomize, kindKustomization)
+	c := fake.NewClientBuilder().WithScheme(s).WithObjects(matchM, otherM, crd).
+		WithStatusSubresource(&apiextv1.CustomResourceDefinition{}).Build()
 
 	res := &recordingResolver{}
 	reg := &recordingRegistry{}
@@ -373,9 +524,14 @@ func TestCRDWatcher_OwnsKind_DistinctGroups_NoCrossWake(t *testing.T) {
 	mQ := startSource(t, mSrc)
 	_ = startSource(t, cSrc)
 	w := &controller.CRDWatcher{Client: c, Resolver: res, Registry: reg, MilestoneEnqueue: mSrc, ClusterMilestoneEnqueue: cSrc}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: crd.Name}}
 
-	if _, err := w.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: crd.Name}}); err != nil {
-		t.Fatalf("Reconcile: %v", err)
+	if _, err := w.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("Reconcile (seed): %v", err)
+	}
+	setCRDEstablished(t, c, crd.Name, true)
+	if _, err := w.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("Reconcile (establish): %v", err)
 	}
 	mReqs := drainQueue(mQ)
 	if len(mReqs) != 1 || mReqs[0].Name != nameWave0 {
@@ -387,8 +543,9 @@ func TestCRDWatcher_OwnsKind_DistinctGroups_NoCrossWake(t *testing.T) {
 // list failure at wake time must surface so controller-runtime retries.
 func TestCRDWatcher_WakeListError_ReturnedForRetry(t *testing.T) {
 	s := crdWatcherScheme(t)
-	crd := crdEstablishedObj("kustomizations."+groupKustomize, groupKustomize, kindKustomization)
+	crd := crdNotEstablishedObj("kustomizations."+groupKustomize, groupKustomize, kindKustomization)
 	c := fake.NewClientBuilder().WithScheme(s).WithObjects(crd).
+		WithStatusSubresource(&apiextv1.CustomResourceDefinition{}).
 		WithInterceptorFuncs(interceptor.Funcs{
 			List: func(ctx context.Context, cl client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
 				if _, ok := list.(*apiv1.MilestoneList); ok {
@@ -404,8 +561,13 @@ func TestCRDWatcher_WakeListError_ReturnedForRetry(t *testing.T) {
 	_ = startSource(t, mSrc)
 	_ = startSource(t, cSrc)
 	w := &controller.CRDWatcher{Client: c, Resolver: res, Registry: reg, MilestoneEnqueue: mSrc, ClusterMilestoneEnqueue: cSrc}
+	req := ctrl.Request{NamespacedName: types.NamespacedName{Name: crd.Name}}
 
-	if _, err := w.Reconcile(context.Background(), ctrl.Request{NamespacedName: types.NamespacedName{Name: crd.Name}}); err == nil {
+	if _, err := w.Reconcile(context.Background(), req); err != nil {
+		t.Fatalf("Reconcile (seed): %v", err)
+	}
+	setCRDEstablished(t, c, crd.Name, true)
+	if _, err := w.Reconcile(context.Background(), req); err == nil {
 		t.Fatalf("Reconcile returned nil; expected wake error to propagate so controller-runtime retries")
 	}
 }

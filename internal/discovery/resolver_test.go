@@ -20,6 +20,7 @@ import (
 	"github.com/isometry/milestone-operator/internal/discovery"
 	"github.com/isometry/milestone-operator/internal/metrics"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -82,13 +83,13 @@ func newFluxFake() *fakeDiscoverer {
 			gvKustomizeV1: {
 				GroupVersion: gvKustomizeV1,
 				APIResources: []metav1.APIResource{
-					{Name: "kustomizations", Kind: kindKustomization, Namespaced: true},
+					{Name: pluralKustomize, Kind: kindKustomization, Namespaced: true},
 				},
 			},
 			gvKustomizeV1beta2: {
 				GroupVersion: gvKustomizeV1beta2,
 				APIResources: []metav1.APIResource{
-					{Name: "kustomizations", Kind: kindKustomization, Namespaced: true},
+					{Name: pluralKustomize, Kind: kindKustomization, Namespaced: true},
 				},
 			},
 			gvRBACv1: {
@@ -162,6 +163,57 @@ func TestResolve_MissingKind(t *testing.T) {
 	_, _, err := r.Resolve(t.Context(), groupKustomize, "DoesNotExist", "")
 	if !errors.Is(err, discovery.ErrGVKNotEstablished) {
 		t.Errorf("err = %v, want ErrGVKNotEstablished", err)
+	}
+}
+
+// TestResolve_DiscoveryUnavailable_ServerResources: a transport/apiserver
+// failure of ServerResourcesForGroupVersion is not "the CRD is missing" — it
+// must classify as ErrDiscoveryUnavailable (and count under the "error"
+// resolve outcome), so status reasons and alerts can distinguish an outage
+// from an uninstalled CRD.
+func TestResolve_DiscoveryUnavailable_ServerResources(t *testing.T) {
+	fd := newFluxFake()
+	fd.failResources = errors.New("the server is currently unable to handle the request (503)")
+	r := newResolver(t, fd, time.Hour)
+
+	errBefore := testutil.ToFloat64(metrics.DiscoveryResolveTotal.WithLabelValues(metrics.DiscoveryResolveError))
+
+	_, _, err := r.Resolve(t.Context(), groupKustomize, kindKustomization, "v1")
+	if !errors.Is(err, discovery.ErrDiscoveryUnavailable) {
+		t.Errorf("err = %v, want ErrDiscoveryUnavailable", err)
+	}
+	if errors.Is(err, discovery.ErrGVKNotEstablished) {
+		t.Errorf("err = %v must not also match ErrGVKNotEstablished", err)
+	}
+	if got := testutil.ToFloat64(metrics.DiscoveryResolveTotal.WithLabelValues(metrics.DiscoveryResolveError)); got != errBefore+1 {
+		t.Errorf("error outcome counter delta = %v, want 1", got-errBefore)
+	}
+}
+
+// TestResolve_DiscoveryUnavailable_ServerGroups: same classification for the
+// preferred-version lookup path.
+func TestResolve_DiscoveryUnavailable_ServerGroups(t *testing.T) {
+	fd := &fakeDiscoverer{} // groups nil → ServerGroups errors
+	r := newResolver(t, fd, time.Hour)
+	_, _, err := r.Resolve(t.Context(), groupKustomize, kindKustomization, "")
+	if !errors.Is(err, discovery.ErrDiscoveryUnavailable) {
+		t.Errorf("err = %v, want ErrDiscoveryUnavailable", err)
+	}
+}
+
+// TestResolve_NotFoundGroupVersion_IsNotEstablished: a NotFound from
+// ServerResourcesForGroupVersion genuinely means the group/version does not
+// exist — that stays ErrGVKNotEstablished, not an outage.
+func TestResolve_NotFoundGroupVersion_IsNotEstablished(t *testing.T) {
+	fd := newFluxFake()
+	fd.failResources = apierrors.NewNotFound(schema.GroupResource{Group: groupKustomize, Resource: pluralKustomize}, "")
+	r := newResolver(t, fd, time.Hour)
+	_, _, err := r.Resolve(t.Context(), groupKustomize, kindKustomization, "v1")
+	if !errors.Is(err, discovery.ErrGVKNotEstablished) {
+		t.Errorf("err = %v, want ErrGVKNotEstablished", err)
+	}
+	if errors.Is(err, discovery.ErrDiscoveryUnavailable) {
+		t.Errorf("err = %v must not also match ErrDiscoveryUnavailable", err)
 	}
 }
 

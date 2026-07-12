@@ -52,6 +52,15 @@ func TestCompute_DeploymentCurrent(t *testing.T) {
 	}
 }
 
+func TestResource_IsCurrent(t *testing.T) {
+	if !status.Compute(newDeploymentReady(2, 2)).IsCurrent() {
+		t.Errorf("ready deployment: IsCurrent() = false, want true")
+	}
+	if status.Compute(newDeploymentReady(3, 1)).IsCurrent() {
+		t.Errorf("in-progress deployment: IsCurrent() = true, want false")
+	}
+}
+
 func TestCompute_DeploymentInProgress(t *testing.T) {
 	u := newDeploymentReady(3, 1) // not all replicas ready
 	got := status.Compute(u)

@@ -18,6 +18,7 @@ import (
 
 	apiv1 "github.com/isometry/milestone-operator/api/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	kstatus "sigs.k8s.io/cli-utils/pkg/kstatus/status"
 )
 
 // Resource identifies a single matched resource and its computed kstatus.
@@ -37,15 +38,15 @@ func ReduceDependency(name, group, version, kind string, resources []Resource, p
 	for _, r := range resources {
 		rollup.Summary.Total++
 		switch r.Status {
-		case "Current":
+		case kstatus.CurrentStatus.String():
 			rollup.Summary.Current++
-		case "InProgress":
+		case kstatus.InProgressStatus.String():
 			rollup.Summary.InProgress++
-		case "Failed":
+		case kstatus.FailedStatus.String():
 			rollup.Summary.Failed++
-		case "NotFound":
+		case kstatus.NotFoundStatus.String():
 			rollup.Summary.NotFound++
-		case "Terminating":
+		case kstatus.TerminatingStatus.String():
 			rollup.Summary.Terminating++
 		default:
 			rollup.Summary.Unknown++

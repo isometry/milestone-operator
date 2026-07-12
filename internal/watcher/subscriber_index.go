@@ -47,9 +47,9 @@ func (m Matcher) Admit(obj client.Object) bool {
 }
 
 // Subscriber is one owner's subscription to a single GVK. An owner may have
-// multiple spec.members entries that share a GVK with disjoint selectors; all
-// of them live on Matchers so a single informer event can wake the owner once
-// regardless of which member admitted the object.
+// multiple spec.dependsOn entries that share a GVK with disjoint selectors;
+// all of them live on Matchers so a single informer event can wake the owner
+// once regardless of which dependency admitted the object.
 type Subscriber struct {
 	Owner    OwnerKey
 	Matchers []Matcher

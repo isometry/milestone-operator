@@ -23,7 +23,9 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 type fakeDisc struct {
@@ -173,7 +175,7 @@ func TestClusterMilestoneAdapter_Dependencies_NamespaceListMatcher(t *testing.T)
 				Name: depKustomizations,
 				Target: apiv1.ClusterTargetSpec{
 					TargetSpec: apiv1.TargetSpec{Group: groupKustomize, Kind: kindKustomization},
-					Namespaces: []string{nsFluxSystem, "team-a"},
+					Namespaces: []string{nsFluxSystem, nsTeamA},
 				},
 			},
 		}},
@@ -189,7 +191,7 @@ func TestClusterMilestoneAdapter_Dependencies_NamespaceListMatcher(t *testing.T)
 		t.Fatalf("deps len = %d, want 1", len(deps))
 	}
 	matcher := deps[0].NamespaceMatcher
-	if !matcher(nsFluxSystem) || !matcher("team-a") {
+	if !matcher(nsFluxSystem) || !matcher(nsTeamA) {
 		t.Errorf("matcher should accept listed namespaces")
 	}
 	if matcher("team-b") {
@@ -198,7 +200,7 @@ func TestClusterMilestoneAdapter_Dependencies_NamespaceListMatcher(t *testing.T)
 }
 
 func TestClusterMilestoneAdapter_Dependencies_NamespaceSelectorListsNamespaces(t *testing.T) {
-	ns1 := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-a", Labels: map[string]string{labelTier: namePlatform}}}
+	ns1 := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsTeamA, Labels: map[string]string{labelTier: namePlatform}}}
 	ns2 := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "team-b", Labels: map[string]string{labelTier: "data"}}}
 	cm := &apiv1.ClusterMilestone{
 		ObjectMeta: metav1.ObjectMeta{Name: namePlatform},
@@ -219,7 +221,7 @@ func TestClusterMilestoneAdapter_Dependencies_NamespaceSelectorListsNamespaces(t
 		t.Fatalf("errs: %v", errs)
 	}
 	matcher := deps[0].NamespaceMatcher
-	if !matcher("team-a") {
+	if !matcher(nsTeamA) {
 		t.Errorf("matcher should accept team-a (label match)")
 	}
 	if matcher("team-b") {
@@ -281,6 +283,139 @@ func TestMilestoneAdapter_PassesScopeFromDiscovery(t *testing.T) {
 	deps, _ := controller.NewMilestoneAdapter(m).Dependencies(t.Context(), newDisc())
 	if deps[0].Scope != apimeta.RESTScopeNameNamespace {
 		t.Errorf("scope = %v, want Namespaced", deps[0].Scope)
+	}
+}
+
+// failingDisc simulates a discovery transport outage: both discovery
+// endpoints error without answering.
+type failingDisc struct{}
+
+func (failingDisc) ServerGroups(context.Context) (*metav1.APIGroupList, error) {
+	return nil, errors.New("the server is currently unable to handle the request (503)")
+}
+func (failingDisc) ServerResourcesForGroupVersion(context.Context, string) (*metav1.APIResourceList, error) {
+	return nil, errors.New("the server is currently unable to handle the request (503)")
+}
+
+// TestAdapters_Dependencies_DiscoveryUnavailableReason: a discovery outage
+// must surface as ReasonDiscoveryUnavailable — not ReasonGVKNotEstablished,
+// which tells users the CRD is not installed — and both adapters must
+// classify identically.
+func TestAdapters_Dependencies_DiscoveryUnavailableReason(t *testing.T) {
+	unavailable := discovery.NewResolver(failingDisc{}, time.Hour)
+
+	m := &apiv1.Milestone{
+		ObjectMeta: metav1.ObjectMeta{Namespace: nsFluxSystem, Name: "x"},
+		Spec: apiv1.MilestoneSpec{DependsOn: []apiv1.DependencyRef{
+			{Name: depKustomizations, Target: apiv1.TargetSpec{Group: groupKustomize, Kind: kindKustomization}},
+		}},
+	}
+	_, merrs := controller.NewMilestoneAdapter(m).Dependencies(t.Context(), unavailable)
+	if len(merrs) != 1 || merrs[0].Reason != apiv1.ReasonDiscoveryUnavailable {
+		t.Errorf("Milestone errs = %+v, want one ReasonDiscoveryUnavailable", merrs)
+	}
+
+	cm := &apiv1.ClusterMilestone{
+		ObjectMeta: metav1.ObjectMeta{Name: "x"},
+		Spec: apiv1.ClusterMilestoneSpec{DependsOn: []apiv1.ClusterDependencyRef{
+			{Name: depKustomizations, Target: apiv1.ClusterTargetSpec{TargetSpec: apiv1.TargetSpec{Group: groupKustomize, Kind: kindKustomization}}},
+		}},
+	}
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).Build()
+	_, cerrs := controller.NewClusterMilestoneAdapterFactory(cl)(cm).Dependencies(t.Context(), unavailable)
+	if len(cerrs) != 1 || cerrs[0].Reason != apiv1.ReasonDiscoveryUnavailable {
+		t.Errorf("ClusterMilestone errs = %+v, want one ReasonDiscoveryUnavailable", cerrs)
+	}
+	if len(merrs) == 1 && len(cerrs) == 1 && merrs[0].Reason != cerrs[0].Reason {
+		t.Errorf("adapters disagree on classification: %q vs %q", merrs[0].Reason, cerrs[0].Reason)
+	}
+}
+
+// TestAdapters_DependencyError_CarriesResolvedVersion: once discovery has
+// resolved a GVK, post-resolve failures (scope mismatch etc.) must carry the
+// resolved version so failedRollup doesn't write an empty version into
+// status.dependsOn.
+func TestAdapters_DependencyError_CarriesResolvedVersion(t *testing.T) {
+	m := &apiv1.Milestone{
+		ObjectMeta: metav1.ObjectMeta{Namespace: nsFluxSystem, Name: "x"},
+		Spec: apiv1.MilestoneSpec{DependsOn: []apiv1.DependencyRef{
+			{Name: depRoles, Target: apiv1.TargetSpec{Group: groupRBAC, Kind: kindClusterRole}},
+		}},
+	}
+	_, merrs := controller.NewMilestoneAdapter(m).Dependencies(t.Context(), newDisc())
+	if len(merrs) != 1 || merrs[0].Version != "v1" {
+		t.Errorf("Milestone scope-mismatch error = %+v, want Version=v1", merrs)
+	}
+
+	cm := &apiv1.ClusterMilestone{
+		ObjectMeta: metav1.ObjectMeta{Name: "x"},
+		Spec: apiv1.ClusterMilestoneSpec{DependsOn: []apiv1.ClusterDependencyRef{
+			{
+				Name: depRoles,
+				Target: apiv1.ClusterTargetSpec{
+					TargetSpec: apiv1.TargetSpec{Group: groupRBAC, Kind: kindClusterRole},
+					Namespaces: []string{nsFluxSystem},
+				},
+			},
+		}},
+	}
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).Build()
+	_, cerrs := controller.NewClusterMilestoneAdapterFactory(cl)(cm).Dependencies(t.Context(), newDisc())
+	if len(cerrs) != 1 || cerrs[0].Version != "v1" {
+		t.Errorf("ClusterMilestone scope-mismatch error = %+v, want Version=v1", cerrs)
+	}
+}
+
+// TestClusterMilestoneAdapter_Dependencies_MemoizesNamespaceSelectorLists:
+// several dependencies sharing one namespaceSelector must not re-list
+// Namespaces once per dependency within a single Dependencies call.
+func TestClusterMilestoneAdapter_Dependencies_MemoizesNamespaceSelectorLists(t *testing.T) {
+	sel := &metav1.LabelSelector{MatchLabels: map[string]string{labelTier: namePlatform}}
+	cm := &apiv1.ClusterMilestone{
+		ObjectMeta: metav1.ObjectMeta{Name: namePlatform},
+		Spec: apiv1.ClusterMilestoneSpec{DependsOn: []apiv1.ClusterDependencyRef{
+			{
+				Name: "dep-a",
+				Target: apiv1.ClusterTargetSpec{
+					TargetSpec:        apiv1.TargetSpec{Group: groupKustomize, Kind: kindKustomization},
+					NamespaceSelector: sel,
+				},
+			},
+			{
+				Name: "dep-b",
+				Target: apiv1.ClusterTargetSpec{
+					TargetSpec:        apiv1.TargetSpec{Group: groupKustomize, Kind: kindKustomization},
+					NamespaceSelector: sel,
+				},
+			},
+		}},
+	}
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsTeamA, Labels: map[string]string{labelTier: namePlatform}}}
+	var listCalls int
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(ns).
+		WithInterceptorFuncs(interceptor.Funcs{
+			List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+				if _, ok := list.(*corev1.NamespaceList); ok {
+					listCalls++
+				}
+				return c.List(ctx, list, opts...)
+			},
+		}).Build()
+
+	deps, errs := controller.NewClusterMilestoneAdapterFactory(cl)(cm).Dependencies(t.Context(), newDisc())
+	if len(errs) != 0 {
+		t.Fatalf("errs: %v", errs)
+	}
+	if len(deps) != 2 {
+		t.Fatalf("deps len = %d, want 2", len(deps))
+	}
+	for _, d := range deps {
+		if d.NamespaceMatcher == nil || !d.NamespaceMatcher(nsTeamA) {
+			t.Errorf("dependency %q matcher should accept team-a", d.Name)
+		}
+	}
+	if listCalls != 1 {
+		t.Errorf("namespace List calls = %d, want 1 (memoized per Dependencies call)", listCalls)
 	}
 }
 

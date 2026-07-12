@@ -12,6 +12,7 @@ package controller_test
 
 import (
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -51,13 +52,134 @@ func TestSanitiseErrText(t *testing.T) {
 	t.Run("truncates oversized errors with ellipsis", func(t *testing.T) {
 		input := strings.Repeat("x", controller.MaxStalledErrChars+50)
 		got := controller.SanitiseErrText(errors.New(input))
-		// Rune count must be exactly MaxStalledErrChars: (MaxStalledErrChars-1)
-		// retained runes + 1 ellipsis rune.
-		if n := utf8.RuneCountInString(got); n != controller.MaxStalledErrChars {
-			t.Errorf("rune count = %d, want %d", n, controller.MaxStalledErrChars)
+		// The cap is a byte budget (status size is what matters to etcd) and
+		// includes the ellipsis: ASCII input fills it exactly.
+		if len(got) != controller.MaxStalledErrChars {
+			t.Errorf("byte length = %d, want %d", len(got), controller.MaxStalledErrChars)
 		}
 		if !strings.HasSuffix(got, "…") {
 			t.Errorf("missing ellipsis suffix: %q", got[len(got)-10:])
+		}
+	})
+
+	t.Run("multibyte input never yields invalid UTF-8", func(t *testing.T) {
+		// 2-byte runes guarantee some cut index would split a rune; the
+		// apiserver would coerce that to U+FFFD on write, so the stored
+		// message would never DeepEqual the recomputed one — a permanent
+		// status-churn loop.
+		input := strings.Repeat("é", controller.MaxStalledErrChars)
+		got := controller.SanitiseErrText(errors.New(input))
+		if !utf8.ValidString(got) {
+			t.Errorf("result is invalid UTF-8: %q", got)
+		}
+		if len(got) > controller.MaxStalledErrChars {
+			t.Errorf("byte length = %d, want <= %d", len(got), controller.MaxStalledErrChars)
+		}
+		if !strings.HasSuffix(got, "…") {
+			t.Errorf("missing ellipsis suffix")
+		}
+	})
+}
+
+func TestDedupeAndSortResources(t *testing.T) {
+	rs := func(group, kind, ns, name string) apiv1.ResourceStatus {
+		return apiv1.ResourceStatus{Group: group, Version: "v1", Kind: kind, Namespace: ns, Name: name, Status: "InProgress"}
+	}
+
+	t.Run("nil in, nil out", func(t *testing.T) {
+		if got := controller.DedupeAndSortResources(nil); got != nil {
+			t.Errorf("want nil for empty input, got %+v", got)
+		}
+	})
+
+	t.Run("sorts by group, kind, namespace, name", func(t *testing.T) {
+		in := []apiv1.ResourceStatus{
+			rs("b.example", "Widget", "ns1", "x"),
+			rs("a.example", "Widget", "ns2", "y"),
+			rs("a.example", "Widget", "ns1", "z"),
+			rs("a.example", "Gadget", "ns9", "a"),
+		}
+		got := controller.DedupeAndSortResources(in)
+		want := []apiv1.ResourceStatus{
+			rs("a.example", "Gadget", "ns9", "a"),
+			rs("a.example", "Widget", "ns1", "z"),
+			rs("a.example", "Widget", "ns2", "y"),
+			rs("b.example", "Widget", "ns1", "x"),
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("sort order wrong:\n got %+v\nwant %+v", got, want)
+		}
+	})
+
+	t.Run("dedupes by full resource identity", func(t *testing.T) {
+		in := []apiv1.ResourceStatus{
+			rs("a.example", "Widget", "ns1", "x"),
+			rs("a.example", "Widget", "ns1", "x"), // same object via a second overlapping dependency
+			rs("a.example", "Widget", "ns1", "y"),
+		}
+		got := controller.DedupeAndSortResources(in)
+		if len(got) != 2 {
+			t.Fatalf("len = %d, want 2: %+v", len(got), got)
+		}
+		if got[0].Name != "x" || got[1].Name != "y" {
+			t.Errorf("unexpected contents: %+v", got)
+		}
+	})
+
+	t.Run("stable across permutations", func(t *testing.T) {
+		in := []apiv1.ResourceStatus{
+			rs("g", "K", "n1", "b"),
+			rs("g", "K", "n1", "a"),
+			rs("g", "K", "n2", "a"),
+		}
+		perm := []apiv1.ResourceStatus{in[2], in[0], in[1]}
+		if !reflect.DeepEqual(controller.DedupeAndSortResources(in), controller.DedupeAndSortResources(perm)) {
+			t.Errorf("output differs across input permutations")
+		}
+	})
+}
+
+func TestTruncateWithEllipsis(t *testing.T) {
+	const max = 16
+
+	t.Run("short strings pass through", func(t *testing.T) {
+		for _, s := range []string{"", "abc", strings.Repeat("x", max)} {
+			if got := controller.TruncateWithEllipsis(s, max); got != s {
+				t.Errorf("TruncateWithEllipsis(%q) = %q, want unchanged", s, got)
+			}
+		}
+	})
+
+	t.Run("ASCII truncation is byte-exact including ellipsis", func(t *testing.T) {
+		got := controller.TruncateWithEllipsis(strings.Repeat("x", 100), max)
+		if len(got) != max {
+			t.Errorf("byte length = %d, want %d", len(got), max)
+		}
+		if !strings.HasSuffix(got, "…") {
+			t.Errorf("missing ellipsis suffix: %q", got)
+		}
+	})
+
+	t.Run("never splits a multi-byte rune", func(t *testing.T) {
+		// Try every prefix length of a 2-byte-rune string so at least one
+		// naive byte cut would land mid-rune.
+		s := strings.Repeat("é", 32)
+		for budget := 3; budget <= len(s); budget++ {
+			got := controller.TruncateWithEllipsis(s, budget)
+			if !utf8.ValidString(got) {
+				t.Fatalf("budget %d: invalid UTF-8: %q", budget, got)
+			}
+			if len(got) > budget {
+				t.Fatalf("budget %d: byte length %d exceeds budget", budget, len(got))
+			}
+		}
+	})
+
+	t.Run("idempotent", func(t *testing.T) {
+		once := controller.TruncateWithEllipsis(strings.Repeat("héllo…", 40), max)
+		twice := controller.TruncateWithEllipsis(once, max)
+		if once != twice {
+			t.Errorf("not idempotent: %q vs %q", once, twice)
 		}
 	})
 }

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/isometry/milestone-operator/internal/metrics"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
@@ -30,6 +31,13 @@ import (
 // ErrGVKNotEstablished signals the requested group/kind cannot be resolved by
 // discovery, typically because the CRD is not installed yet.
 var ErrGVKNotEstablished = errors.New("GVK not established")
+
+// ErrDiscoveryUnavailable signals the apiserver discovery API itself failed
+// (network error, aggregated-API 503, …) — distinct from ErrGVKNotEstablished,
+// where discovery answered and the group/kind genuinely isn't there. Callers
+// surface it as the DiscoveryUnavailable reason so users aren't told "CRD not
+// installed" during a transient outage.
+var ErrDiscoveryUnavailable = errors.New("discovery unavailable")
 
 // Discoverer is the minimal subset of k8s.io/client-go/discovery.DiscoveryInterface
 // needed by the resolver. The real client-go methods do not yet accept a
@@ -118,7 +126,7 @@ func (r *resolver) Resolve(ctx context.Context, group, kind, version string) (sc
 		} else {
 			v, err := r.preferredVersion(ctx, group)
 			if err != nil {
-				metrics.DiscoveryResolveTotal.WithLabelValues(metrics.DiscoveryResolveNotEstablished).Inc()
+				metrics.DiscoveryResolveTotal.WithLabelValues(resolveFailureLabel(err)).Inc()
 				return schema.GroupVersionKind{}, "", err
 			}
 			resolvedVersion = v
@@ -128,8 +136,14 @@ func (r *resolver) Resolve(ctx context.Context, group, kind, version string) (sc
 	gv := groupVersionString(group, resolvedVersion)
 	rl, err := r.d.ServerResourcesForGroupVersion(ctx, gv)
 	if err != nil {
-		metrics.DiscoveryResolveTotal.WithLabelValues(metrics.DiscoveryResolveNotEstablished).Inc()
-		return schema.GroupVersionKind{}, "", fmt.Errorf("%w: %s: %w", ErrGVKNotEstablished, gv, err)
+		// NotFound genuinely means the group/version does not exist (CRD not
+		// installed); anything else is the discovery API itself failing.
+		if apierrors.IsNotFound(err) {
+			metrics.DiscoveryResolveTotal.WithLabelValues(metrics.DiscoveryResolveNotEstablished).Inc()
+			return schema.GroupVersionKind{}, "", fmt.Errorf("%w: %s: %w", ErrGVKNotEstablished, gv, err)
+		}
+		metrics.DiscoveryResolveTotal.WithLabelValues(metrics.DiscoveryResolveError).Inc()
+		return schema.GroupVersionKind{}, "", fmt.Errorf("%w: %s: %w", ErrDiscoveryUnavailable, gv, err)
 	}
 	for _, res := range rl.APIResources {
 		if res.Kind != kind {
@@ -190,7 +204,7 @@ func (r *resolver) store(k cacheKey, e cacheEntry) {
 func (r *resolver) preferredVersion(ctx context.Context, group string) (string, error) {
 	groups, err := r.d.ServerGroups(ctx)
 	if err != nil {
-		return "", fmt.Errorf("%w: ServerGroups: %w", ErrGVKNotEstablished, err)
+		return "", fmt.Errorf("%w: ServerGroups: %w", ErrDiscoveryUnavailable, err)
 	}
 	for _, g := range groups.Groups {
 		if g.Name != group {
@@ -205,6 +219,15 @@ func (r *resolver) preferredVersion(ctx context.Context, group string) (string, 
 		return "", fmt.Errorf("%w: group %q has no versions", ErrGVKNotEstablished, group)
 	}
 	return "", fmt.Errorf("%w: group %q not found", ErrGVKNotEstablished, group)
+}
+
+// resolveFailureLabel maps a classified resolve error to its
+// milestone_discovery_resolve_total outcome label.
+func resolveFailureLabel(err error) string {
+	if errors.Is(err, ErrDiscoveryUnavailable) {
+		return metrics.DiscoveryResolveError
+	}
+	return metrics.DiscoveryResolveNotEstablished
 }
 
 func groupVersionString(group, version string) string {

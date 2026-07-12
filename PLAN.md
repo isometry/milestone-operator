@@ -25,7 +25,7 @@ Built with operator-sdk **v1.42.2** (Kubebuilder v4) and Go **1.26+**.
 | Spec shape | `spec.dependsOn` is a non-atomic list of `{name, emptySetPolicy, target}` entries; `+listType=map`, `+listMapKey=name`. `MinItems=1`. Names are RFC-1123 labels enforced by a field-level `Pattern` marker. |
 | Empty-set semantics | `emptySetPolicy: Unknown\|Ready\|NotReady` **per dependency** (default `Unknown`). |
 | API ident | `milestone.as-code.io/v1`. Pre-v1.0.0; we can break our own internal APIs freely until tagged. |
-| `status.notReadyResources` verbosity | Only non-Current resources (capped at 50) + aggregate `summary` counters; `truncated` flag. |
+| `status.notReadyResources` verbosity | Only non-Current resources, deduplicated across dependencies and sorted by (group, kind, namespace, name) for patch idempotency, capped at 50 + aggregate `summary` counters; `truncated` flag. `summary` deliberately counts per dependency: a resource matched by two overlapping selectors contributes to each dependency's buckets. |
 | Missing CRD handling | `Stalled=True, reason=GVKNotEstablished` + watch `apiextensions.k8s.io/v1.CustomResourceDefinition` to wake on `Established=True`. |
 | ClusterMilestone scoping | `target.namespaces` and `target.namespaceSelector` are **per-dependency** and mutually exclusive (CRD CEL validation). |
 | Watcher architecture | Shared, refcounted registry; one cluster-scoped dynamic informer per GVK. |
@@ -212,6 +212,13 @@ dependency-level / owner-level reasons describe dependency rollups.
   `ListFailed`.
 - Catch-all: `ReconcileError`.
 
+`GVKNotEstablished` means discovery *answered* that the group/kind does not
+exist (CRD not installed); `DiscoveryUnavailable` means the discovery API
+itself failed (network error, aggregated-API 503). The resolver classifies
+via the `ErrGVKNotEstablished` / `ErrDiscoveryUnavailable` sentinels and the
+shared adapter helper (`internal/controller/dependency_normalize.go`) maps
+them — the single home for that mapping.
+
 Owner-level `Conditions[].Reason` follows the documented vocabulary
 (`AllDependenciesReady`, `DependenciesNotReady`, `DependenciesInProgress`,
 `ReconcileComplete`, plus the structural reasons used on `Stalled=True`)
@@ -239,17 +246,33 @@ directly — no intermediate channel, no blocking, and the workqueue
 dedupes by key so an event storm for the same owner collapses to a
 single reconcile.
 
-`Registry.InvalidateGVK(gvk)` drops both the informer entry and the
-subscriber-index entries for a GVK, used by the CRD watcher when a CRD is
-removed or de-Established. A subsequent reconcile for any owner that
-still references the kind re-runs discovery and re-Subscribes from a
-clean state.
+`Registry.InvalidateGroupKind(group, kind)` drops the informer entries, the
+subscriber-index entries, and any failure-cooldown entry for a (group,
+kind), used by the CRD watcher when a CRD is removed or de-Established. The
+index clear happens inside the registry's critical section so a racing
+Subscribe can never register against a stale index. A subsequent reconcile
+for any owner that still references the kind re-runs discovery and
+re-Subscribes from a clean state.
+
+Failed informer starts are negatively cached: within a cooldown (default =
+the sync timeout) Subscribe fails fast with the recorded error instead of
+re-blocking the reconcile worker for the full sync timeout — one
+RBAC-forbidden or vanished-kind dependency must not starve every other
+owner. The cooldown clears on successful start and on
+`InvalidateGroupKind`, so a CRD becoming Established retries immediately.
 
 A separate `CRDWatcher` controller (`internal/controller/crd_watcher.go`)
-watches `CustomResourceDefinition` and, on every `Established=True`
-transition, invalidates the discovery cache and enqueues every Milestone /
-ClusterMilestone whose `spec.dependsOn[*].target.group + kind` matches the
-newly-established CRD.
+watches `CustomResourceDefinition` and, on every observed `Established`
+state *change* (not-established → established, or established →
+de-established/deleted), invalidates the discovery cache and registry and
+enqueues every Milestone / ClusterMilestone whose
+`spec.dependsOn[*].target.group + kind` matches. The first observation of a
+CRD — the informer replay at operator startup or leader change — seeds
+transition state silently: controller-runtime already reconciles every
+owner at startup, so per-CRD invalidations there are pure churn. Transition
+state commits only after the wake side effects succeed (peek-then-commit),
+so a transiently failed wake is re-fired by the controller-runtime retry
+rather than lost.
 
 ### Dynamic-informer RBAC (aggregated)
 
@@ -293,9 +316,14 @@ controller-runtime. The pipeline is:
    `DependencyStatus`. Dependencies whose subscribe failed skip list +
    reduce — their rollup carries `Ready=Unknown, Reason=WatchSetupFailed`.
 5. `applyStatus(status, generation, rollups, notReady, errs)`: sort
-   `status.dependsOn` by `name`, set `Ready` from `ReduceOwner`, set
-   `Stalled` from the accumulated errors (`Reason=ReconcileComplete` on
-   `Stalled=False`). `Reconciling` is not emitted today.
+   `status.dependsOn` by `name`; dedupe + sort `status.notReadyResources`
+   by (group, kind, namespace, name) before capping (informer-lister order
+   is nondeterministic and overlapping selectors match the same object
+   twice); set `Ready` from `ReduceOwner`, set `Stalled` from the
+   accumulated errors (`Reason=ReconcileComplete` on `Stalled=False`).
+   Stalled messages truncate rune-safely (invalid UTF-8 would be coerced
+   to U+FFFD by the apiserver and break idempotency). `Reconciling` is not
+   emitted today.
 6. Idempotency: `statusEqualIgnoringTimestamp` (deep-equal modulo
    `LastEvaluatedTime` and per-condition `LastTransitionTime` +
    `ObservedGeneration`) gates the patch. No churn on identical reconciles.
@@ -358,7 +386,9 @@ All metrics namespaced `milestone_*`. Cardinality bounds in parentheses.
 ### Discovery
 
 - `milestone_discovery_resolve_total{result}` (counter,
-  result ∈ {hit, miss, not_established, error}).
+  result ∈ {hit, miss, not_established, error}; `not_established` =
+  discovery answered that the group/kind doesn't exist, `error` = the
+  discovery API itself was unavailable).
 - `milestone_discovery_cache_size` (gauge).
 
 ### Reconcile pipeline
@@ -375,7 +405,9 @@ All metrics namespaced `milestone_*`. Cardinality bounds in parentheses.
 
 ### CRD watcher
 
-- `milestone_crd_established_events_total{group,kind}` (counter).
+- `milestone_crd_established_events_total{group,kind}` (counter; observed
+  not-established → Established transitions only — startup replay of
+  pre-existing Established CRDs does not count).
 - `milestone_owners_woken_total{reason}` (counter,
   reason ∈ {crd_established}).
 

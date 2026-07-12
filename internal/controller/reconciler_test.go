@@ -14,6 +14,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -522,7 +523,7 @@ func TestReconcile_CapsNotReadyResources(t *testing.T) {
 		u.SetGeneration(2)
 		_ = unstructured.SetNestedField(u.Object, int64(2), schemaPropStatus, "observedGeneration")
 		_ = unstructured.SetNestedSlice(u.Object, []any{
-			map[string]any{keyType: apiv1.ConditionReady, schemaPropStatus: "False", keyReason: "Reconciling"},
+			map[string]any{keyType: apiv1.ConditionReady, schemaPropStatus: statusFalse, keyReason: reasonReconciling},
 		}, schemaPropStatus, "conditions")
 		resources = append(resources, u)
 	}
@@ -544,6 +545,65 @@ func TestReconcile_CapsNotReadyResources(t *testing.T) {
 	}
 	if !ech.Status.Truncated {
 		t.Errorf("Truncated should be true when capped")
+	}
+}
+
+// notReadyKustomization builds an explicitly not-ready resource for list
+// responses.
+func notReadyKustomization(name string) *unstructured.Unstructured {
+	u := &unstructured.Unstructured{}
+	u.SetAPIVersion(gvKustomizeV1)
+	u.SetKind(kindKustomization)
+	u.SetNamespace(nsFluxSystem)
+	u.SetName(name)
+	u.SetGeneration(2)
+	_ = unstructured.SetNestedField(u.Object, int64(2), schemaPropStatus, "observedGeneration")
+	_ = unstructured.SetNestedSlice(u.Object, []any{
+		map[string]any{keyType: apiv1.ConditionReady, schemaPropStatus: statusFalse, keyReason: reasonReconciling},
+	}, schemaPropStatus, "conditions")
+	return u
+}
+
+// TestReconcile_NotReadyResources_DeterministicAndDeduped locks in two
+// invariants of status.notReadyResources:
+//
+//  1. Order is deterministic regardless of informer-lister iteration order —
+//     otherwise consecutive identical reconciles DeepEqual-differ, each patch
+//     emits a watch event, and the reconcile loop becomes self-sustaining.
+//  2. A resource matched by two overlapping dependency selectors appears once,
+//     not once per dependency (which would burn the 50-item cap early).
+func TestReconcile_NotReadyResources_DeterministicAndDeduped(t *testing.T) {
+	run := func(order []*unstructured.Unstructured) []apiv1.ResourceStatus {
+		ech := newMilestone("e1")
+		ech.Finalizers = []string{apiv1.Finalizer}
+		freg := newFakeRegistry()
+		freg.listResponses[kustomizationGVK] = order
+		fa := &fakeAdapter{
+			obj: ech,
+			deps: []controller.NormalizedDependency{
+				{Name: "dep-a", GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace, Selector: mustSelector(t)},
+				{Name: "dep-b", GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace, Selector: mustSelector(t)},
+			},
+		}
+		r := newFixture(t, ech, fa, freg)
+		if _, err := r.ReconcileObject(t.Context(), ech); err != nil {
+			t.Fatalf("Reconcile: %v", err)
+		}
+		return ech.Status.NotReadyResources
+	}
+
+	a, b := notReadyKustomization("a"), notReadyKustomization("b")
+	first := run([]*unstructured.Unstructured{b, a})
+	second := run([]*unstructured.Unstructured{a, b})
+
+	if len(first) != 2 {
+		t.Fatalf("NotReadyResources len = %d, want 2 (deduped across overlapping dependencies): %+v", len(first), first)
+	}
+	if first[0].Name != "a" || first[1].Name != "b" {
+		t.Errorf("NotReadyResources not sorted by name: [%s, %s]", first[0].Name, first[1].Name)
+	}
+	if !reflect.DeepEqual(first, second) {
+		t.Errorf("NotReadyResources differ across list orderings:\n first: %+v\nsecond: %+v", first, second)
 	}
 }
 
@@ -1100,7 +1160,7 @@ func TestReconcile_FluxNotify_FiresOnReadyRegression(t *testing.T) {
 	notReady.SetGeneration(2)
 	_ = unstructured.SetNestedField(notReady.Object, int64(2), schemaPropStatus, "observedGeneration")
 	_ = unstructured.SetNestedSlice(notReady.Object, []any{
-		map[string]any{keyType: apiv1.ConditionReady, schemaPropStatus: "False", keyReason: "Reconciling"},
+		map[string]any{keyType: apiv1.ConditionReady, schemaPropStatus: statusFalse, keyReason: reasonReconciling},
 	}, schemaPropStatus, "conditions")
 	freg.listResponses[kustomizationGVK] = []*unstructured.Unstructured{notReady}
 

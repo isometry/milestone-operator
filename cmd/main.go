@@ -84,7 +84,7 @@ func main() {
 			"Enabling this will ensure there is only one active controller manager.")
 	flag.BoolVar(&secureMetrics, "metrics-secure", false,
 		"If set, the metrics endpoint is served via HTTPS with a bearer-token AuthN/AuthZ filter. "+
-			"Default is plain HTTP; bearer-token auth applies independently of TLS posture.")
+			"Default is plain HTTP with no authentication; restrict access by other means (e.g. NetworkPolicy).")
 	flag.StringVar(&metricsCertPath, "metrics-cert-path", "",
 		"The directory that contains the metrics server certificate.")
 	flag.StringVar(&metricsCertName, "metrics-cert-name", "tls.crt", "The name of the metrics server certificate file.")
@@ -187,6 +187,9 @@ func main() {
 			cmilestoneSource.Enqueue(reconcile.Request{NamespacedName: client.ObjectKey{
 				Name: o.Name,
 			}})
+		default:
+			setupLog.Error(nil, "dropping enqueue for unknown owner kind",
+				"kind", o.Kind, "namespace", o.Namespace, "name", o.Name)
 		}
 	}
 	registry := watcher.NewRegistry(dynFactory, enqueue)

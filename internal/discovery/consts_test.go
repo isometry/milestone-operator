@@ -19,4 +19,5 @@ const (
 	groupLate          = "late.example.io"
 	gvLateV1           = groupLate + "/v1"
 	kindKustomization  = "Kustomization"
+	pluralKustomize    = "kustomizations"
 )

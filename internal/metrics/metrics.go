@@ -62,10 +62,10 @@ const (
 	// DiscoveryResolveNotEstablished covers a resolve that failed with
 	// ErrGVKNotEstablished — typically because the CRD is not installed.
 	DiscoveryResolveNotEstablished = "not_established"
-	// DiscoveryResolveError is reserved for future use when the resolver
-	// distinguishes apiserver-side errors (DiscoveryUnavailable) from
-	// missing-CRD errors. Today the resolver wraps every error as
-	// ErrGVKNotEstablished, so this bucket stays at zero.
+	// DiscoveryResolveError covers a resolve that failed because the
+	// discovery API itself was unavailable (ErrDiscoveryUnavailable:
+	// network error, aggregated-API 503, …), as opposed to discovery
+	// answering that the group/kind doesn't exist.
 	DiscoveryResolveError = "error"
 )
 

@@ -35,14 +35,6 @@ const (
 	SubscribeError = "error"
 )
 
-// Discovery result labels used in milestone_discovery_resolve_total.
-const (
-	DiscoveryHit            = "hit"
-	DiscoveryMiss           = "miss"
-	DiscoveryNotEstablished = "not_established"
-	DiscoveryError          = "error"
-)
-
 // Informer event labels used in milestone_informer_events_total.
 const (
 	EventAdd    = "add"

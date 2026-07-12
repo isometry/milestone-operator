@@ -31,6 +31,9 @@ import (
 type fakeFactory struct {
 	mu      sync.Mutex
 	started []schema.GroupVersionKind
+	// entered counts Start invocations per GVK, successful or not. Lets tests
+	// assert that a cooldown-guarded Subscribe never reached the factory.
+	entered map[schema.GroupVersionKind]int
 	stopped map[schema.GroupVersionKind]int
 	entries map[schema.GroupVersionKind]*fakeEntry
 	failOn  map[schema.GroupVersionKind]error
@@ -57,6 +60,7 @@ type fakeEntry struct {
 
 func newFakeFactory() *fakeFactory {
 	return &fakeFactory{
+		entered: make(map[schema.GroupVersionKind]int),
 		stopped: make(map[schema.GroupVersionKind]int),
 		entries: make(map[schema.GroupVersionKind]*fakeEntry),
 		failOn:  make(map[schema.GroupVersionKind]error),
@@ -66,6 +70,7 @@ func newFakeFactory() *fakeFactory {
 
 func (f *fakeFactory) Start(ctx context.Context, gvk schema.GroupVersionKind, _ apimeta.RESTScopeName, handler watcher.InformerEventHandler) (watcher.InformerEntry, error) {
 	f.mu.Lock()
+	f.entered[gvk]++
 	block := f.startBlock[gvk]
 	panicMsg, shouldPanic := f.panicOn[gvk]
 	if shouldPanic {
@@ -105,6 +110,14 @@ func (f *fakeFactory) startCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.started)
+}
+
+// enteredCount returns the number of Start invocations for gvk, successful
+// or not.
+func (f *fakeFactory) enteredCount(gvk schema.GroupVersionKind) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.entered[gvk]
 }
 
 func (e *fakeEntry) Stop() {
@@ -300,13 +313,15 @@ func TestRegistry_List_UnknownGVK(t *testing.T) {
 // TestRegistry_Subscribe_SyncTimeout simulates the cache-sync timeout path:
 // factory.Start blocks until ctx (with sync timeout) is cancelled, then
 // returns the cancellation error. Registry must not register a subscriber
-// and the next Subscribe must be able to retry cleanly.
+// and the next Subscribe past the failure cooldown must retry cleanly.
 func TestRegistry_Subscribe_SyncTimeout(t *testing.T) {
 	ff := newFakeFactory()
 	never := make(chan struct{}) // never closed → Start blocks until ctx times out
 	ff.startBlock = map[schema.GroupVersionKind]chan struct{}{kustomizationGVK: never}
 	r := watcher.NewRegistry(ff, func(watcher.OwnerKey) {})
 	r.SyncTimeout = 50 * time.Millisecond
+	current := time.Unix(1000, 0)
+	r.Now = func() time.Time { return current }
 
 	owner := watcher.OwnerKey{Kind: kindMilestone, Namespace: "ns", Name: "a"}
 	err := r.Subscribe(context.Background(), kustomizationGVK, apimeta.RESTScopeNameNamespace, sub(owner, labels.Everything()))
@@ -320,11 +335,96 @@ func TestRegistry_Subscribe_SyncTimeout(t *testing.T) {
 		t.Errorf("expected List error post-timeout")
 	}
 
-	// Retry path: clear the block; the next Subscribe should succeed.
+	// Retry path: clear the block and step past the failure cooldown; the
+	// next Subscribe should succeed.
 	close(never)
 	ff.startBlock = nil
+	current = current.Add(r.SyncTimeout + time.Second)
 	if err := r.Subscribe(context.Background(), kustomizationGVK, apimeta.RESTScopeNameNamespace, sub(owner, labels.Everything())); err != nil {
 		t.Errorf("retry Subscribe after timeout: %v", err)
+	}
+}
+
+// TestRegistry_Subscribe_FailureCooldown covers the negative cache on failed
+// informer starts: a Subscribe for a GVK whose informer can never sync (RBAC
+// forbidden, CRD deleted behind a discovery-cache hit) must not re-block the
+// reconcile worker for the full sync timeout on every attempt — within the
+// cooldown it fails fast without reaching the factory.
+func TestRegistry_Subscribe_FailureCooldown(t *testing.T) {
+	ff := newFakeFactory()
+	ff.failOn[kustomizationGVK] = errors.New("forbidden: RBAC")
+	r := watcher.NewRegistry(ff, func(watcher.OwnerKey) {})
+	r.SyncTimeout = 50 * time.Millisecond
+
+	current := time.Unix(1000, 0)
+	r.Now = func() time.Time { return current }
+
+	owner := watcher.OwnerKey{Kind: kindMilestone, Namespace: "ns", Name: "a"}
+	subscribe := func() error {
+		return r.Subscribe(context.Background(), kustomizationGVK, apimeta.RESTScopeNameNamespace, sub(owner, labels.Everything()))
+	}
+
+	// First attempt reaches the factory and fails.
+	if err := subscribe(); err == nil {
+		t.Fatalf("expected first Subscribe to fail")
+	}
+	if got := ff.enteredCount(kustomizationGVK); got != 1 {
+		t.Fatalf("factory entered %d times, want 1", got)
+	}
+
+	// Second attempt inside the cooldown fails fast without touching the
+	// factory (which would otherwise block the worker for the sync timeout).
+	if err := subscribe(); err == nil {
+		t.Fatalf("expected cooldown Subscribe to fail")
+	}
+	if got := ff.enteredCount(kustomizationGVK); got != 1 {
+		t.Errorf("factory entered %d times, want 1 (cooldown must not retry)", got)
+	}
+
+	// Past the cooldown the factory is retried for real; ff.failOn is
+	// single-shot so this attempt succeeds and clears the negative entry.
+	current = current.Add(r.SyncTimeout + time.Second)
+	if err := subscribe(); err != nil {
+		t.Fatalf("post-cooldown Subscribe: %v", err)
+	}
+	if got := ff.enteredCount(kustomizationGVK); got != 2 {
+		t.Errorf("factory entered %d times, want 2", got)
+	}
+	if c := r.SubscriberCount(kustomizationGVK); c != 1 {
+		t.Errorf("SubscriberCount = %d, want 1", c)
+	}
+}
+
+// TestRegistry_InvalidateGroupKind_ClearsFailureCooldown: CRD establishment
+// invalidates (group, kind), which must also drop the negative entry so the
+// very next Subscribe retries immediately instead of waiting out the cooldown.
+func TestRegistry_InvalidateGroupKind_ClearsFailureCooldown(t *testing.T) {
+	ff := newFakeFactory()
+	ff.failOn[kustomizationGVK] = errors.New("informer sync: CRD absent")
+	r := watcher.NewRegistry(ff, func(watcher.OwnerKey) {})
+	r.SyncTimeout = 50 * time.Millisecond
+	current := time.Unix(1000, 0)
+	r.Now = func() time.Time { return current }
+
+	owner := watcher.OwnerKey{Kind: kindMilestone, Namespace: "ns", Name: "a"}
+	subscribe := func() error {
+		return r.Subscribe(context.Background(), kustomizationGVK, apimeta.RESTScopeNameNamespace, sub(owner, labels.Everything()))
+	}
+
+	if err := subscribe(); err == nil {
+		t.Fatalf("expected first Subscribe to fail")
+	}
+
+	// CRD becomes Established → the watcher invalidates the group/kind.
+	r.InvalidateGroupKind(kustomizationGVK.Group, kustomizationGVK.Kind)
+
+	// Clock unchanged: without the invalidate this would be inside the
+	// cooldown; the invalidate must clear it so the retry is immediate.
+	if err := subscribe(); err != nil {
+		t.Fatalf("Subscribe after invalidate: %v", err)
+	}
+	if got := ff.enteredCount(kustomizationGVK); got != 2 {
+		t.Errorf("factory entered %d times, want 2 (invalidate clears cooldown)", got)
 	}
 }
 
@@ -526,6 +626,56 @@ func TestRegistry_Subscribe_PanicInStart_DoesNotStrandFollowers(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatalf("follower stranded: Subscribe did not return after leader panic — defer cleanup missing")
+	}
+}
+
+// TestRegistry_InvalidateGroupKind_ConcurrentSubscribe_Consistent pins the
+// linearizability of InvalidateGroupKind against a racing Subscribe: whatever
+// the interleaving, the post-state must be one of the two serial outcomes —
+// (informer running ∧ subscriber registered) or (no informer ∧ no
+// subscriber). A ClearGVK that runs outside the registry lock lets a racing
+// Subscribe register against the stale index (skipping the refcount
+// increment) and then be wiped, orphaning a running informer whose events
+// dispatch to nobody.
+func TestRegistry_InvalidateGroupKind_ConcurrentSubscribe_Consistent(t *testing.T) {
+	owner := watcher.OwnerKey{Kind: kindMilestone, Namespace: "ns", Name: "a"}
+	for i := range 5000 {
+		ff := newFakeFactory()
+		r := watcher.NewRegistry(ff, func(watcher.OwnerKey) {})
+		// Seed: informer running, index populated — the stale-index precondition.
+		if err := r.Subscribe(context.Background(), kustomizationGVK, apimeta.RESTScopeNameNamespace, sub(owner, labels.Everything())); err != nil {
+			t.Fatalf("seed Subscribe: %v", err)
+		}
+
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			r.InvalidateGroupKind(kustomizationGVK.Group, kustomizationGVK.Kind)
+		}()
+		var subErr error
+		go func() {
+			defer wg.Done()
+			<-start
+			subErr = r.Subscribe(context.Background(), kustomizationGVK, apimeta.RESTScopeNameNamespace, sub(owner, labels.Everything()))
+		}()
+		close(start)
+		wg.Wait()
+		if subErr != nil {
+			t.Fatalf("iteration %d: racing Subscribe: %v", i, subErr)
+		}
+
+		_, listErr := r.List(kustomizationGVK)
+		informerRunning := listErr == nil
+		subs := r.SubscriberCount(kustomizationGVK)
+		switch {
+		case informerRunning && subs != 1:
+			t.Fatalf("iteration %d: informer running with %d subscribers (orphaned informer, events dispatch to nobody)", i, subs)
+		case !informerRunning && subs != 0:
+			t.Fatalf("iteration %d: no informer but %d subscribers linger", i, subs)
+		}
 	}
 }
 

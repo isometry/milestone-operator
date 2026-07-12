@@ -92,9 +92,20 @@ type Registry struct {
 	// Envtest sets a smaller value to keep test runtimes tight.
 	SyncTimeout time.Duration
 
-	// mu protects informers, refcount, and starting. List and GVKCount take
-	// the read lock; Subscribe, Unsubscribe, and lifecycle changes take the
-	// write lock. The subscriber index has its own RWMutex.
+	// FailureCooldown overrides how long a failed informer start is cached
+	// before Subscribe retries the factory. Zero means use the effective
+	// sync timeout. An informer that can never sync (RBAC-forbidden kind,
+	// CRD deleted behind a discovery-cache hit) would otherwise block a
+	// reconcile worker for the full sync timeout on every attempt, starving
+	// every other owner served by that worker.
+	FailureCooldown time.Duration
+
+	// Now returns the current time; injectable for tests. Nil means time.Now.
+	Now func() time.Time
+
+	// mu protects informers, refcount, starting, and failed. List and
+	// GVKCount take the read lock; Subscribe, Unsubscribe, and lifecycle
+	// changes take the write lock. The subscriber index has its own RWMutex.
 	mu        sync.RWMutex
 	informers map[schema.GroupVersionKind]InformerEntry
 	refcount  map[schema.GroupVersionKind]int
@@ -102,6 +113,17 @@ type Registry struct {
 	// for the same GVK wait on the in-flight result instead of either
 	// serialising on r.mu or starting a duplicate informer.
 	starting map[schema.GroupVersionKind]*startInFlight
+	// failed is the negative cache of informer starts: within the cooldown,
+	// Subscribe returns the recorded error without re-blocking on the
+	// factory. Cleared on successful start and by InvalidateGroupKind (so a
+	// CRD becoming Established retries immediately).
+	failed map[schema.GroupVersionKind]failedStart
+}
+
+// failedStart records one failed informer start for the negative cache.
+type failedStart struct {
+	err error
+	at  time.Time
 }
 
 // NewRegistry returns a Registry wired to factory and enqueue.
@@ -113,7 +135,15 @@ func NewRegistry(factory InformerFactory, enqueue EnqueueFunc) *Registry {
 		informers: make(map[schema.GroupVersionKind]InformerEntry),
 		refcount:  make(map[schema.GroupVersionKind]int),
 		starting:  make(map[schema.GroupVersionKind]*startInFlight),
+		failed:    make(map[schema.GroupVersionKind]failedStart),
 	}
+}
+
+func (r *Registry) now() time.Time {
+	if r.Now == nil {
+		return time.Now()
+	}
+	return r.Now()
 }
 
 // Subscribe registers sub for gvk, starting the per-GVK informer (and waiting
@@ -128,12 +158,24 @@ func (r *Registry) Subscribe(ctx context.Context, gvk schema.GroupVersionKind, s
 	if timeout <= 0 {
 		timeout = DefaultSyncTimeout
 	}
+	cooldown := r.FailureCooldown
+	if cooldown <= 0 {
+		cooldown = timeout
+	}
 	for {
 		r.mu.Lock()
 		if _, running := r.informers[gvk]; running {
 			r.registerLocked(gvk, sub)
 			r.mu.Unlock()
 			return nil
+		}
+		if f, ok := r.failed[gvk]; ok {
+			if r.now().Before(f.at.Add(cooldown)) {
+				r.mu.Unlock()
+				metrics.SubscribeTotal.WithLabelValues(gvk.Group, gvk.Version, gvk.Kind, metrics.SubscribeError).Inc()
+				return fmt.Errorf("watcher: start informer for %s (cooling down after failure): %w", gvk, f.err)
+			}
+			delete(r.failed, gvk)
 		}
 		if inflight, ok := r.starting[gvk]; ok {
 			r.mu.Unlock()
@@ -173,10 +215,12 @@ func (r *Registry) Subscribe(ctx context.Context, gvk schema.GroupVersionKind, s
 		r.mu.Lock()
 		if err != nil {
 			inflight.err = err
+			r.failed[gvk] = failedStart{err: err, at: r.now()}
 			metrics.SubscribeTotal.WithLabelValues(gvk.Group, gvk.Version, gvk.Kind, metrics.SubscribeError).Inc()
 			r.mu.Unlock()
 			return fmt.Errorf("watcher: start informer for %s: %w", gvk, err)
 		}
+		delete(r.failed, gvk)
 		r.informers[gvk] = entry
 		metrics.Informers.WithLabelValues(gvk.Group, gvk.Version, gvk.Kind).Set(1)
 		r.registerLocked(gvk, sub)
@@ -252,6 +296,14 @@ func (r *Registry) GVKsByOwner(owner OwnerKey) []schema.GroupVersionKind {
 // Safe to call when no matching informer exists (no-op).
 func (r *Registry) InvalidateGroupKind(group, kind string) {
 	r.mu.Lock()
+	// Drop negative-cache entries too: the caller signals the (group, kind)
+	// changed state (e.g. CRD now Established), so a Subscribe blocked only
+	// by the failure cooldown must retry immediately.
+	for gvk := range r.failed {
+		if gvk.Group == group && gvk.Kind == kind {
+			delete(r.failed, gvk)
+		}
+	}
 	matched := make([]schema.GroupVersionKind, 0, 1)
 	for gvk := range r.informers {
 		if gvk.Group == group && gvk.Kind == kind {
@@ -263,12 +315,17 @@ func (r *Registry) InvalidateGroupKind(group, kind string) {
 		entries = append(entries, r.informers[gvk])
 		delete(r.informers, gvk)
 		delete(r.refcount, gvk)
+		// ClearGVK must run inside the r.mu critical section: released
+		// between the map deletes and the index clear, a racing Subscribe
+		// can start a fresh informer and register against the stale index
+		// (registerLocked sees index.Has and skips the refcount increment),
+		// only for ClearGVK to wipe the new subscriber — an orphaned informer
+		// whose events dispatch to nobody. Lock ordering r.mu → index.mu is
+		// already established by registerLocked.
+		r.index.ClearGVK(gvk)
 	}
 	r.mu.Unlock()
 
-	for _, gvk := range matched {
-		r.index.ClearGVK(gvk)
-	}
 	for _, entry := range entries {
 		entry.Stop()
 	}

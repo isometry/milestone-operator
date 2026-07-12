@@ -18,7 +18,13 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller"
 )
+
+// defaultMaxConcurrentReconciles keeps a single slow owner (e.g. one whose
+// informer start is waiting out the sync timeout) from serialising readiness
+// updates for every other owner served by the controller.
+const defaultMaxConcurrentReconciles = 4
 
 // MilestoneReconciler is the thin per-CRD wrapper around the generic
 // Reconciler for namespaced Milestone objects.
@@ -48,7 +54,8 @@ func (r *MilestoneReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 func (r *MilestoneReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	b := ctrl.NewControllerManagedBy(mgr).
 		For(&apiv1.Milestone{}).
-		Named("milestone")
+		Named("milestone").
+		WithOptions(controller.Options{MaxConcurrentReconciles: defaultMaxConcurrentReconciles})
 	if r.EventSource != nil {
 		b = b.WatchesRawSource(r.EventSource)
 	}

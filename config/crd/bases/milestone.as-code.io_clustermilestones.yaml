@@ -437,9 +437,10 @@ spec:
                 type: string
               notReadyResources:
                 description: |-
-                  NotReadyResources lists resources whose kstatus is not Current.
-                  Capped to avoid object-size explosions; Truncated indicates the cap
-                  was hit. The MaxItems cap mirrors the runtime cap applied by the
+                  NotReadyResources lists resources whose kstatus is not Current,
+                  deduplicated across dependencies and sorted by group, kind, namespace,
+                  name. Capped to avoid object-size explosions; Truncated indicates the
+                  cap was hit. The MaxItems cap mirrors the runtime cap applied by the
                   reconciler.
                 items:
                   description: |-
@@ -504,7 +505,12 @@ spec:
                 format: int64
                 type: integer
               summary:
-                description: Summary aggregates resource counters across all dependencies.
+                description: |-
+                  Summary aggregates resource counters across all dependencies. Counting
+                  is per dependency: a resource matched by two overlapping dependency
+                  selectors contributes to each dependency's buckets, so Total can exceed
+                  the number of distinct resources. (NotReadyResources, by contrast, is
+                  deduplicated.)
                 properties:
                   current:
                     description: Current counts resources whose kstatus is Current
