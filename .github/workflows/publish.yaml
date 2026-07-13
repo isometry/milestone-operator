@@ -48,6 +48,12 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
+          # Embed BuildKit SBOM + full provenance as attestation manifests
+          # inside the image index so they survive plain index copies
+          # (skopeo/crane); the signed referrer attestations below cover
+          # verification and need referrers-aware mirroring.
+          sbom: true
+          provenance: mode=max
           tags: |
             ${{ env.IMAGE }}:${{ github.ref_name }}
             ${{ env.IMAGE }}:latest
@@ -73,7 +79,7 @@ jobs:
           push-to-registry: true
 
       - name: Attest SBOM
-        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
         with:
           subject-name: ${{ env.IMAGE }}
           subject-digest: ${{ steps.build.outputs.digest }}

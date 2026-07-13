@@ -81,6 +81,40 @@ Helm can verify on pull once the chart is signed:
 helm pull oci://ghcr.io/isometry/charts/milestone-operator --version <version> --verify
 ```
 
+## Artifact layout & mirroring
+
+Two kinds of supply-chain artifact ship with each release, stored
+differently — the difference matters when you mirror:
+
+- **Inside the image index** (from BuildKit: `sbom: true`,
+  `provenance: mode=max`): unsigned per-platform SPDX SBOM and SLSA
+  provenance attestation manifests. These are ordinary index entries and
+  survive any index copy — `skopeo copy --all`, `crane copy`, registry
+  pull-through caches.
+- **As OCI 1.1 referrers** attached to the index digest: the cosign
+  signature (Sigstore bundle) and the GitHub-signed SLSA provenance and
+  SPDX SBOM attestations; the chart carries a signature and provenance the
+  same way. Referrers point *at* the subject, so a plain
+  `skopeo copy --all` does **not** carry them (skopeo has no referrers
+  support: [containers/skopeo#2061]), and `cosign verify` against such a
+  mirror fails.
+
+To mirror with signatures and signed attestations intact, use a
+referrers-aware copy:
+
+```sh
+regctl image copy --referrers --digest-tags ghcr.io/isometry/milestone-operator:<tag> <mirror>/milestone-operator:<tag>
+# or: oras cp -r … / cosign copy …
+# or repo-level: skopeo sync (copies the sha256-<digest> referrers fallback
+# tag; the destination's referrers API re-indexes the copied manifests)
+```
+
+Independently of registry contents, `gh attestation verify` works against
+**any** mirror: attestations are also stored in GitHub's attestation store,
+keyed by the image digest, which copying preserves.
+
+[containers/skopeo#2061]: https://github.com/containers/skopeo/issues/2061
+
 ## Runtime enforcement
 
 For continuous, cluster-side enforcement (rather than ad-hoc CLI checks),

@@ -137,9 +137,13 @@ To enable TLS with cert-manager-managed certificates:
 
 Tagged releases publish a keyless-signed (Sigstore) container image and OCI
 Helm chart, each with SLSA build provenance; the image also carries an SBOM
-attestation. [`docs/verification.md`](./docs/verification.md) documents how
+attestation. The image index additionally embeds unsigned BuildKit
+SBOM/provenance attestations that survive plain index copies (`skopeo`,
+`crane`); the signed artifacts are OCI referrers and need referrers-aware
+mirroring. [`docs/verification.md`](./docs/verification.md) documents how
 to verify them — `gh attestation verify`, `cosign`, and `helm --verify` —
-and [`deploy/policies/`](./deploy/policies/) ships ready-to-apply Flux and
+plus the artifact layout and mirroring guidance, and
+[`deploy/policies/`](./deploy/policies/) ships ready-to-apply Flux and
 Kyverno policies to enforce verification at runtime.
 
 ## Getting started
