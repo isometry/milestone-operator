@@ -13,6 +13,11 @@ provenance**; the image additionally carries an **SBOM attestation**:
 This lets you prove an artifact was built by this repository's release
 workflow — not substituted or tampered with — before you run or deploy it.
 
+Only *git* tags carry the `v` prefix. Published image and chart tags are the
+bare semver: the release tagged `v0.3.0` pushes
+`ghcr.io/isometry/milestone-operator:0.3.0`. Wherever `<tag>` or `<version>`
+appears below, use the un-prefixed form.
+
 ## Trust anchor
 
 Keyless signatures bind to the **workflow identity**, not a key. Pin both of
