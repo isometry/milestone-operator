@@ -41,6 +41,10 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
+      # Image tags are the bare semver: git tag v1.2.3 → image tag 1.2.3
+      - name: Derive version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+
       - name: Build and Push Image
         id: build
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
@@ -55,7 +59,7 @@ jobs:
           sbom: true
           provenance: mode=max
           tags: |
-            ${{ env.IMAGE }}:${{ github.ref_name }}
+            ${{ env.IMAGE }}:${{ env.VERSION }}
             ${{ env.IMAGE }}:latest
 
       - name: Sign Image
