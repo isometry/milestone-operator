@@ -31,6 +31,7 @@ Built with operator-sdk **v1.42.2** (Kubebuilder v4) and Go **1.26+**.
 | Watcher architecture | Shared, refcounted registry; one cluster-scoped dynamic informer per GVK. |
 | Per-resource readiness | `sigs.k8s.io/cli-utils/pkg/kstatus/status.Compute` (strict — no condition-fallback). |
 | Conditions | `Ready`, `Stalled` (kstatus-compatible). `Reconciling` is not emitted; reserved for a future additive change when a two-phase patch lands. |
+| Fresh-object health | CRD-level `status` default `{observedGeneration: -1}` (Flux's own pattern). A never-reconciled object computes as kstatus InProgress instead of falling through the condition-fallback to Current, so Flux `wait: true` cannot green-light a Milestone before its first reconcile. |
 | Operator scope | Single cluster-scoped deployment serves both CRDs. |
 | Test strategy | Unit + envtest (Go test); e2e against kind via ginkgo deferred. |
 | Observability | First-class Prometheus metrics from day one (custom collector + pipeline counters/histograms); ServiceMonitor + sample alert rules shipped in `config/`. |
@@ -108,6 +109,8 @@ type ResourceStatus struct {
     Message   string `json:"message,omitempty"`
 }
 
+// The CRD schema defaults the status object to {observedGeneration: -1}
+// so fresh objects read kstatus-InProgress (see "Flux integration").
 type MilestoneStatusBase struct {
     ObservedGeneration int64              `json:"observedGeneration,omitempty"`
     Conditions         []metav1.Condition `json:"conditions,omitempty"`
@@ -365,6 +368,20 @@ HelmRelease, prompting Flux to re-evaluate immediately.
 - No per-Milestone opt-out and no in-process debounce: status-patch
   idempotency already gates the poke rate, and Flux dedups identical
   reconcile requests via `.status.lastHandledReconcileAt`.
+
+Flux health checks (`wait: true` / `spec.healthChecks`) compute kstatus
+over the served object. A never-reconciled Milestone has no conditions
+and would fall through kstatus's condition-fallback to `Current` —
+failing open. The CRD schema therefore defaults `status` to
+`{observedGeneration: -1}` (the same pattern Flux applies to its own
+CRDs), which kstatus reads as `LatestGenerationNotObserved` →
+InProgress until the first status patch writes
+`observedGeneration = metadata.generation`. This also covers the
+finalizer-only first reconcile (which writes no status) and makes any
+early/two-phase status patch unnecessary for health-check correctness.
+Envtest pins the contract end-to-end: fresh objects of both kinds
+compute InProgress, converged ones Current, stalled ones Failed
+(`TestEnvtest_FreshMilestone_KstatusInProgress` and friends).
 
 ## Metric inventory
 

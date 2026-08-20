@@ -32,6 +32,7 @@ import (
 	memorydiscovery "k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/restmapper"
+	kstatus "sigs.k8s.io/cli-utils/pkg/kstatus/status"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -371,5 +372,37 @@ func TestEnvtest_ClusterMilestone_NamespacesAndSelector_RejectedByCEL(t *testing
 	}
 	if !strings.Contains(err.Error(), "namespaceSelector are mutually exclusive") {
 		t.Errorf("expected CEL message about mutual exclusion; got %v", err)
+	}
+}
+
+// TestEnvtest_FreshClusterMilestone_KstatusInProgress asserts the CRD-level
+// status default also protects the cluster-scoped kind: a fresh
+// ClusterMilestone serves observedGeneration=-1 and computes as kstatus
+// InProgress, never Current (the Flux `wait: true` fail-open bug).
+func TestEnvtest_FreshClusterMilestone_KstatusInProgress(t *testing.T) {
+	requiresEnvtest(t)
+
+	name := nsName(t, "fresh")
+	cm := &apiv1.ClusterMilestone{
+		ObjectMeta: metav1.ObjectMeta{Name: name},
+		Spec: apiv1.ClusterMilestoneSpec{DependsOn: []apiv1.ClusterDependencyRef{{
+			Name:           widgetPlural,
+			EmptySetPolicy: apiv1.EmptySetUnknown,
+			Target: apiv1.ClusterTargetSpec{
+				TargetSpec: apiv1.TargetSpec{Group: groupTestAsCode, Kind: kindWidget, Selector: scopedSelector(t)},
+			},
+		}}},
+	}
+	if err := envtestClient.Create(context.Background(), cm); err != nil {
+		t.Fatalf("create clustermilestone: %v", err)
+	}
+	// Never reconciled ⇒ no finalizer ⇒ a plain delete suffices.
+	t.Cleanup(func() { _ = envtestClient.Delete(context.Background(), cm) })
+
+	if got := refreshClusterMilestone(t, name).Status.ObservedGeneration; got != -1 {
+		t.Errorf("fresh Status.ObservedGeneration = %d, want -1 (CRD default)", got)
+	}
+	if s := computeKstatus(t, getUnstructuredOwner(t, kindClusterMilestone, client.ObjectKey{Name: name})); s != kstatus.InProgressStatus {
+		t.Fatalf("kstatus on fresh ClusterMilestone = %s, want InProgress", s)
 	}
 }

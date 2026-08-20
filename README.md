@@ -77,13 +77,19 @@ Per-dependency. Controls how an empty resource set is reported:
 
 ### Conditions
 
-`Milestone` and `ClusterMilestone` expose three conditions:
+`Milestone` and `ClusterMilestone` expose two kstatus-compatible
+conditions (`Reconciling` is reserved for a future two-phase status
+patch and is not emitted today):
 
-- `Ready` — kstatus-compatible aggregate over all dependencies
-- `Reconciling` — True while the controller is wiring watchers / settling
+- `Ready` — aggregate over all dependencies
 - `Stalled` — True for non-transient structural problems
   (`GVKNotEstablished`, `NamespaceScopeMismatch`, `WatchSetupFailed`,
   `DiscoveryFailed`)
+
+A freshly-created object is served with `status.observedGeneration: -1`
+(CRD schema default), so kstatus-based health checks — e.g. a FluxCD
+Kustomization with `wait: true` — report it `InProgress` until the
+first reconcile, never prematurely healthy.
 
 `Stalled` is independent of `Ready`. When `Stalled=True`, `Ready`
 reflects what we *can* observe (typically `Unknown`) — never silently
