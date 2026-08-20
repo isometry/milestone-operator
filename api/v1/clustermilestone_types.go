@@ -55,7 +55,13 @@ type ClusterMilestone struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   ClusterMilestoneSpec   `json:"spec"`
+	Spec ClusterMilestoneSpec `json:"spec"`
+
+	// The status object defaults to observedGeneration -1 so a
+	// freshly-created, never-reconciled object computes as kstatus
+	// InProgress instead of falling through to Current — otherwise Flux
+	// `wait: true` health checks pass before the first reconcile.
+	// +kubebuilder:default:={"observedGeneration":-1}
 	Status ClusterMilestoneStatus `json:"status,omitempty"`
 }
 

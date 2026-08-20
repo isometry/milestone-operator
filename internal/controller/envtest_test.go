@@ -30,6 +30,7 @@ import (
 	memorydiscovery "k8s.io/client-go/discovery/cached/memory"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/restmapper"
+	kstatus "sigs.k8s.io/cli-utils/pkg/kstatus/status"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -278,6 +279,12 @@ func TestEnvtest_LateCRD_StalledThenConverges(t *testing.T) {
 		t.Fatalf("Stalled=%s, want True before CRD install; conds=%+v", stalled(got), got.Status.Conditions)
 	}
 
+	// Stalled=True must surface as kstatus Failed, so a Flux `wait: true`
+	// health check fails instead of passing a stalled gate.
+	if s := computeKstatus(t, getUnstructuredOwner(t, kindMilestone, client.ObjectKeyFromObject(m))); s != kstatus.FailedStatus {
+		t.Fatalf("kstatus while stalled = %s, want Failed", s)
+	}
+
 	// Install the late CRD.
 	lateCRD := &apiextv1.CustomResourceDefinition{
 		ObjectMeta: metav1.ObjectMeta{Name: "lates.late.test.milestone.as-code.io"},
@@ -477,4 +484,109 @@ func refresh(t *testing.T, m *apiv1.Milestone) *apiv1.Milestone {
 		t.Fatalf("refresh: %v", err)
 	}
 	return out
+}
+
+// getUnstructuredOwner GETs a Milestone/ClusterMilestone exactly as the
+// apiserver serves it, in the unstructured form Flux's health checker feeds
+// to kstatus.
+func getUnstructuredOwner(t *testing.T, kind string, key client.ObjectKey) *unstructured.Unstructured {
+	t.Helper()
+	u := &unstructured.Unstructured{}
+	u.SetGroupVersionKind(apiv1.GroupVersion.WithKind(kind))
+	if err := envtestClient.Get(t.Context(), key, u); err != nil {
+		t.Fatalf("get unstructured %s: %v", kind, err)
+	}
+	return u
+}
+
+// computeKstatus mirrors Flux's health check: vanilla kstatus.Compute with
+// its condition-fallback behavior, NOT the strict internal/status wrapper.
+func computeKstatus(t *testing.T, u *unstructured.Unstructured) kstatus.Status {
+	t.Helper()
+	res, err := kstatus.Compute(u)
+	if err != nil {
+		t.Fatalf("kstatus compute: %v", err)
+	}
+	return res.Status
+}
+
+// 8. Flux `wait: true` computes health via kstatus. A freshly-created
+// Milestone must never read Current before the controller has evaluated it:
+// the CRD defaults status.observedGeneration to -1, which kstatus reads as
+// "latest generation not observed" → InProgress. Regression test for the
+// fail-open bug where a fresh object's empty .status fell through kstatus's
+// fallback to Current.
+func TestEnvtest_FreshMilestone_KstatusInProgress(t *testing.T) {
+	fix := newEnvFixture(t)
+	m := createMilestone(t, fix.namespace, "fresh", []apiv1.DependencyRef{{
+		Name:           widgetPlural,
+		EmptySetPolicy: apiv1.EmptySetUnknown,
+		Target:         apiv1.TargetSpec{Group: groupTestAsCode, Kind: kindWidget},
+	}})
+	key := client.ObjectKeyFromObject(m)
+
+	if got := refresh(t, m).Status.ObservedGeneration; got != -1 {
+		t.Errorf("fresh Status.ObservedGeneration = %d, want -1 (CRD default)", got)
+	}
+	if s := computeKstatus(t, getUnstructuredOwner(t, kindMilestone, key)); s != kstatus.InProgressStatus {
+		t.Fatalf("kstatus on fresh Milestone = %s, want InProgress", s)
+	}
+
+	// Reconcile #1 only adds the finalizer and writes no status; the object
+	// must still read InProgress in that window.
+	if _, err := fix.reconciler.ReconcileObject(t.Context(), refresh(t, m)); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if s := computeKstatus(t, getUnstructuredOwner(t, kindMilestone, key)); s != kstatus.InProgressStatus {
+		t.Fatalf("kstatus after finalizer-only reconcile = %s, want InProgress", s)
+	}
+}
+
+// 9. Once the controller has evaluated the Milestone, kstatus mirrors the
+// Ready condition: InProgress while a dependency is not ready, Current once
+// all are.
+func TestEnvtest_ConvergedMilestone_KstatusMirrorsReady(t *testing.T) {
+	fix := newEnvFixture(t)
+	w := createWidget(t, fix.namespace, "w1", statusFalse)
+
+	m := createMilestone(t, fix.namespace, "converged", []apiv1.DependencyRef{{
+		Name:           widgetPlural,
+		EmptySetPolicy: apiv1.EmptySetUnknown,
+		Target:         apiv1.TargetSpec{Group: groupTestAsCode, Kind: kindWidget},
+	}})
+	key := client.ObjectKeyFromObject(m)
+
+	for range 3 {
+		_, _ = fix.reconciler.ReconcileObject(t.Context(), refresh(t, m))
+	}
+	// A Ready=False widget computes as kstatus InProgress, so the dependency
+	// rolls up to Ready=Unknown (ResourcesInProgress) — wait for the condition
+	// to exist with that value (a fresh object reports "" here).
+	reconcileToConvergence(t, fix, key, func(e *apiv1.Milestone) error {
+		if ready(e) != metav1.ConditionUnknown {
+			return fmt.Errorf("Ready=%q", ready(e))
+		}
+		return nil
+	})
+	if s := computeKstatus(t, getUnstructuredOwner(t, kindMilestone, key)); s != kstatus.InProgressStatus {
+		t.Fatalf("kstatus with in-progress dependency = %s, want InProgress", s)
+	}
+
+	// Flip the widget to Ready=True: the Milestone converges and the object
+	// finally reads Current.
+	_ = unstructured.SetNestedSlice(w.Object, []any{
+		map[string]any{keyType: apiv1.ConditionReady, schemaPropStatus: statusTrue, keyReason: testReason},
+	}, schemaPropStatus, "conditions")
+	if err := envtestClient.Status().Update(t.Context(), w); err != nil {
+		t.Fatalf("flip widget ready: %v", err)
+	}
+	reconcileToConvergence(t, fix, key, func(e *apiv1.Milestone) error {
+		if ready(e) != metav1.ConditionTrue {
+			return fmt.Errorf("Ready=%s", ready(e))
+		}
+		return nil
+	})
+	if s := computeKstatus(t, getUnstructuredOwner(t, kindMilestone, key)); s != kstatus.CurrentStatus {
+		t.Fatalf("kstatus after convergence = %s, want Current", s)
+	}
 }

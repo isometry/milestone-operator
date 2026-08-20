@@ -183,7 +183,13 @@ spec:
             - dependsOn
             type: object
           status:
-            description: MilestoneStatus is the observed state of Milestone.
+            default:
+              observedGeneration: -1
+            description: |-
+              The status object defaults to observedGeneration -1 so a
+              freshly-created, never-reconciled object computes as kstatus
+              InProgress instead of falling through to Current — otherwise Flux
+              `wait: true` health checks pass before the first reconcile.
             properties:
               conditions:
                 description: |-
