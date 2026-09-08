@@ -32,6 +32,7 @@ type NormalizedDependency struct {
 	Selector         labels.Selector
 	NamespaceMatcher func(namespace string) bool
 	EmptySetPolicy   apiv1.EmptySetPolicy
+	SuspendPolicy    apiv1.SuspendPolicy
 }
 
 // DependencyError is a structural failure tied to a single dependency. The

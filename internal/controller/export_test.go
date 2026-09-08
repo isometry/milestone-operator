@@ -12,6 +12,7 @@ package controller
 
 import (
 	apiv1 "github.com/isometry/milestone-operator/api/v1"
+	"github.com/isometry/milestone-operator/internal/status"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -34,6 +35,11 @@ func StatusEqualIgnoringTimestamp(a, b apiv1.MilestoneStatusBase) bool {
 // DedupeAndSortResources exposes dedupeAndSortResources for test access.
 func DedupeAndSortResources(in []apiv1.ResourceStatus) []apiv1.ResourceStatus {
 	return dedupeAndSortResources(in)
+}
+
+// NotReadyResourcesOf exposes notReadyResourcesOf for test access.
+func NotReadyResourcesOf(resources []status.Resource, policy apiv1.SuspendPolicy) []apiv1.ResourceStatus {
+	return notReadyResourcesOf(resources, policy)
 }
 
 // TruncateWithEllipsis exposes truncateWithEllipsis for test access.

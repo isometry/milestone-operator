@@ -40,6 +40,7 @@ const (
 	depKustomizations = "kustomizations"
 	depLate           = "late"
 	statusTrue        = "True"
+	statusCurrent     = "Current"
 	statusFalse       = "False"
 	nsTeamA           = "team-a"
 	testReason        = "Test"

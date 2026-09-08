@@ -1279,3 +1279,81 @@ func TestReconcile_FluxNotify_OwnerLabelsCarriedThrough(t *testing.T) {
 		}
 	}
 }
+
+// suspendedResource is a Ready=True Kustomization frozen by spec.suspend —
+// the shape Flux leaves behind when a healthy object is suspended.
+func suspendedResource(name string) *unstructured.Unstructured {
+	u := currentResource(name)
+	_ = unstructured.SetNestedField(u.Object, true, "spec", "suspend")
+	return u
+}
+
+func TestReconcile_SuspendedResource_NotReadyPolicy(t *testing.T) {
+	ech := newMilestone("e1")
+	ech.Finalizers = []string{apiv1.Finalizer}
+	freg := newFakeRegistry()
+	freg.listResponses[kustomizationGVK] = []*unstructured.Unstructured{currentResource("a"), suspendedResource("b")}
+	fa := &fakeAdapter{
+		obj: ech,
+		deps: []controller.NormalizedDependency{{
+			Name: depKustomizations, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
+			Selector: mustSelector(t), EmptySetPolicy: apiv1.EmptySetUnknown,
+			SuspendPolicy: apiv1.SuspendNotReady,
+		}},
+	}
+	r := newFixture(t, ech, fa, freg)
+
+	if _, err := r.ReconcileObject(t.Context(), ech); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if got := readyStatusOf(ech); got != metav1.ConditionFalse {
+		t.Errorf("Ready = %s, want False", got)
+	}
+	got, ok := depStatusByName(ech, depKustomizations)
+	if !ok {
+		t.Fatalf("dependency %q missing from status", depKustomizations)
+	}
+	if got.Reason != apiv1.ReasonResourcesSuspended {
+		t.Errorf("dependency Reason = %q, want %q", got.Reason, apiv1.ReasonResourcesSuspended)
+	}
+	if got.Summary.Suspended != 1 || got.Summary.Current != 2 {
+		t.Errorf("summary = %+v, want suspended=1 current=2", got.Summary)
+	}
+	if len(ech.Status.NotReadyResources) != 1 {
+		t.Fatalf("notReadyResources = %+v, want exactly the suspended resource", ech.Status.NotReadyResources)
+	}
+	nrr := ech.Status.NotReadyResources[0]
+	if nrr.Name != "b" || nrr.Status != statusCurrent || nrr.Reason != apiv1.ReasonSuspended {
+		t.Errorf("notReadyResources[0] = %+v, want b/Current/Suspended", nrr)
+	}
+}
+
+func TestReconcile_SuspendedResource_IgnorePolicy(t *testing.T) {
+	ech := newMilestone("e1")
+	ech.Finalizers = []string{apiv1.Finalizer}
+	freg := newFakeRegistry()
+	freg.listResponses[kustomizationGVK] = []*unstructured.Unstructured{currentResource("a"), suspendedResource("b")}
+	fa := &fakeAdapter{
+		obj: ech,
+		deps: []controller.NormalizedDependency{{
+			Name: depKustomizations, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
+			Selector: mustSelector(t), EmptySetPolicy: apiv1.EmptySetUnknown,
+			SuspendPolicy: apiv1.SuspendIgnore,
+		}},
+	}
+	r := newFixture(t, ech, fa, freg)
+
+	if _, err := r.ReconcileObject(t.Context(), ech); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if got := readyStatusOf(ech); got != metav1.ConditionTrue {
+		t.Errorf("Ready = %s, want True", got)
+	}
+	if len(ech.Status.NotReadyResources) != 0 {
+		t.Errorf("notReadyResources = %+v, want empty under Ignore", ech.Status.NotReadyResources)
+	}
+	// Suspended is counted for observability even when the policy ignores it.
+	if ech.Status.Summary.Suspended != 1 {
+		t.Errorf("summary.suspended = %d, want 1", ech.Status.Summary.Suspended)
+	}
+}

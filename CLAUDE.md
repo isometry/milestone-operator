@@ -39,15 +39,18 @@ Status surfaces two kstatus-compatible conditions: `Ready` (aggregate) and
 `Stalled` (independent of Ready). `Reconciling` is reserved
 (`api/v1/shared_types.go`) but intentionally not emitted today — a
 future two-phase patch may use it. Per-dependency `emptySetPolicy`
-controls how an empty resource set is reported. Status
+controls how an empty resource set is reported; `suspendPolicy` controls
+whether a matched resource's `spec.suspend: true` forces the dependency
+not-ready. Status
 patching is idempotent: identical reconciles produce no resourceVersion
 churn (verified in tests). `status.dependsOn` is a listmap keyed by `name`,
 sorted by `name` before assignment so `reflect.DeepEqual` stays stable.
 
 Spec shape: `spec.dependsOn[]` is a non-atomic list of
-`{name, emptySetPolicy, target}` entries; each `target` carries the GVK +
-label selector (plus `namespaces` / `namespaceSelector` on
-ClusterMilestone). `name` is the listmap key — kebab-case, RFC-1123 label.
+`{name, emptySetPolicy, suspendPolicy, target}` entries; each `target`
+carries the GVK + label selector (plus `namespaces` / `namespaceSelector`
+on ClusterMilestone). `name` is the listmap key — kebab-case, RFC-1123
+label.
 
 Metrics are first-class. `internal/metrics/metrics.go` defines a 15-family
 inventory; `internal/metrics/collector.go` is a lister-backed collector
@@ -62,8 +65,8 @@ per-dependency rollups. Failure metrics with no dependency name available
 labelled by name use `dependency_*`.
 
 `DependencyStatus.Reason` is a closed CRD enum. The full set is:
-`AllResourcesReady`, `ResourcesNotReady`, `ResourcesInProgress`,
-`ResourcesUnknown`, `EmptySet`, `GVKNotEstablished`,
+`AllResourcesReady`, `ResourcesNotReady`, `ResourcesSuspended`,
+`ResourcesInProgress`, `ResourcesUnknown`, `EmptySet`, `GVKNotEstablished`,
 `NamespaceScopeMismatch`, `DiscoveryFailed`, `DiscoveryUnavailable`,
 `WatchSetupFailed`, `ListFailed`, `ReconcileError`. Use `ListFailed` for
 informer lister errors (the watch is up); use `DiscoveryUnavailable` for
@@ -137,10 +140,11 @@ into a single commit when it's a logical unit, to reduce yubikey touches.
   internal APIs freely; once tagged, field renames or removals require a
   new version + a conversion webhook. New optional `omitempty` fields and
   new owner-level condition types/reasons are safe within a stable v1.
-  *Not* back-compat-safe post-tag: new `EmptySetPolicy` enum values; new
-  `DependencyStatus.Reason` enum values (the field carries a closed CRD
-  enum); lowered `MaxItems` on `dependsOn` or `notReadyResources`;
-  changes to the `milestone.as-code.io/finalizer` string.
+  *Not* back-compat-safe post-tag: new `EmptySetPolicy` or `SuspendPolicy`
+  enum values; new `DependencyStatus.Reason` enum values (the field
+  carries a closed CRD enum); lowered `MaxItems` on `dependsOn` or
+  `notReadyResources`; changes to the `milestone.as-code.io/finalizer`
+  string.
 - Use canonical Kubernetes field names. `selector`, not `labelSelector`;
   `namespaceSelector`, not `nsLabelSelector`. The Go *type* name is rarely
   the right *field* name.

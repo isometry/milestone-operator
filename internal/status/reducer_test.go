@@ -46,7 +46,7 @@ func TestReduceDependency_EmptySet(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := status.ReduceDependency(depKustomizations, "kustomize.toolkit.fluxcd.io", "v1", kindKustomization, nil, tc.policy)
+			got := status.ReduceDependency(depKustomizations, "kustomize.toolkit.fluxcd.io", "v1", kindKustomization, nil, tc.policy, apiv1.SuspendIgnore)
 			if got.Ready != tc.wantReady {
 				t.Errorf("Ready = %s, want %s", got.Ready, tc.wantReady)
 			}
@@ -65,11 +65,15 @@ func TestReduceDependency_EmptySet(t *testing.T) {
 
 func TestReduceDependency_Resources(t *testing.T) {
 	cases := []struct {
-		name       string
-		statuses   []string
-		wantReady  metav1.ConditionStatus
-		wantReason string
-		wantSum    apiv1.Summary
+		name string
+		// suspended, when non-nil, is parallel to statuses and marks which
+		// resources carry spec.suspend: true.
+		statuses      []string
+		suspended     []bool
+		suspendPolicy apiv1.SuspendPolicy
+		wantReady     metav1.ConditionStatus
+		wantReason    string
+		wantSum       apiv1.Summary
 	}{
 		{
 			name:       "all current",
@@ -127,14 +131,80 @@ func TestReduceDependency_Resources(t *testing.T) {
 			wantReason: apiv1.ReasonResourcesInProgress,
 			wantSum:    apiv1.Summary{Total: 2, InProgress: 1, Unknown: 1},
 		},
+		{
+			name:          "suspended current under Ignore stays ready",
+			statuses:      []string{statCurrent},
+			suspended:     []bool{true},
+			suspendPolicy: apiv1.SuspendIgnore,
+			wantReady:     metav1.ConditionTrue,
+			wantReason:    apiv1.ReasonAllResourcesReady,
+			wantSum:       apiv1.Summary{Total: 1, Current: 1, Suspended: 1},
+		},
+		{
+			name:          "suspended current under empty policy stays ready",
+			statuses:      []string{statCurrent},
+			suspended:     []bool{true},
+			suspendPolicy: apiv1.SuspendPolicy(""),
+			wantReady:     metav1.ConditionTrue,
+			wantReason:    apiv1.ReasonAllResourcesReady,
+			wantSum:       apiv1.Summary{Total: 1, Current: 1, Suspended: 1},
+		},
+		{
+			name:          "suspended current under NotReady blocks",
+			statuses:      []string{statCurrent},
+			suspended:     []bool{true},
+			suspendPolicy: apiv1.SuspendNotReady,
+			wantReady:     metav1.ConditionFalse,
+			wantReason:    apiv1.ReasonResourcesSuspended,
+			wantSum:       apiv1.Summary{Total: 1, Current: 1, Suspended: 1},
+		},
+		{
+			name:          "failed keeps precedence over suspended",
+			statuses:      []string{statFailed},
+			suspended:     []bool{true},
+			suspendPolicy: apiv1.SuspendNotReady,
+			wantReady:     metav1.ConditionFalse,
+			wantReason:    apiv1.ReasonResourcesNotReady,
+			wantSum:       apiv1.Summary{Total: 1, Failed: 1, Suspended: 1},
+		},
+		{
+			name:          "suspended wins over inprogress",
+			statuses:      []string{statInProgress},
+			suspended:     []bool{true},
+			suspendPolicy: apiv1.SuspendNotReady,
+			wantReady:     metav1.ConditionFalse,
+			wantReason:    apiv1.ReasonResourcesSuspended,
+			wantSum:       apiv1.Summary{Total: 1, InProgress: 1, Suspended: 1},
+		},
+		{
+			name:          "set-level: one suspended current blocks a set with an inprogress sibling",
+			statuses:      []string{statCurrent, statInProgress},
+			suspended:     []bool{true, false},
+			suspendPolicy: apiv1.SuspendNotReady,
+			wantReady:     metav1.ConditionFalse,
+			wantReason:    apiv1.ReasonResourcesSuspended,
+			wantSum:       apiv1.Summary{Total: 2, Current: 1, InProgress: 1, Suspended: 1},
+		},
+		{
+			name:          "same set under Ignore reports inprogress",
+			statuses:      []string{statCurrent, statInProgress},
+			suspended:     []bool{true, false},
+			suspendPolicy: apiv1.SuspendIgnore,
+			wantReady:     metav1.ConditionUnknown,
+			wantReason:    apiv1.ReasonResourcesInProgress,
+			wantSum:       apiv1.Summary{Total: 2, Current: 1, InProgress: 1, Suspended: 1},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			rs := make([]status.Resource, len(tc.statuses))
 			for i, s := range tc.statuses {
 				rs[i] = resource(s)
+				if tc.suspended != nil {
+					rs[i].Suspended = tc.suspended[i]
+				}
 			}
-			got := status.ReduceDependency(depKustomizations, "kustomize.toolkit.fluxcd.io", "v1", kindKustomization, rs, apiv1.EmptySetUnknown)
+			got := status.ReduceDependency(depKustomizations, "kustomize.toolkit.fluxcd.io", "v1", kindKustomization, rs, apiv1.EmptySetUnknown, tc.suspendPolicy)
 			if got.Ready != tc.wantReady {
 				t.Errorf("Ready = %s, want %s", got.Ready, tc.wantReady)
 			}
@@ -237,11 +307,11 @@ func TestReduceOwner_StableMessage(t *testing.T) {
 
 func TestSummarizeOwner(t *testing.T) {
 	rollups := map[string]apiv1.DependencyStatus{
-		depKustomizations: {Name: depKustomizations, Kind: kindKustomization, Summary: apiv1.Summary{Total: 3, Current: 2, InProgress: 1}},
-		depHelmreleases:   {Name: depHelmreleases, Kind: "HelmRelease", Summary: apiv1.Summary{Total: 2, Current: 1, Failed: 1}},
+		depKustomizations: {Name: depKustomizations, Kind: kindKustomization, Summary: apiv1.Summary{Total: 3, Current: 2, InProgress: 1, Suspended: 2}},
+		depHelmreleases:   {Name: depHelmreleases, Kind: "HelmRelease", Summary: apiv1.Summary{Total: 2, Current: 1, Failed: 1, Suspended: 1}},
 		depConfigmaps:     {Name: depConfigmaps, Kind: "ConfigMap", Summary: apiv1.Summary{Total: 1, NotFound: 1}},
 	}
-	want := apiv1.Summary{Total: 6, Current: 3, InProgress: 1, Failed: 1, NotFound: 1}
+	want := apiv1.Summary{Total: 6, Current: 3, InProgress: 1, Failed: 1, NotFound: 1, Suspended: 3}
 	got := status.SummarizeOwner(rollups)
 	if got != want {
 		t.Errorf("SummarizeOwner = %+v, want %+v", got, want)

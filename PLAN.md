@@ -22,10 +22,11 @@ Built with operator-sdk **v1.42.2** (Kubebuilder v4) and Go **1.26+**.
 
 | Topic | Decision |
 | --- | --- |
-| Spec shape | `spec.dependsOn` is a non-atomic list of `{name, emptySetPolicy, target}` entries; `+listType=map`, `+listMapKey=name`. `MinItems=1`. Names are RFC-1123 labels enforced by a field-level `Pattern` marker. |
+| Spec shape | `spec.dependsOn` is a non-atomic list of `{name, emptySetPolicy, suspendPolicy, target}` entries; `+listType=map`, `+listMapKey=name`. `MinItems=1`. Names are RFC-1123 labels enforced by a field-level `Pattern` marker. |
 | Empty-set semantics | `emptySetPolicy: Unknown\|Ready\|NotReady` **per dependency** (default `Unknown`). |
+| Suspend semantics | `suspendPolicy: Ignore\|NotReady` **per dependency** (default `Ignore`). |
 | API ident | `milestone.as-code.io/v1`. Pre-v1.0.0; we can break our own internal APIs freely until tagged. |
-| `status.notReadyResources` verbosity | Only non-Current resources, deduplicated across dependencies and sorted by (group, kind, namespace, name) for patch idempotency, capped at 50 + aggregate `summary` counters; `truncated` flag. `summary` deliberately counts per dependency: a resource matched by two overlapping selectors contributes to each dependency's buckets. |
+| `status.notReadyResources` verbosity | Only not-ready resources (non-Current, or suspended under `suspendPolicy: NotReady`), deduplicated across dependencies and sorted by (group, kind, namespace, name) for patch idempotency, capped at 50 + aggregate `summary` counters; `truncated` flag. `summary` deliberately counts per dependency: a resource matched by two overlapping selectors contributes to each dependency's buckets. A `Current` resource with `spec.suspend: true` is listed with `reason: Suspended` when it is included solely because `suspendPolicy: NotReady` forces the dependency `Ready=False`. |
 | Missing CRD handling | `Stalled=True, reason=GVKNotEstablished` + watch `apiextensions.k8s.io/v1.CustomResourceDefinition` to wake on `Established=True`. |
 | ClusterMilestone scoping | `target.namespaces` and `target.namespaceSelector` are **per-dependency** and mutually exclusive (CRD CEL validation). |
 | Watcher architecture | Shared, refcounted registry; one cluster-scoped dynamic informer per GVK. |
@@ -43,6 +44,14 @@ Built with operator-sdk **v1.42.2** (Kubebuilder v4) and Go **1.26+**.
 ```go
 // +kubebuilder:validation:Enum=Unknown;Ready;NotReady
 type EmptySetPolicy string
+
+// +kubebuilder:validation:Enum=Ignore;NotReady
+type SuspendPolicy string
+
+const (
+    SuspendIgnore   SuspendPolicy = "Ignore"
+    SuspendNotReady SuspendPolicy = "NotReady"
+)
 
 type TargetSpec struct {
     Group    string                `json:"group,omitempty"`
@@ -67,6 +76,8 @@ type DependencyRef struct {
     Name           string         `json:"name"`
     // +kubebuilder:default=Unknown
     EmptySetPolicy EmptySetPolicy `json:"emptySetPolicy,omitempty"`
+    // +kubebuilder:default=Ignore
+    SuspendPolicy  SuspendPolicy  `json:"suspendPolicy,omitempty"`
     // +kubebuilder:validation:Required
     Target         TargetSpec     `json:"target"`
 }
@@ -74,6 +85,7 @@ type DependencyRef struct {
 type ClusterDependencyRef struct {
     Name           string            `json:"name"`
     EmptySetPolicy EmptySetPolicy    `json:"emptySetPolicy,omitempty"`
+    SuspendPolicy  SuspendPolicy     `json:"suspendPolicy,omitempty"`
     Target         ClusterTargetSpec `json:"target"`
 }
 
@@ -85,6 +97,7 @@ type Summary struct {
     NotFound    int32 `json:"notFound"`
     Terminating int32 `json:"terminating"`
     Unknown     int32 `json:"unknown"`
+    Suspended   int32 `json:"suspended"`
 }
 
 type DependencyStatus struct {
@@ -181,6 +194,11 @@ are `all` and `gitops`.
    `Reason = EmptySet`.
 4. Non-empty:
    - any `Failed` or `NotFound` → `Ready=False`, `Reason=ResourcesNotReady`.
+   - else `suspendPolicy=NotReady` and any resource has `spec.suspend: true`
+     → `Ready=False`, `Reason=ResourcesSuspended`. Set-level: suspension is
+     a durable, human-imposed block, so {A suspended+Current, B
+     InProgress} still reports `ResourcesSuspended` — B keeps its own
+     kstatus reason in `notReadyResources`.
    - any `InProgress` or `Terminating` → `Ready=Unknown`,
      `Reason=ResourcesInProgress`.
    - any `Unknown` (no other transitions) → `Ready=Unknown`,
@@ -209,7 +227,8 @@ dependency-level / owner-level reasons describe dependency rollups.
 `+kubebuilder:validation:Enum`; the closed set is:
 
 - Resource-level rollup: `AllResourcesReady`, `ResourcesNotReady`,
-  `ResourcesInProgress`, `ResourcesUnknown`, `EmptySet`.
+  `ResourcesSuspended`, `ResourcesInProgress`, `ResourcesUnknown`,
+  `EmptySet`.
 - Structural failures: `GVKNotEstablished`, `NamespaceScopeMismatch`,
   `DiscoveryFailed`, `DiscoveryUnavailable`, `WatchSetupFailed`,
   `ListFailed`.
@@ -383,6 +402,30 @@ Envtest pins the contract end-to-end: fresh objects of both kinds
 compute InProgress, converged ones Current, stalled ones Failed
 (`TestEnvtest_FreshMilestone_KstatusInProgress` and friends).
 
+### Suspended resources
+
+Verified against current `kustomize-controller` and `helm-controller`:
+`spec.suspend: true` makes both controllers return early on reconcile,
+setting or clearing no conditions, while `status.observedGeneration` stays
+current (helm-controller always; kustomize-controller whenever `Ready` is
+already `True`). The `reconcile.fluxcd.io/requestedAt` annotation is
+recorded into `lastHandledReconcileAt` but not acted on. Net effect on
+kstatus, under `suspendPolicy: Ignore`:
+
+| Object state when suspended | kstatus | Rollup under `Ignore` |
+|---|---|---|
+| Healthy (`Ready=True`) | Current | `Ready=True` indefinitely, regardless of later drift or new revisions |
+| Mid-failure (`Ready=False`, `Reconciling=True`) | InProgress | `Ready=Unknown` indefinitely |
+| `Stalled=True` | Failed | `Ready=False`, frozen |
+
+`Ignore` therefore reports a suspended dependency exactly as kstatus sees
+it, which can freeze a stale verdict for as long as the suspension lasts.
+`suspendPolicy: NotReady` exists for wave gates that must not advance on a
+frozen "looks fine" snapshot: it reports `Ready=False,
+Reason=ResourcesSuspended` for the dependency regardless of the frozen
+kstatus bucket, making the suspension itself the visible blocker rather
+than whatever state the resource was in when it froze.
+
 ## Metric inventory
 
 All metrics namespaced `milestone_*`. Cardinality bounds in parentheses.
@@ -441,10 +484,15 @@ All metrics namespaced `milestone_*`. Cardinality bounds in parentheses.
   (gauge).
 - `milestone_observed_generation{owner_kind,namespace,name}` (gauge).
 - `milestone_dependency_resources{owner_kind,namespace,name,dependency,target_group,target_kind,status}`
-  (gauge; status is the kstatus bucket name including `total`). Cardinality:
-  `8 × ⟨total owners⟩ × ⟨dependencies-per-owner⟩`.
+  (gauge; status is one of the six kstatus bucket names — current,
+  inProgress, failed, notFound, terminating, unknown — no `total` bucket).
+  Cardinality: `6 × ⟨total owners⟩ × ⟨dependencies-per-owner⟩`.
 - `milestone_dependency_ready{owner_kind,namespace,name,dependency,target_group,target_kind}`
   (gauge: 1=True, 0=False, -1=Unknown).
+- `milestone_dependency_suspended_resources{owner_kind,namespace,name,dependency,target_group,target_kind}`
+  (gauge; value = `summary.suspended`. Kept separate from
+  `milestone_dependency_resources` so that metric stays summable).
+  Cardinality: `⟨total owners⟩ × ⟨dependencies-per-owner⟩`.
 - `milestone_last_evaluated_timestamp_seconds{owner_kind,namespace,name}`
   (gauge).
 
@@ -459,8 +507,8 @@ then, we iterate freely. Once tagged:
   / `ClusterDependencyRef` (e.g. an optional `minMatched *int` for
   min-cardinality semantics — see below).
 - **Unsafe**: field renames or removals; new enum values on
-  `EmptySetPolicy` or on `DependencyStatus.Reason`; reordering of
-  `+listMapKey` semantics; changing the finalizer string
+  `EmptySetPolicy`, `SuspendPolicy`, or `DependencyStatus.Reason`;
+  reordering of `+listMapKey` semantics; changing the finalizer string
   (`milestone.as-code.io/finalizer`); lowering `MaxItems` on `dependsOn`
   or on `notReadyResources`. These require a new API version + a
   conversion webhook.

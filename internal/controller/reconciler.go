@@ -317,10 +317,10 @@ func (r *Reconciler[T]) evaluateDependencies(deps []NormalizedDependency, failed
 		var rollup apiv1.DependencyStatus
 		func() {
 			defer r.observe(metrics.StageReduce)()
-			rollup = status.ReduceDependency(d.Name, d.GVK.Group, d.GVK.Version, d.GVK.Kind, resources, d.EmptySetPolicy)
+			rollup = status.ReduceDependency(d.Name, d.GVK.Group, d.GVK.Version, d.GVK.Kind, resources, d.EmptySetPolicy, d.SuspendPolicy)
 		}()
 		rollups[d.Name] = rollup
-		notReady = append(notReady, notReadyResourcesOf(resources)...)
+		notReady = append(notReady, notReadyResourcesOf(resources, d.SuspendPolicy)...)
 	}
 	return rollups, notReady, listErrs
 }
@@ -491,14 +491,22 @@ func dependencyAdmits(d NormalizedDependency, namespace string, lbls map[string]
 	return true
 }
 
-func notReadyResourcesOf(resources []status.Resource) []apiv1.ResourceStatus {
+func notReadyResourcesOf(resources []status.Resource, policy apiv1.SuspendPolicy) []apiv1.ResourceStatus {
 	// Stay nil until we actually append: a non-nil empty slice would
 	// round-trip through status DeepCopy as != nil and trigger spurious
 	// patches when prior state was nil.
 	var out []apiv1.ResourceStatus
 	for _, m := range resources {
-		if m.IsCurrent() {
+		blockedBySuspension := policy == apiv1.SuspendNotReady && m.Suspended
+		if m.IsCurrent() && !blockedBySuspension {
 			continue
+		}
+		reason, message := m.Reason, m.Message
+		// Only when suspension is the sole cause: a suspended resource that
+		// is also Failed or InProgress keeps its kstatus text so the real
+		// failure is never masked.
+		if blockedBySuspension && m.IsCurrent() {
+			reason, message = apiv1.ReasonSuspended, "spec.suspend is true"
 		}
 		out = append(out, apiv1.ResourceStatus{
 			Group:     m.Group,
@@ -507,8 +515,8 @@ func notReadyResourcesOf(resources []status.Resource) []apiv1.ResourceStatus {
 			Namespace: m.Namespace,
 			Name:      m.Name,
 			Status:    m.Status,
-			Reason:    m.Reason,
-			Message:   m.Message,
+			Reason:    reason,
+			Message:   message,
 		})
 	}
 	return out

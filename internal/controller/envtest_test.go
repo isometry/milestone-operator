@@ -117,13 +117,36 @@ func createWidget(t *testing.T, ns, name, ready string) *unstructured.Unstructur
 		t.Fatalf("create widget: %v", err)
 	}
 	if ready != "" {
-		_ = unstructured.SetNestedField(w.Object, int64(1), schemaPropStatus, "observedGeneration")
-		_ = unstructured.SetNestedSlice(w.Object, []any{
-			map[string]any{keyType: apiv1.ConditionReady, schemaPropStatus: ready, keyReason: testReason},
-		}, schemaPropStatus, "conditions")
-		if err := envtestClient.Status().Update(t.Context(), w); err != nil {
-			t.Fatalf("update widget status: %v", err)
-		}
+		applyWidgetStatus(t, w, ready)
+	}
+	return w
+}
+
+// applyWidgetStatus sets observedGeneration and a Ready condition on w and
+// persists both via the status subresource.
+func applyWidgetStatus(t *testing.T, w *unstructured.Unstructured, ready string) {
+	t.Helper()
+	_ = unstructured.SetNestedField(w.Object, int64(1), schemaPropStatus, "observedGeneration")
+	_ = unstructured.SetNestedSlice(w.Object, []any{
+		map[string]any{keyType: apiv1.ConditionReady, schemaPropStatus: ready, keyReason: testReason},
+	}, schemaPropStatus, "conditions")
+	if err := envtestClient.Status().Update(t.Context(), w); err != nil {
+		t.Fatalf("update widget status: %v", err)
+	}
+}
+
+// createSuspendedWidget creates a Widget in ns with spec.suspend: true. The
+// test CRD's spec is x-kubernetes-preserve-unknown-fields, so setting
+// suspend needs no CRD change.
+func createSuspendedWidget(t *testing.T, ns, name, ready string) *unstructured.Unstructured {
+	t.Helper()
+	w := newWidget(ns, name, "")
+	_ = unstructured.SetNestedField(w.Object, true, "spec", "suspend")
+	if err := envtestClient.Create(t.Context(), w); err != nil {
+		t.Fatalf("create suspended widget: %v", err)
+	}
+	if ready != "" {
+		applyWidgetStatus(t, w, ready)
 	}
 	return w
 }
@@ -588,5 +611,65 @@ func TestEnvtest_ConvergedMilestone_KstatusMirrorsReady(t *testing.T) {
 	})
 	if s := computeKstatus(t, getUnstructuredOwner(t, kindMilestone, key)); s != kstatus.CurrentStatus {
 		t.Fatalf("kstatus after convergence = %s, want Current", s)
+	}
+}
+
+// 10. suspendPolicy: a Ready=True but suspended Widget blocks the gate under
+// NotReady, and stops blocking as soon as the policy is patched to Ignore.
+func TestEnvtest_SuspendedResource_NotReadyPolicy(t *testing.T) {
+	fix := newEnvFixture(t)
+	createSuspendedWidget(t, fix.namespace, "w1", statusTrue)
+
+	m := createMilestone(t, fix.namespace, "suspended", []apiv1.DependencyRef{{
+		Name:           widgetPlural,
+		EmptySetPolicy: apiv1.EmptySetUnknown,
+		SuspendPolicy:  apiv1.SuspendNotReady,
+		Target:         apiv1.TargetSpec{Group: groupTestAsCode, Kind: kindWidget},
+	}})
+	key := client.ObjectKeyFromObject(m)
+
+	for range 3 {
+		_, _ = fix.reconciler.ReconcileObject(t.Context(), refresh(t, m))
+	}
+	reconcileToConvergence(t, fix, key, func(e *apiv1.Milestone) error {
+		if ready(e) != metav1.ConditionFalse {
+			return fmt.Errorf("Ready=%q", ready(e))
+		}
+		return nil
+	})
+
+	got := refresh(t, m)
+	dep, ok := depStatusByName(got, widgetPlural)
+	if !ok {
+		t.Fatalf("dependency %q missing from status", widgetPlural)
+	}
+	if dep.Reason != apiv1.ReasonResourcesSuspended {
+		t.Errorf("dependency Reason = %q, want %q", dep.Reason, apiv1.ReasonResourcesSuspended)
+	}
+	if dep.Summary.Suspended != 1 || dep.Summary.Current != 1 {
+		t.Errorf("summary = %+v, want suspended=1 current=1", dep.Summary)
+	}
+	if len(got.Status.NotReadyResources) != 1 {
+		t.Fatalf("notReadyResources = %+v, want exactly the suspended widget", got.Status.NotReadyResources)
+	}
+	nrr := got.Status.NotReadyResources[0]
+	if nrr.Name != "w1" || nrr.Status != string(kstatus.CurrentStatus) || nrr.Reason != apiv1.ReasonSuspended {
+		t.Errorf("notReadyResources[0] = %+v, want w1/Current/Suspended", nrr)
+	}
+
+	// Relaxing the policy releases the gate without touching the widget.
+	patched := refresh(t, m)
+	patched.Spec.DependsOn[0].SuspendPolicy = apiv1.SuspendIgnore
+	if err := envtestClient.Update(t.Context(), patched); err != nil {
+		t.Fatalf("patch suspendPolicy: %v", err)
+	}
+	reconcileToConvergence(t, fix, key, func(e *apiv1.Milestone) error {
+		if ready(e) != metav1.ConditionTrue {
+			return fmt.Errorf("Ready=%q", ready(e))
+		}
+		return nil
+	})
+	if n := len(refresh(t, m).Status.NotReadyResources); n != 0 {
+		t.Errorf("notReadyResources after Ignore = %d, want 0", n)
 	}
 }

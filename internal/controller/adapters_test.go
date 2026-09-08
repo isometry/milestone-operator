@@ -151,7 +151,7 @@ func TestMilestoneAdapter_Dependencies_PreservesSpecOrder(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Namespace: nsFluxSystem, Name: "x"},
 		Spec: apiv1.MilestoneSpec{DependsOn: []apiv1.DependencyRef{
 			{Name: "zeta", Target: apiv1.TargetSpec{Group: groupKustomize, Kind: kindKustomization}},
-			{Name: "alpha", Target: apiv1.TargetSpec{Group: groupKustomize, Kind: kindKustomization}},
+			{Name: "alpha", SuspendPolicy: apiv1.SuspendNotReady, Target: apiv1.TargetSpec{Group: groupKustomize, Kind: kindKustomization}},
 			{Name: "mid", Target: apiv1.TargetSpec{Group: groupKustomize, Kind: kindKustomization}},
 		}},
 	}
@@ -165,6 +165,9 @@ func TestMilestoneAdapter_Dependencies_PreservesSpecOrder(t *testing.T) {
 			t.Errorf("deps[%d].Name = %q, want %q", i, d.Name, want[i])
 		}
 	}
+	if deps[1].SuspendPolicy != apiv1.SuspendNotReady {
+		t.Errorf("deps[1].SuspendPolicy = %q, want %q", deps[1].SuspendPolicy, apiv1.SuspendNotReady)
+	}
 }
 
 func TestClusterMilestoneAdapter_Dependencies_NamespaceListMatcher(t *testing.T) {
@@ -172,7 +175,8 @@ func TestClusterMilestoneAdapter_Dependencies_NamespaceListMatcher(t *testing.T)
 		ObjectMeta: metav1.ObjectMeta{Name: namePlatform},
 		Spec: apiv1.ClusterMilestoneSpec{DependsOn: []apiv1.ClusterDependencyRef{
 			{
-				Name: depKustomizations,
+				Name:          depKustomizations,
+				SuspendPolicy: apiv1.SuspendNotReady,
 				Target: apiv1.ClusterTargetSpec{
 					TargetSpec: apiv1.TargetSpec{Group: groupKustomize, Kind: kindKustomization},
 					Namespaces: []string{nsFluxSystem, nsTeamA},
@@ -189,6 +193,9 @@ func TestClusterMilestoneAdapter_Dependencies_NamespaceListMatcher(t *testing.T)
 	}
 	if len(deps) != 1 {
 		t.Fatalf("deps len = %d, want 1", len(deps))
+	}
+	if deps[0].SuspendPolicy != apiv1.SuspendNotReady {
+		t.Errorf("deps[0].SuspendPolicy = %q, want %q", deps[0].SuspendPolicy, apiv1.SuspendNotReady)
 	}
 	matcher := deps[0].NamespaceMatcher
 	if !matcher(nsFluxSystem) || !matcher(nsTeamA) {

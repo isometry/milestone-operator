@@ -42,6 +42,7 @@ type StateCollector struct {
 	statusCondition        *prometheus.Desc
 	observedGeneration     *prometheus.Desc
 	dependencyResources    *prometheus.Desc
+	dependencySuspended    *prometheus.Desc
 	dependencyReady        *prometheus.Desc
 	lastEvaluatedTimestamp *prometheus.Desc
 }
@@ -68,6 +69,11 @@ func NewStateCollector(ctx context.Context, lister StateLister) *StateCollector 
 			"Per-dependency resource counts by kstatus bucket (current, inProgress, failed, notFound, terminating, unknown). Total is the sum across buckets and is derived at query time rather than emitted.",
 			[]string{labelOwnerKind, labelNamespace, labelName, labelDependency, labelTargetGroup, labelTargetKind, labelStatus}, nil,
 		),
+		dependencySuspended: prometheus.NewDesc(
+			"milestone_dependency_suspended_resources",
+			"Per-dependency count of matched resources with spec.suspend: true. Orthogonal to milestone_dependency_resources, whose buckets stay summable.",
+			[]string{labelOwnerKind, labelNamespace, labelName, labelDependency, labelTargetGroup, labelTargetKind}, nil,
+		),
 		dependencyReady: prometheus.NewDesc(
 			"milestone_dependency_ready",
 			"Per-dependency Ready encoded as 1=True, 0=False, -1=Unknown.",
@@ -86,6 +92,7 @@ func (c *StateCollector) Describe(ch chan<- *prometheus.Desc) {
 	ch <- c.statusCondition
 	ch <- c.observedGeneration
 	ch <- c.dependencyResources
+	ch <- c.dependencySuspended
 	ch <- c.dependencyReady
 	ch <- c.lastEvaluatedTimestamp
 }
@@ -129,6 +136,7 @@ func (c *StateCollector) emit(ch chan<- prometheus.Metric, kind, namespace, name
 		emit("notFound", d.Summary.NotFound)
 		emit("terminating", d.Summary.Terminating)
 		emit("unknown", d.Summary.Unknown)
+		ch <- prometheus.MustNewConstMetric(c.dependencySuspended, prometheus.GaugeValue, float64(d.Summary.Suspended), kind, namespace, name, d.Name, d.Group, d.Kind)
 	}
 }
 

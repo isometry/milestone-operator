@@ -41,7 +41,7 @@ func newDeploymentReady(replicas, ready int64) *unstructured.Unstructured {
 func TestCompute_DeploymentCurrent(t *testing.T) {
 	u := newDeploymentReady(3, 3)
 	got := status.Compute(u)
-	if got.Status != "Current" {
+	if got.Status != statCurrent {
 		t.Errorf("Status = %q, want Current; reason=%q msg=%q", got.Status, got.Reason, got.Message)
 	}
 	if got.Group != "apps" || got.Version != "v1" || got.Kind != "Deployment" {
@@ -91,7 +91,7 @@ func TestCompute_CustomResourceReadyTrue(t *testing.T) {
 		map[string]any{keyType: "Ready", keyStatus: statusTrue, keyReason: "ReconciliationSucceeded"},
 	}, keyStatus, "conditions")
 	got := status.Compute(u)
-	if got.Status != "Current" {
+	if got.Status != statCurrent {
 		t.Errorf("Status = %q, want Current", got.Status)
 	}
 }
@@ -114,5 +114,33 @@ func TestCompute_CustomResourceReadyFalse(t *testing.T) {
 	}
 	if got.Message == "" {
 		t.Errorf("expected non-empty Message when Ready=False has a message")
+	}
+}
+
+func TestCompute_Suspended(t *testing.T) {
+	cases := []struct {
+		name    string
+		suspend any
+		want    bool
+	}{
+		{"spec.suspend true", true, true},
+		{"spec.suspend false", false, false},
+		{"spec.suspend non-bool", "true", false},
+		{"spec.suspend absent", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			u := newDeploymentReady(1, 1)
+			if tc.suspend != nil {
+				_ = unstructured.SetNestedField(u.Object, tc.suspend, "spec", "suspend")
+			}
+			got := status.Compute(u)
+			if got.Suspended != tc.want {
+				t.Errorf("Suspended = %v, want %v", got.Suspended, tc.want)
+			}
+			if got.Status != statCurrent {
+				t.Errorf("Status = %q, want Current (kstatus must be untouched by suspension)", got.Status)
+			}
+		})
 	}
 }

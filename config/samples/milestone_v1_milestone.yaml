@@ -10,6 +10,7 @@ spec:
   dependsOn:
     - name: kustomizations
       emptySetPolicy: NotReady
+      suspendPolicy: NotReady
       target:
         group: kustomize.toolkit.fluxcd.io
         kind: Kustomization

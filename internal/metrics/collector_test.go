@@ -124,8 +124,9 @@ func TestStateCollector_EmitsConditionAndGenerationGauges(t *testing.T) {
 	want := map[string]bool{
 		"milestone_status_condition":                 true,
 		"milestone_observed_generation":              true,
-		"milestone_dependency_resources":             true,
+		familyDependencyResources:                    true,
 		"milestone_dependency_ready":                 true,
+		"milestone_dependency_suspended_resources":   true,
 		"milestone_last_evaluated_timestamp_seconds": true,
 	}
 	have := map[string]bool{}
@@ -220,7 +221,7 @@ func TestStateCollector_DependencyResourcesPerStatusBucket(t *testing.T) {
 		"failed":     1,
 	}
 	for status, want := range cases {
-		got := valueAt(t, col, "milestone_dependency_resources", map[string]string{
+		got := valueAt(t, col, familyDependencyResources, map[string]string{
 			keyOwnerKind: kindMilestone, keyNamespace: nsFluxSystem, keyName: nameWave0,
 			keyDependency: depName, keyTargetGroup: groupKustomize, keyTargetKind: kindKustomization,
 			keyStatus: status,
@@ -242,7 +243,7 @@ func TestStateCollector_DependencyResourcesPerStatusBucket(t *testing.T) {
 		t.Fatalf("gather: %v", err)
 	}
 	for _, mf := range mfs {
-		if mf.GetName() != "milestone_dependency_resources" {
+		if mf.GetName() != familyDependencyResources {
 			continue
 		}
 		for _, m := range mf.GetMetric() {
@@ -284,4 +285,41 @@ func joinStrings(m map[string]bool) string {
 		out = append(out, k)
 	}
 	return strings.Join(out, ", ")
+}
+
+func TestStateCollector_DependencySuspendedResources(t *testing.T) {
+	m := newReadyMilestone(nsFluxSystem, "wave-0")
+	m.Status.DependsOn[0].Summary = apiv1.Summary{Total: 4, Current: 3, InProgress: 1, Suspended: 2}
+	col := metrics.NewStateCollector(t.Context(), &fakeLister{milestones: []apiv1.Milestone{m}})
+
+	got := valueAt(t, col, "milestone_dependency_suspended_resources", map[string]string{
+		keyOwnerKind: kindMilestone, keyNamespace: nsFluxSystem, keyName: nameWave0,
+		keyDependency: depName, keyTargetGroup: groupKustomize, keyTargetKind: kindKustomization,
+	})
+	if got != 2 {
+		t.Errorf("suspended gauge = %v, want 2", got)
+	}
+
+	// Suspended is orthogonal to the kstatus buckets, so it must not leak
+	// into milestone_dependency_resources and break its summability.
+	reg := prometheus.NewRegistry()
+	if err := reg.Register(col); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	mfs, err := reg.Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	for _, mf := range mfs {
+		if mf.GetName() != familyDependencyResources {
+			continue
+		}
+		for _, mm := range mf.GetMetric() {
+			for _, lp := range mm.GetLabel() {
+				if lp.GetName() == keyStatus && lp.GetValue() == "suspended" {
+					t.Errorf("status=suspended series unexpectedly emitted: %v", mm.GetLabel())
+				}
+			}
+		}
+	}
 }
