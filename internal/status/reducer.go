@@ -22,21 +22,29 @@ import (
 )
 
 // Resource identifies a single matched resource and its computed kstatus.
+// Suspended is orthogonal to Status: kstatus has no notion of suspension, so
+// a suspended object still carries whatever kstatus its (frozen) conditions
+// imply.
 type Resource struct {
 	Group, Version, Kind string
 	Namespace, Name      string
 	Status, Reason       string
 	Message              string
+	Suspended            bool
 }
 
 // ReduceDependency reduces resources of one dependency into a
 // DependencyStatus. When the resource set is empty, the dependency's
-// EmptySetPolicy controls Ready reporting.
-func ReduceDependency(name, group, version, kind string, resources []Resource, policy apiv1.EmptySetPolicy) apiv1.DependencyStatus {
+// EmptySetPolicy controls Ready reporting; when any resource is suspended,
+// suspendPolicy controls it.
+func ReduceDependency(name, group, version, kind string, resources []Resource, policy apiv1.EmptySetPolicy, suspendPolicy apiv1.SuspendPolicy) apiv1.DependencyStatus {
 	rollup := apiv1.DependencyStatus{Name: name, Group: group, Version: version, Kind: kind}
 
 	for _, r := range resources {
 		rollup.Summary.Total++
+		if r.Suspended {
+			rollup.Summary.Suspended++
+		}
 		switch r.Status {
 		case kstatus.CurrentStatus.String():
 			rollup.Summary.Current++
@@ -70,6 +78,13 @@ func ReduceDependency(name, group, version, kind string, resources []Resource, p
 	case rollup.Summary.Failed > 0 || rollup.Summary.NotFound > 0:
 		rollup.Ready = metav1.ConditionFalse
 		rollup.Reason = apiv1.ReasonResourcesNotReady
+	// Set-level, and ranked below Failed/NotFound: suspension is a durable
+	// human-imposed block, but a genuine failure is the more actionable
+	// report. Siblings that are merely InProgress still surface individually
+	// in notReadyResources.
+	case suspendPolicy == apiv1.SuspendNotReady && rollup.Summary.Suspended > 0:
+		rollup.Ready = metav1.ConditionFalse
+		rollup.Reason = apiv1.ReasonResourcesSuspended
 	case rollup.Summary.InProgress > 0 || rollup.Summary.Terminating > 0:
 		rollup.Ready = metav1.ConditionUnknown
 		rollup.Reason = apiv1.ReasonResourcesInProgress
@@ -127,6 +142,7 @@ func SummarizeOwner(rollups map[string]apiv1.DependencyStatus) apiv1.Summary {
 		total.NotFound += r.Summary.NotFound
 		total.Terminating += r.Summary.Terminating
 		total.Unknown += r.Summary.Unknown
+		total.Suspended += r.Summary.Suspended
 	}
 	return total
 }

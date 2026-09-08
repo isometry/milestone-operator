@@ -107,6 +107,7 @@ func (a *ClusterMilestoneAdapter) Dependencies(ctx context.Context, dr discovery
 			Selector:         sel,
 			NamespaceMatcher: matcher,
 			EmptySetPolicy:   d.EmptySetPolicy,
+			SuspendPolicy:    d.SuspendPolicy,
 		})
 	}
 	return out, errs

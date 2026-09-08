@@ -135,12 +135,14 @@ rules:
     resources:
       - helmreleases
     verbs:
+      - get
       - patch
   - apiGroups:
       - kustomize.toolkit.fluxcd.io
     resources:
       - kustomizations
     verbs:
+      - get
       - patch
   {{- end }}
 ---

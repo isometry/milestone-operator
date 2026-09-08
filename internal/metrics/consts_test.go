@@ -17,6 +17,9 @@ const (
 	nsFluxSystem      = "flux-system"
 	nameWave0         = "wave-0"
 
+	// Metric family names asserted in more than one test.
+	familyDependencyResources = "milestone_dependency_resources"
+
 	// Label keys mirror the production metrics package (which keeps them
 	// unexported); naming matches so that a divergence is obvious.
 	keyOwnerKind   = "owner_kind"

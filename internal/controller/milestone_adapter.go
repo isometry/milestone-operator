@@ -83,6 +83,7 @@ func (a *MilestoneAdapter) Dependencies(ctx context.Context, dr discovery.Resolv
 			Selector:         sel,
 			NamespaceMatcher: matcher,
 			EmptySetPolicy:   d.EmptySetPolicy,
+			SuspendPolicy:    d.SuspendPolicy,
 		})
 	}
 	return out, errs

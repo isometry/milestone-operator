@@ -25,12 +25,15 @@ func (r Resource) IsCurrent() bool {
 // a Resource ready for reduction. Errors and nil results are reported as Unknown.
 func Compute(u *unstructured.Unstructured) Resource {
 	gvk := u.GroupVersionKind()
+	// Absent, or present but not a bool, both mean "not suspended".
+	suspended, _, _ := unstructured.NestedBool(u.Object, "spec", "suspend")
 	r := Resource{
 		Group:     gvk.Group,
 		Version:   gvk.Version,
 		Kind:      gvk.Kind,
 		Namespace: u.GetNamespace(),
 		Name:      u.GetName(),
+		Suspended: suspended,
 	}
 	res, err := kstatus.Compute(u)
 	if err != nil {

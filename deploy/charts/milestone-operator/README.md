@@ -45,7 +45,7 @@ resources — in place. Set `crds.keep=false` to let Helm remove them.
 | `crds.install` | Install the `Milestone` / `ClusterMilestone` CRDs | `true` |
 | `crds.keep` | Annotate CRDs with `helm.sh/resource-policy: keep` | `true` |
 | `leaderElection.enabled` | Run a single active manager via a Lease | `true` |
-| `fluxNotify` | Poke the FluxCD parent on Ready transitions (toggles the `--flux-notify` arg **and** the helmrelease/kustomization `patch` grant) | `true` |
+| `fluxNotify` | Poke the FluxCD parent on Ready transitions (toggles the `--flux-notify` arg **and** the helmrelease/kustomization `get`+`patch` grant) | `true` |
 | `rbac.create` | Create the ServiceAccount, Roles and Bindings | `true` |
 | `rbac.serviceAccount.name` | Override the ServiceAccount name | chart fullname |
 | `rbac.serviceAccount.annotations` | Annotations on the ServiceAccount (e.g. IRSA) | `{}` |

@@ -75,6 +75,21 @@ Per-dependency. Controls how an empty resource set is reported:
 | `Ready`    | Ready=True — vacuously advance when nothing matches                     |
 | `NotReady` | Ready=False — emptiness is itself a misconfiguration                    |
 
+### `suspendPolicy`
+
+Per-dependency. Controls whether a matched resource's `spec.suspend: true`
+affects dependency readiness:
+
+| Value      | Meaning                                                                 |
+|------------|-------------------------------------------------------------------------|
+| `Ignore`   | (Default) Suspension has no effect — kstatus is reported as-is         |
+| `NotReady` | Any matched resource with `spec.suspend: true` forces Ready=False, reason=ResourcesSuspended |
+
+Detection is a boolean `spec.suspend: true` on the matched resource — every
+reconciling Flux kind (Kustomization, HelmRelease, sources, …) exposes it.
+Under `NotReady`, `status.notReadyResources` can list an otherwise-`Current`
+resource with `reason: Suspended`.
+
 ### Conditions
 
 `Milestone` and `ClusterMilestone` expose two kstatus-compatible

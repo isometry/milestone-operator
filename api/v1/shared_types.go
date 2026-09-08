@@ -41,6 +41,27 @@ const (
 	EmptySetNotReady EmptySetPolicy = "NotReady"
 )
 
+// SuspendPolicy controls how a dependency's Ready is reported when one or
+// more matched resources are suspended. A resource counts as suspended when
+// it exposes a boolean `spec.suspend` set to true — the convention shared by
+// every reconciling Flux kind (Kustomization, HelmRelease, sources, …).
+//
+// +kubebuilder:validation:Enum=Ignore;NotReady
+type SuspendPolicy string
+
+const (
+	// SuspendIgnore reports suspended resources exactly as kstatus sees
+	// them: suspension has no effect on Ready. Default; matches the
+	// behaviour of releases before suspendPolicy existed.
+	SuspendIgnore SuspendPolicy = "Ignore"
+	// SuspendNotReady reports Ready=False for the dependency when any
+	// matched resource has spec.suspend: true. Use when a deliberately
+	// suspended resource must not satisfy a deployment gate: Flux freezes
+	// the object's conditions at suspend time, so a healthy-at-suspend
+	// resource would otherwise report Current forever.
+	SuspendNotReady SuspendPolicy = "NotReady"
+)
+
 // TargetSpec selects a set of resources by GVK and label selector.
 type TargetSpec struct {
 	// Group is the API group of the target kind. Empty string means the
@@ -107,6 +128,12 @@ type DependencyRef struct {
 	// +kubebuilder:default=Unknown
 	EmptySetPolicy EmptySetPolicy `json:"emptySetPolicy,omitempty"`
 
+	// SuspendPolicy controls Ready reporting when a matched resource has
+	// spec.suspend: true. Defaults to Ignore when omitted.
+	// +optional
+	// +kubebuilder:default=Ignore
+	SuspendPolicy SuspendPolicy `json:"suspendPolicy,omitempty"`
+
 	// Target selects the set of resources this dependency aggregates.
 	// +kubebuilder:validation:Required
 	Target TargetSpec `json:"target"`
@@ -129,6 +156,12 @@ type ClusterDependencyRef struct {
 	// +kubebuilder:default=Unknown
 	EmptySetPolicy EmptySetPolicy `json:"emptySetPolicy,omitempty"`
 
+	// SuspendPolicy controls Ready reporting when a matched resource has
+	// spec.suspend: true. Defaults to Ignore when omitted.
+	// +optional
+	// +kubebuilder:default=Ignore
+	SuspendPolicy SuspendPolicy `json:"suspendPolicy,omitempty"`
+
 	// Target selects the set of resources this dependency aggregates,
 	// including per-dependency namespace scoping.
 	// +kubebuilder:validation:Required
@@ -138,12 +171,16 @@ type ClusterDependencyRef struct {
 // Summary holds aggregate kstatus counters for a set of resources. All
 // counters are always populated; a zero value means no resources fall in
 // that bucket, not "not yet computed". The bucket names mirror
-// sigs.k8s.io/cli-utils kstatus.
+// sigs.k8s.io/cli-utils kstatus. Suspended is the one exception: it is
+// orthogonal to the kstatus buckets rather than one of them, so it is
+// excluded from the Total identity below.
 //
 // +kubebuilder:validation:XValidation:rule="self.total == self.current + self.inProgress + self.failed + self.notFound + self.terminating + self.unknown",message="Summary.Total must equal the sum of all buckets"
 type Summary struct {
 	// Total is the count of resources currently matched by the dependency's
-	// target selector. Total == sum of all the other buckets.
+	// target selector. Total is the sum of the six kstatus buckets (Current,
+	// InProgress, Failed, NotFound, Terminating, Unknown); Suspended is
+	// excluded.
 	Total int32 `json:"total"`
 	// Current counts resources whose kstatus is Current (steady-state ready).
 	Current int32 `json:"current"`
@@ -159,6 +196,11 @@ type Summary struct {
 	Terminating int32 `json:"terminating"`
 	// Unknown counts resources whose kstatus could not be determined.
 	Unknown int32 `json:"unknown"`
+	// Suspended counts resources with spec.suspend: true. Orthogonal to the
+	// kstatus buckets — a suspended resource is also counted in whichever
+	// bucket its kstatus falls into, so Suspended is not part of the Total
+	// sum. Always populated, whatever the dependency's suspendPolicy.
+	Suspended int32 `json:"suspended"`
 }
 
 // DependencyStatus is the per-dependency aggregated readiness reported on
@@ -193,15 +235,16 @@ type DependencyStatus struct {
 	// at the dependency level; see the Reason* constants in this package
 	// for canonical values.
 	// +optional
-	// +kubebuilder:validation:Enum=AllResourcesReady;ResourcesNotReady;ResourcesInProgress;ResourcesUnknown;EmptySet;GVKNotEstablished;NamespaceScopeMismatch;DiscoveryFailed;DiscoveryUnavailable;WatchSetupFailed;ListFailed;ReconcileError
+	// +kubebuilder:validation:Enum=AllResourcesReady;ResourcesNotReady;ResourcesSuspended;ResourcesInProgress;ResourcesUnknown;EmptySet;GVKNotEstablished;NamespaceScopeMismatch;DiscoveryFailed;DiscoveryUnavailable;WatchSetupFailed;ListFailed;ReconcileError
 	Reason string `json:"reason,omitempty"`
 	// Summary holds the per-kstatus-bucket counts that produced Ready.
 	Summary Summary `json:"summary"`
 }
 
 // ResourceStatus identifies an individual matched resource and the kstatus
-// computed for it. Only resources whose Status is not Current are surfaced
-// on the owner (see MilestoneStatusBase.NotReadyResources).
+// computed for it. Only resources that are not ready under the dependency's
+// policies are surfaced on the owner (see
+// MilestoneStatusBase.NotReadyResources).
 type ResourceStatus struct {
 	// Group is the API group of the resource. Empty for the core group.
 	// +optional
@@ -224,7 +267,8 @@ type ResourceStatus struct {
 	// Reason is the first non-empty reason from the conditions emitted by
 	// sigs.k8s.io/cli-utils for this resource (typically the resource's own
 	// Ready/Reconciling/Stalled condition reason — e.g. LessReplicas,
-	// ProgressDeadlineExceeded).
+	// ProgressDeadlineExceeded), or `Suspended` when the resource is listed
+	// only because of the dependency's suspendPolicy: NotReady.
 	// +optional
 	Reason string `json:"reason,omitempty"`
 	// Message is the kstatus message for this resource when one was
@@ -266,11 +310,12 @@ type MilestoneStatusBase struct {
 	// +listMapKey=name
 	DependsOn []DependencyStatus `json:"dependsOn,omitempty"`
 
-	// NotReadyResources lists resources whose kstatus is not Current,
-	// deduplicated across dependencies and sorted by group, kind, namespace,
-	// name. Capped to avoid object-size explosions; Truncated indicates the
-	// cap was hit. The MaxItems cap mirrors the runtime cap applied by the
-	// reconciler.
+	// NotReadyResources lists resources that are not ready under their
+	// dependency's policies — kstatus other than Current, or suspended under
+	// suspendPolicy: NotReady — deduplicated across dependencies and sorted
+	// by group, kind, namespace, name. Capped to avoid object-size
+	// explosions; Truncated indicates the cap was hit. The MaxItems cap
+	// mirrors the runtime cap applied by the reconciler.
 	// +optional
 	// +kubebuilder:validation:MaxItems=50
 	NotReadyResources []ResourceStatus `json:"notReadyResources,omitempty"`
@@ -297,17 +342,30 @@ const (
 // Reason vocabulary for Ready / Reconciling / Stalled conditions and
 // rollups.
 //
-// Two levels of aggregation share this vocabulary:
-//   - Resource-level (per-dependency rollup): describes the population of
-//     individual matched resources that contributed to the rollup.
-//   - Owner-level: describes the population of per-dependency rollups
-//     that contributed to the owner Ready.
+// Three kinds share this vocabulary:
+//   - Per-resource (ResourceStatus.Reason): describes why one matched
+//     resource is listed, e.g. Suspended.
+//   - Per-dependency rollup (DependencyStatus.Reason): describes the
+//     population of individual matched resources that contributed to the
+//     rollup.
+//   - Owner-level (condition Reason): describes the population of
+//     per-dependency rollups that contributed to the owner Ready.
 const (
 	// Resource-level reasons (used on DependencyStatus).
-	ReasonAllResourcesReady   = "AllResourcesReady"
-	ReasonResourcesNotReady   = "ResourcesNotReady"
+	ReasonAllResourcesReady = "AllResourcesReady"
+	ReasonResourcesNotReady = "ResourcesNotReady"
+	// ReasonResourcesSuspended is the dependency-level rollup reason: at
+	// least one matched resource is suspended and the dependency's
+	// suspendPolicy is NotReady. Its per-resource counterpart is
+	// ReasonSuspended.
+	ReasonResourcesSuspended  = "ResourcesSuspended"
 	ReasonResourcesInProgress = "ResourcesInProgress"
 	ReasonResourcesUnknown    = "ResourcesUnknown"
+
+	// ReasonSuspended is the per-resource reason carried on a
+	// ResourceStatus listed solely because it is suspended. Its
+	// dependency-level rollup counterpart is ReasonResourcesSuspended.
+	ReasonSuspended = "Suspended"
 
 	// Owner-level reasons (used on the owner Ready condition).
 	ReasonAllDependenciesReady   = "AllDependenciesReady"

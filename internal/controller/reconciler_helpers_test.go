@@ -20,6 +20,7 @@ import (
 
 	apiv1 "github.com/isometry/milestone-operator/api/v1"
 	"github.com/isometry/milestone-operator/internal/controller"
+	"github.com/isometry/milestone-operator/internal/status"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -298,6 +299,53 @@ func TestStatusEqualIgnoringTimestamp(t *testing.T) {
 		}
 		if controller.StatusEqualIgnoringTimestamp(a, b) {
 			t.Fatalf("expected NOT equal when top-level ObservedGeneration differs")
+		}
+	})
+}
+
+func TestNotReadyResourcesOf_SuspendPolicy(t *testing.T) {
+	suspendedCurrent := status.Resource{
+		Group: groupKustomize, Version: "v1", Kind: kindKustomization,
+		Namespace: nsFluxSystem, Name: "a",
+		Status: statusCurrent, Reason: "ReconciliationSucceeded", Message: "applied revision",
+		Suspended: true,
+	}
+	suspendedFailed := status.Resource{
+		Group: groupKustomize, Version: "v1", Kind: kindKustomization,
+		Namespace: nsFluxSystem, Name: "b",
+		Status: "Failed", Reason: "BuildFailed", Message: "kustomize build failed",
+		Suspended: true,
+	}
+
+	t.Run("current and suspended is listed under NotReady", func(t *testing.T) {
+		got := controller.NotReadyResourcesOf([]status.Resource{suspendedCurrent}, apiv1.SuspendNotReady)
+		if len(got) != 1 {
+			t.Fatalf("len = %d, want 1: %+v", len(got), got)
+		}
+		if got[0].Status != statusCurrent {
+			t.Errorf("Status = %q, want Current (kstatus must never be rewritten)", got[0].Status)
+		}
+		if got[0].Reason != apiv1.ReasonSuspended {
+			t.Errorf("Reason = %q, want %q", got[0].Reason, apiv1.ReasonSuspended)
+		}
+		if got[0].Message != "spec.suspend is true" {
+			t.Errorf("Message = %q, want %q", got[0].Message, "spec.suspend is true")
+		}
+	})
+
+	t.Run("failed and suspended keeps its kstatus reason", func(t *testing.T) {
+		got := controller.NotReadyResourcesOf([]status.Resource{suspendedFailed}, apiv1.SuspendNotReady)
+		if len(got) != 1 {
+			t.Fatalf("len = %d, want 1: %+v", len(got), got)
+		}
+		if got[0].Reason != "BuildFailed" || got[0].Message != "kustomize build failed" {
+			t.Errorf("reason/message = (%q,%q), want the kstatus failure text preserved", got[0].Reason, got[0].Message)
+		}
+	})
+
+	t.Run("current and suspended is not listed under Ignore", func(t *testing.T) {
+		if got := controller.NotReadyResourcesOf([]status.Resource{suspendedCurrent}, apiv1.SuspendIgnore); got != nil {
+			t.Errorf("got %+v, want nil", got)
 		}
 	})
 }

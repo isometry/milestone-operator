@@ -99,6 +99,15 @@ spec:
                       minLength: 1
                       pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
                       type: string
+                    suspendPolicy:
+                      default: Ignore
+                      description: |-
+                        SuspendPolicy controls Ready reporting when a matched resource has
+                        spec.suspend: true. Defaults to Ignore when omitted.
+                      enum:
+                      - Ignore
+                      - NotReady
+                      type: string
                     target:
                       description: Target selects the set of resources this dependency
                         aggregates.
@@ -295,6 +304,7 @@ spec:
                       enum:
                       - AllResourcesReady
                       - ResourcesNotReady
+                      - ResourcesSuspended
                       - ResourcesInProgress
                       - ResourcesUnknown
                       - EmptySet
@@ -330,6 +340,14 @@ spec:
                             name but the resource is absent).
                           format: int32
                           type: integer
+                        suspended:
+                          description: |-
+                            Suspended counts resources with spec.suspend: true. Orthogonal to the
+                            kstatus buckets — a suspended resource is also counted in whichever
+                            bucket its kstatus falls into, so Suspended is not part of the Total
+                            sum. Always populated, whatever the dependency's suspendPolicy.
+                          format: int32
+                          type: integer
                         terminating:
                           description: |-
                             Terminating counts resources whose kstatus is Terminating (deletion in
@@ -339,7 +357,9 @@ spec:
                         total:
                           description: |-
                             Total is the count of resources currently matched by the dependency's
-                            target selector. Total == sum of all the other buckets.
+                            target selector. Total is the sum of the six kstatus buckets (Current,
+                            InProgress, Failed, NotFound, Terminating, Unknown); Suspended is
+                            excluded.
                           format: int32
                           type: integer
                         unknown:
@@ -352,6 +372,7 @@ spec:
                       - failed
                       - inProgress
                       - notFound
+                      - suspended
                       - terminating
                       - total
                       - unknown
@@ -382,16 +403,18 @@ spec:
                 type: string
               notReadyResources:
                 description: |-
-                  NotReadyResources lists resources whose kstatus is not Current,
-                  deduplicated across dependencies and sorted by group, kind, namespace,
-                  name. Capped to avoid object-size explosions; Truncated indicates the
-                  cap was hit. The MaxItems cap mirrors the runtime cap applied by the
-                  reconciler.
+                  NotReadyResources lists resources that are not ready under their
+                  dependency's policies — kstatus other than Current, or suspended under
+                  suspendPolicy: NotReady — deduplicated across dependencies and sorted
+                  by group, kind, namespace, name. Capped to avoid object-size
+                  explosions; Truncated indicates the cap was hit. The MaxItems cap
+                  mirrors the runtime cap applied by the reconciler.
                 items:
                   description: |-
                     ResourceStatus identifies an individual matched resource and the kstatus
-                    computed for it. Only resources whose Status is not Current are surfaced
-                    on the owner (see MilestoneStatusBase.NotReadyResources).
+                    computed for it. Only resources that are not ready under the dependency's
+                    policies are surfaced on the owner (see
+                    MilestoneStatusBase.NotReadyResources).
                   properties:
                     group:
                       description: Group is the API group of the resource. Empty for
@@ -418,7 +441,8 @@ spec:
                         Reason is the first non-empty reason from the conditions emitted by
                         sigs.k8s.io/cli-utils for this resource (typically the resource's own
                         Ready/Reconciling/Stalled condition reason — e.g. LessReplicas,
-                        ProgressDeadlineExceeded).
+                        ProgressDeadlineExceeded), or `Suspended` when the resource is listed
+                        only because of the dependency's suspendPolicy: NotReady.
                       type: string
                     status:
                       description: |-
@@ -477,6 +501,14 @@ spec:
                       name but the resource is absent).
                     format: int32
                     type: integer
+                  suspended:
+                    description: |-
+                      Suspended counts resources with spec.suspend: true. Orthogonal to the
+                      kstatus buckets — a suspended resource is also counted in whichever
+                      bucket its kstatus falls into, so Suspended is not part of the Total
+                      sum. Always populated, whatever the dependency's suspendPolicy.
+                    format: int32
+                    type: integer
                   terminating:
                     description: |-
                       Terminating counts resources whose kstatus is Terminating (deletion in
@@ -486,7 +518,9 @@ spec:
                   total:
                     description: |-
                       Total is the count of resources currently matched by the dependency's
-                      target selector. Total == sum of all the other buckets.
+                      target selector. Total is the sum of the six kstatus buckets (Current,
+                      InProgress, Failed, NotFound, Terminating, Unknown); Suspended is
+                      excluded.
                     format: int32
                     type: integer
                   unknown:
@@ -499,6 +533,7 @@ spec:
                 - failed
                 - inProgress
                 - notFound
+                - suspended
                 - terminating
                 - total
                 - unknown
