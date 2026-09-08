@@ -371,11 +371,17 @@ HelmRelease, prompting Flux to re-evaluate immediately.
   `helm.toolkit.fluxcd.io/{name,namespace}`. A child carrying both
   pairs (rare but legal: a Kustomization wrapping a HelmRelease that
   templates the Milestone) is poked on both parents.
-- The notify is fire-and-forget: errors are classified
-  (`success` / `not_found` / `no_match` / `forbidden` / `error`) on
-  `milestone_flux_notify_total` and logged at V(1); they never propagate
-  back into the reconcile result. No-match (Flux CRDs not installed) is
-  treated identically to any other failure mode.
+- Each parent is read before it is poked: a parent with
+  `spec.suspend: true` records the reconcile request in
+  `.status.lastHandledReconcileAt` without acting on it, so it is skipped
+  rather than patched — otherwise an ignored request would be
+  indistinguishable from a delivered one. The operator therefore needs `get`
+  as well as `patch` on `kustomizations` / `helmreleases`.
+- The notify is fire-and-forget: outcomes are classified
+  (`success` / `suspended` / `not_found` / `no_match` / `forbidden` /
+  `error`) on `milestone_flux_notify_total` and logged at V(1); they never
+  propagate back into the reconcile result. No-match (Flux CRDs not
+  installed) is treated identically to any other failure mode.
 - The hook lives inside the patch-changed branch of the pipeline, so
   idempotent reconciles never poke. Transition is defined as
   `readyConditionStatus(prior) != readyConditionStatus(current)`; a
@@ -475,8 +481,8 @@ All metrics namespaced `milestone_*`. Cardinality bounds in parentheses.
 
 - `milestone_flux_notify_total{controller,parent_kind,result}` (counter,
   controller ∈ {Milestone, ClusterMilestone}; parent_kind ∈
-  {Kustomization, HelmRelease}; result ∈ {success, not_found, no_match,
-  forbidden, error}). Bound: ≤20 series.
+  {Kustomization, HelmRelease}; result ∈ {success, suspended, not_found,
+  no_match, forbidden, error}). Bound: ≤24 series.
 
 ### Object-state (lister-backed, scrape-time)
 

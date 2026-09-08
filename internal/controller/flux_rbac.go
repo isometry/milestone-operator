@@ -14,10 +14,11 @@ package controller
 // parent kinds (Kustomization / HelmRelease), so the markers live in one
 // file to keep them in sync.
 //
-// patch is the minimum verb needed for a blind merge-patch via RawPatch.
-// The Flux CRDs may not be installed on the deploying cluster; that's
-// surfaced at runtime as apimeta.NoMatchError and classified as the
-// `no_match` result on milestone_flux_notify_total.
+// get reads spec.suspend before poking (a suspended parent ignores the
+// request); patch issues the merge-patch itself. The Flux CRDs may not be
+// installed on the deploying cluster; that's surfaced at runtime as
+// apimeta.NoMatchError and classified as the `no_match` result on
+// milestone_flux_notify_total.
 //
-// +kubebuilder:rbac:groups=kustomize.toolkit.fluxcd.io,resources=kustomizations,verbs=patch
-// +kubebuilder:rbac:groups=helm.toolkit.fluxcd.io,resources=helmreleases,verbs=patch
+// +kubebuilder:rbac:groups=kustomize.toolkit.fluxcd.io,resources=kustomizations,verbs=get;patch
+// +kubebuilder:rbac:groups=helm.toolkit.fluxcd.io,resources=helmreleases,verbs=get;patch

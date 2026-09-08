@@ -47,6 +47,7 @@ const (
 // Result values for FluxNotifyTotal.
 const (
 	FluxNotifySuccess   = "success"
+	FluxNotifySuspended = "suspended"
 	FluxNotifyNotFound  = "not_found"
 	FluxNotifyNoMatch   = "no_match"
 	FluxNotifyForbidden = "forbidden"
@@ -172,8 +173,8 @@ var (
 
 	// FluxNotifyTotal counts on-demand reconcile-request annotations sent to
 	// FluxCD parents (Kustomization, HelmRelease) when a child Milestone's
-	// Ready condition transitions. Result ∈ {success, not_found, no_match,
-	// forbidden, error}.
+	// Ready condition transitions. Result ∈ {success, suspended, not_found,
+	// no_match, forbidden, error}.
 	FluxNotifyTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: ns,
 		Name:      "flux_notify_total",

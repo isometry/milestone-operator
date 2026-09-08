@@ -11,7 +11,9 @@ You may obtain a copy of the License at
 // Package fluxnotify pokes FluxCD parent objects (Kustomization /
 // HelmRelease) when a child Milestone or ClusterMilestone's Ready
 // condition transitions, so the parent's health checks re-evaluate
-// immediately instead of waiting for the next scheduled reconcile.
+// immediately instead of waiting for the next scheduled reconcile. Each
+// parent is read first and left alone when suspended, since Flux would
+// record the request as handled without acting on it.
 //
 // Parent identity is read from the labels the Flux controllers
 // auto-stamp on every managed resource via SetOwnerLabels in
@@ -78,7 +80,8 @@ type Notifier struct {
 	Log        logr.Logger
 }
 
-// NotifyTransition reads obj's labels and pokes each Flux parent found.
+// NotifyTransition reads obj's labels and pokes each Flux parent found,
+// skipping any parent whose `spec.suspend` is true.
 // Errors are classified into a metric label and logged at V(1); they are
 // never propagated to the caller — a failed Flux poke must not interfere
 // with the reconcile pipeline.
@@ -105,6 +108,10 @@ func (n *Notifier) NotifyTransition(ctx context.Context, obj client.Object) {
 }
 
 func (n *Notifier) poke(ctx context.Context, gvk schema.GroupVersionKind, namespace, name, timestamp string) {
+	if !n.shouldPoke(ctx, gvk, namespace, name) {
+		return
+	}
+
 	parent := &unstructured.Unstructured{}
 	parent.SetGroupVersionKind(gvk)
 	parent.SetNamespace(namespace)
@@ -130,6 +137,41 @@ func (n *Notifier) poke(ctx context.Context, gvk schema.GroupVersionKind, namesp
 		"parentNamespace", namespace,
 		"parentName", name,
 		"requestedAt", timestamp)
+}
+
+// shouldPoke reads the parent and reports whether a reconcile request
+// would actually be acted on. A suspended parent short-circuits its own
+// reconcile yet still records the request in
+// `.status.lastHandledReconcileAt`, so patching one would look exactly
+// like a delivered poke that re-ran the health checks. Failures and skips
+// are counted and logged here; the caller only stops.
+func (n *Notifier) shouldPoke(ctx context.Context, gvk schema.GroupVersionKind, namespace, name string) bool {
+	parent := &unstructured.Unstructured{}
+	parent.SetGroupVersionKind(gvk)
+	if err := n.Client.Get(ctx, client.ObjectKey{Namespace: namespace, Name: name}, parent); err != nil {
+		result := classify(err)
+		metrics.FluxNotifyTotal.WithLabelValues(n.Controller, gvk.Kind, result).Inc()
+		n.Log.V(1).Info("flux notify failed",
+			"controller", n.Controller,
+			"parentKind", gvk.Kind,
+			"parentNamespace", namespace,
+			"parentName", name,
+			"result", result,
+			"err", err)
+		return false
+	}
+
+	if suspended, _, _ := unstructured.NestedBool(parent.Object, "spec", "suspend"); suspended {
+		metrics.FluxNotifyTotal.WithLabelValues(n.Controller, gvk.Kind, metrics.FluxNotifySuspended).Inc()
+		n.Log.V(1).Info("flux notify skipped: parent suspended",
+			"controller", n.Controller,
+			"parentKind", gvk.Kind,
+			"parentNamespace", namespace,
+			"parentName", name,
+			"result", metrics.FluxNotifySuspended)
+		return false
+	}
+	return true
 }
 
 func (n *Notifier) now() time.Time {

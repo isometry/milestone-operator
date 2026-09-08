@@ -26,7 +26,7 @@ leaderElection:
 
 ## fluxNotify: poke the FluxCD parent (Kustomization/HelmRelease) on Milestone
 ## Ready transitions. This toggles BOTH the --flux-notify manager arg AND the
-## patch permissions on those resources in the operator's core ClusterRole, so
+## get/patch permissions on those resources in the operator's core ClusterRole, so
 ## disabling it drops the grant too. Independent of rbac.dynamicWatch.targets.flux
 ## (which grants get/list/watch for using Flux objects as dependency targets).
 fluxNotify: true

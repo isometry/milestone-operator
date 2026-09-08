@@ -34,10 +34,14 @@ import (
 )
 
 const (
-	fixedTimestamp = "2026-05-12T10:00:00Z"
-	fluxSystemNS   = "flux-system"
-	appsNS         = "apps"
-	paymentsName   = "payments"
+	fixedTimestamp  = "2026-05-12T10:00:00Z"
+	fluxSystemNS    = "flux-system"
+	appsNS          = "apps"
+	paymentsName    = "payments"
+	monitoringName  = "monitoring"
+	observabilityNS = "observability"
+
+	kustomizationsResource = "kustomizations"
 )
 
 func fixedNow() time.Time {
@@ -54,14 +58,55 @@ type recordedPatch struct {
 	body      []byte
 }
 
+// parentState describes what the intercepted GET returns for a parent of
+// the given kind: an error, or an object whose spec.suspend is true, false
+// or (suspend == nil) absent.
+type parentState struct {
+	err     error
+	suspend *bool
+}
+
+func boolPtr(b bool) *bool { return &b }
+
 // recordingClient wraps a fake controller-runtime client and records every
 // Patch call. An optional injected error is returned in place of the
 // underlying patch result. The patch is never forwarded to the wrapped
-// store: we only care about what the notifier sent.
+// store: we only care about what the notifier sent. The pre-patch GET
+// resolves to an unsuspended parent.
 func recordingClient(t *testing.T, injectErr error) (client.Client, *[]recordedPatch) {
 	t.Helper()
+	c, calls, _ := recordingClientWithParents(t, injectErr, nil)
+	return c, calls
+}
+
+// recordingClientWithParents additionally stubs the pre-patch GET per
+// parent kind and records the keys it was called with as
+// "Kind/namespace/name".
+func recordingClientWithParents(t *testing.T, injectErr error, parents map[string]parentState) (client.Client, *[]recordedPatch, *[]string) {
+	t.Helper()
 	var calls []recordedPatch
-	return fake.NewClientBuilder().WithInterceptorFuncs(interceptor.Funcs{
+	var gets []string
+	c := fake.NewClientBuilder().WithInterceptorFuncs(interceptor.Funcs{
+		Get: func(_ context.Context, _ client.WithWatch, key client.ObjectKey, obj client.Object, _ ...client.GetOption) error {
+			kind := obj.GetObjectKind().GroupVersionKind().Kind
+			gets = append(gets, fmt.Sprintf("%s/%s/%s", kind, key.Namespace, key.Name))
+			state := parents[kind]
+			if state.err != nil {
+				return state.err
+			}
+			u, ok := obj.(*unstructured.Unstructured)
+			if !ok {
+				t.Fatalf("GET target = %T, want *unstructured.Unstructured", obj)
+			}
+			u.SetNamespace(key.Namespace)
+			u.SetName(key.Name)
+			if state.suspend != nil {
+				if err := unstructured.SetNestedField(u.Object, *state.suspend, "spec", "suspend"); err != nil {
+					t.Fatalf("SetNestedField: %v", err)
+				}
+			}
+			return nil
+		},
 		Patch: func(_ context.Context, _ client.WithWatch, obj client.Object, patch client.Patch, _ ...client.PatchOption) error {
 			body, _ := patch.Data(obj)
 			calls = append(calls, recordedPatch{
@@ -72,7 +117,8 @@ func recordingClient(t *testing.T, injectErr error) (client.Client, *[]recordedP
 			})
 			return injectErr
 		},
-	}).Build(), &calls
+	}).Build()
+	return c, &calls, &gets
 }
 
 func newNotifier(t *testing.T, c client.Client, controllerLabel string) *Notifier {
@@ -166,8 +212,8 @@ func TestNotifier_HelmReleaseOnly(t *testing.T) {
 	n := newNotifier(t, c, "ClusterMilestone")
 
 	n.NotifyTransition(context.Background(), milestoneWithLabels(map[string]string{
-		labelHelmName:      "monitoring",
-		labelHelmNamespace: "observability",
+		labelHelmName:      monitoringName,
+		labelHelmNamespace: observabilityNS,
 	}))
 
 	if len(*calls) != 1 {
@@ -177,7 +223,7 @@ func TestNotifier_HelmReleaseOnly(t *testing.T) {
 	if got.gvk != helmReleaseGVK {
 		t.Errorf("gvk = %v, want %v", got.gvk, helmReleaseGVK)
 	}
-	if got.namespace != "observability" || got.name != "monitoring" {
+	if got.namespace != observabilityNS || got.name != monitoringName {
 		t.Errorf("target = %s/%s, want observability/monitoring", got.namespace, got.name)
 	}
 	assertCounter(t, "ClusterMilestone", "HelmRelease", metrics.FluxNotifySuccess)
@@ -209,11 +255,184 @@ func TestNotifier_BothLabelPairs_PokesBoth(t *testing.T) {
 	assertCounter(t, "Milestone", "HelmRelease", metrics.FluxNotifySuccess)
 }
 
+func TestNotifier_SuspendedParent_NoPatch(t *testing.T) {
+	cases := []struct {
+		name       string
+		labels     map[string]string
+		parentKind string
+		wantGet    string
+	}{
+		{
+			name: "kustomization",
+			labels: map[string]string{
+				labelKustomizeName:      paymentsName,
+				labelKustomizeNamespace: fluxSystemNS,
+			},
+			parentKind: kindKustomization,
+			wantGet:    "Kustomization/flux-system/payments",
+		},
+		{
+			name: "helmrelease",
+			labels: map[string]string{
+				labelHelmName:      monitoringName,
+				labelHelmNamespace: observabilityNS,
+			},
+			parentKind: kindHelmRelease,
+			wantGet:    "HelmRelease/observability/monitoring",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resetMetrics()
+			c, calls, gets := recordingClientWithParents(t, nil, map[string]parentState{
+				tc.parentKind: {suspend: boolPtr(true)},
+			})
+			n := newNotifier(t, c, "Milestone")
+
+			n.NotifyTransition(context.Background(), milestoneWithLabels(tc.labels))
+
+			if len(*calls) != 0 {
+				t.Errorf("suspended parent triggered %d patches, want 0", len(*calls))
+			}
+			if len(*gets) != 1 || (*gets)[0] != tc.wantGet {
+				t.Errorf("gets = %v, want [%s]", *gets, tc.wantGet)
+			}
+			assertCounter(t, "Milestone", tc.parentKind, metrics.FluxNotifySuspended)
+			if got := testutil.CollectAndCount(metrics.FluxNotifyTotal); got != 1 {
+				t.Errorf("emitted %d metric series, want only the suspended one", got)
+			}
+		})
+	}
+}
+
+func TestNotifier_UnsuspendedParent_Patches(t *testing.T) {
+	cases := []struct {
+		name  string
+		state parentState
+	}{
+		{name: "suspend_false", state: parentState{suspend: boolPtr(false)}},
+		{name: "suspend_absent", state: parentState{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resetMetrics()
+			c, calls, gets := recordingClientWithParents(t, nil, map[string]parentState{
+				kindKustomization: tc.state,
+			})
+			n := newNotifier(t, c, "Milestone")
+
+			n.NotifyTransition(context.Background(), milestoneWithLabels(map[string]string{
+				labelKustomizeName:      paymentsName,
+				labelKustomizeNamespace: fluxSystemNS,
+			}))
+
+			if len(*gets) != 1 {
+				t.Fatalf("expected 1 GET, got %d", len(*gets))
+			}
+			if len(*calls) != 1 {
+				t.Fatalf("expected 1 patch, got %d", len(*calls))
+			}
+			got := (*calls)[0]
+			if got.gvk != kustomizationGVK || got.namespace != fluxSystemNS || got.name != paymentsName {
+				t.Errorf("patch target = %v %s/%s, want %v flux-system/payments", got.gvk, got.namespace, got.name, kustomizationGVK)
+			}
+			wantBody := fmt.Sprintf(`{"metadata":{"annotations":{"reconcile.fluxcd.io/requestedAt":%q}}}`, fixedTimestamp)
+			if string(got.body) != wantBody {
+				t.Errorf("body = %s, want %s", got.body, wantBody)
+			}
+			assertCounter(t, "Milestone", kindKustomization, metrics.FluxNotifySuccess)
+		})
+	}
+}
+
+func TestNotifier_GetFailure_NoPatch(t *testing.T) {
+	gr := schema.GroupResource{Group: groupKustomize, Resource: kustomizationsResource}
+	cases := []struct {
+		name       string
+		injected   error
+		wantResult string
+	}{
+		{
+			name:       "not_found",
+			injected:   apierrors.NewNotFound(gr, paymentsName),
+			wantResult: metrics.FluxNotifyNotFound,
+		},
+		{
+			name:       "forbidden",
+			injected:   apierrors.NewForbidden(gr, paymentsName, errors.New("nope")),
+			wantResult: metrics.FluxNotifyForbidden,
+		},
+		{
+			name: "no_match",
+			injected: &apimeta.NoKindMatchError{
+				GroupKind:        schema.GroupKind{Group: gr.Group, Kind: kindKustomization},
+				SearchedVersions: []string{"v1"},
+			},
+			wantResult: metrics.FluxNotifyNoMatch,
+		},
+		{
+			name:       "error",
+			injected:   errors.New("generic boom"),
+			wantResult: metrics.FluxNotifyError,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resetMetrics()
+			c, calls, gets := recordingClientWithParents(t, nil, map[string]parentState{
+				kindKustomization: {err: tc.injected},
+			})
+			n := newNotifier(t, c, "Milestone")
+
+			n.NotifyTransition(context.Background(), milestoneWithLabels(map[string]string{
+				labelKustomizeName:      paymentsName,
+				labelKustomizeNamespace: fluxSystemNS,
+			}))
+
+			if len(*gets) != 1 {
+				t.Fatalf("expected 1 GET, got %d", len(*gets))
+			}
+			if len(*calls) != 0 {
+				t.Errorf("failed GET triggered %d patches, want 0", len(*calls))
+			}
+			assertCounter(t, "Milestone", kindKustomization, tc.wantResult)
+		})
+	}
+}
+
+func TestNotifier_BothLabelPairs_OneSuspended(t *testing.T) {
+	resetMetrics()
+	c, calls, gets := recordingClientWithParents(t, nil, map[string]parentState{
+		kindKustomization: {suspend: boolPtr(true)},
+		kindHelmRelease:   {suspend: boolPtr(false)},
+	})
+	n := newNotifier(t, c, "Milestone")
+
+	n.NotifyTransition(context.Background(), milestoneWithLabels(map[string]string{
+		labelKustomizeName:      "outer",
+		labelKustomizeNamespace: fluxSystemNS,
+		labelHelmName:           "inner",
+		labelHelmNamespace:      appsNS,
+	}))
+
+	if len(*gets) != 2 {
+		t.Fatalf("expected 2 GETs, got %v", *gets)
+	}
+	if len(*calls) != 1 {
+		t.Fatalf("expected 1 patch, got %d", len(*calls))
+	}
+	if (*calls)[0].gvk != helmReleaseGVK {
+		t.Errorf("patched %v, want only the unsuspended %v", (*calls)[0].gvk, helmReleaseGVK)
+	}
+	assertCounter(t, "Milestone", kindKustomization, metrics.FluxNotifySuspended)
+	assertCounter(t, "Milestone", kindHelmRelease, metrics.FluxNotifySuccess)
+}
+
 func TestNotifier_OnlyNameLabel_SkipsWhenNamespaceMissing(t *testing.T) {
 	// Defensive: Flux always stamps both labels together, but if only the
-	// name is present we still attempt the patch with empty namespace. The
-	// fake client will return an error for a namespaced resource without a
-	// namespace; assert we don't panic and metric records the failure.
+	// name is present we still attempt the poke with an empty namespace and
+	// must not panic. The fake client accepts that; a real apiserver would
+	// 404 the pre-check GET and the poke would be skipped as not_found.
 	resetMetrics()
 	c, calls := recordingClient(t, nil)
 	n := newNotifier(t, c, "Milestone")
@@ -231,7 +450,7 @@ func TestNotifier_OnlyNameLabel_SkipsWhenNamespaceMissing(t *testing.T) {
 }
 
 func TestNotifier_ClassifyErrors(t *testing.T) {
-	gr := schema.GroupResource{Group: groupKustomize, Resource: "kustomizations"}
+	gr := schema.GroupResource{Group: groupKustomize, Resource: kustomizationsResource}
 	cases := []struct {
 		name       string
 		injected   error
@@ -284,6 +503,9 @@ func TestNotifier_PatchPayloadUsesMergePatch(t *testing.T) {
 	resetMetrics()
 	var capturedType types.PatchType
 	c := fake.NewClientBuilder().WithInterceptorFuncs(interceptor.Funcs{
+		Get: func(_ context.Context, _ client.WithWatch, _ client.ObjectKey, _ client.Object, _ ...client.GetOption) error {
+			return nil
+		},
 		Patch: func(_ context.Context, _ client.WithWatch, obj client.Object, patch client.Patch, _ ...client.PatchOption) error {
 			capturedType = patch.Type()
 			return nil
@@ -366,7 +588,7 @@ func TestNotifier_EmptyNameLabel_NoPatch(t *testing.T) {
 // errors as it passes them through interceptor chains; without unwrap, a
 // real `NotFound` could end up classified as the catch-all `error`.
 func TestNotifier_WrappedErrors_Classified(t *testing.T) {
-	gr := schema.GroupResource{Group: groupKustomize, Resource: "kustomizations"}
+	gr := schema.GroupResource{Group: groupKustomize, Resource: kustomizationsResource}
 	cases := []struct {
 		name       string
 		injected   error
@@ -419,6 +641,9 @@ func TestNotifier_WrappedErrors_Classified(t *testing.T) {
 func TestNotifier_ConcurrentCalls_NoRace(t *testing.T) {
 	resetMetrics()
 	c := fake.NewClientBuilder().WithInterceptorFuncs(interceptor.Funcs{
+		Get: func(_ context.Context, _ client.WithWatch, _ client.ObjectKey, _ client.Object, _ ...client.GetOption) error {
+			return nil
+		},
 		Patch: func(_ context.Context, _ client.WithWatch, _ client.Object, _ client.Patch, _ ...client.PatchOption) error {
 			return nil
 		},
