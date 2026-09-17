@@ -54,3 +54,9 @@ const (
 	nameWave0         = "wave-0"
 	nameWave1         = "wave-1"
 )
+
+// Additional fixture identifiers.
+const (
+	resourceMilestones = "milestones"
+	probeAnnotation    = "probe"
+)

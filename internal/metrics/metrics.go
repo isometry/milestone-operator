@@ -144,7 +144,7 @@ var (
 	StatusPatchTotal = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: ns,
 		Name:      "status_patch_total",
-		Help:      "Status patch outcomes (changed, unchanged, error).",
+		Help:      "Status patch outcomes (changed, unchanged, conflict, error).",
 	}, []string{labelController, labelResult})
 
 	// TargetResolveErrors counts per-target resolution errors by reason.

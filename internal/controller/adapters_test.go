@@ -449,3 +449,147 @@ func TestMilestoneAdapter_GVK(t *testing.T) {
 		t.Errorf("GVK = %v, want %v", deps[0].GVK, wantGVK)
 	}
 }
+
+// TestMilestoneAdapter_PatchStatus_SurvivesConcurrentResourceVersionBump
+// pins the "no optimistic lock on status" contract. The reconciler reads
+// owners from a cache that lags its own writes, so the object an adapter
+// holds is routinely stale by the time PatchStatus runs. A full PUT would
+// 409; a full-status merge patch must not.
+func TestMilestoneAdapter_PatchStatus_SurvivesConcurrentResourceVersionBump(t *testing.T) {
+	seed := &apiv1.Milestone{
+		ObjectMeta: metav1.ObjectMeta{Namespace: nsFluxSystem, Name: nameWave0, Generation: 1},
+	}
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).
+		WithObjects(seed).WithStatusSubresource(seed).Build()
+	key := client.ObjectKeyFromObject(seed)
+
+	// The adapter's view: a snapshot taken before the competing write.
+	stale := &apiv1.Milestone{}
+	if err := cl.Get(t.Context(), key, stale); err != nil {
+		t.Fatalf("get stale: %v", err)
+	}
+	a := controller.NewMilestoneAdapter(stale)
+
+	// Competing write lands out of band, advancing resourceVersion.
+	fresh := &apiv1.Milestone{}
+	if err := cl.Get(t.Context(), key, fresh); err != nil {
+		t.Fatalf("get fresh: %v", err)
+	}
+	fresh.Labels = map[string]string{labelTier: namePlatform}
+	if err := cl.Update(t.Context(), fresh); err != nil {
+		t.Fatalf("competing update: %v", err)
+	}
+
+	a.Status().ObservedGeneration = 1
+	apimeta.SetStatusCondition(&a.Status().Conditions, metav1.Condition{
+		Type: apiv1.ConditionReady, Status: metav1.ConditionTrue, Reason: testReason,
+	})
+
+	if err := a.PatchStatus(t.Context(), cl); err != nil {
+		t.Fatalf("PatchStatus against stale snapshot: %v", err)
+	}
+
+	got := &apiv1.Milestone{}
+	if err := cl.Get(t.Context(), key, got); err != nil {
+		t.Fatalf("get after patch: %v", err)
+	}
+	if readyStatusOf(got) != metav1.ConditionTrue {
+		t.Errorf("Ready = %q, want True; conditions=%+v", readyStatusOf(got), got.Status.Conditions)
+	}
+	if got.Labels[labelTier] != namePlatform {
+		t.Errorf("competing label clobbered: labels=%v", got.Labels)
+	}
+}
+
+// TestClusterMilestoneAdapter_PatchStatus_SurvivesConcurrentResourceVersionBump
+// is the cluster-scoped sibling of the Milestone case above; the adapter is
+// built by the client-bound factory.
+func TestClusterMilestoneAdapter_PatchStatus_SurvivesConcurrentResourceVersionBump(t *testing.T) {
+	seed := &apiv1.ClusterMilestone{
+		ObjectMeta: metav1.ObjectMeta{Name: nameWave0, Generation: 1},
+	}
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).
+		WithObjects(seed).WithStatusSubresource(seed).Build()
+	key := client.ObjectKeyFromObject(seed)
+
+	stale := &apiv1.ClusterMilestone{}
+	if err := cl.Get(t.Context(), key, stale); err != nil {
+		t.Fatalf("get stale: %v", err)
+	}
+	a := controller.NewClusterMilestoneAdapterFactory(cl)(stale)
+
+	fresh := &apiv1.ClusterMilestone{}
+	if err := cl.Get(t.Context(), key, fresh); err != nil {
+		t.Fatalf("get fresh: %v", err)
+	}
+	fresh.Labels = map[string]string{labelTier: namePlatform}
+	if err := cl.Update(t.Context(), fresh); err != nil {
+		t.Fatalf("competing update: %v", err)
+	}
+
+	a.Status().ObservedGeneration = 1
+	apimeta.SetStatusCondition(&a.Status().Conditions, metav1.Condition{
+		Type: apiv1.ConditionReady, Status: metav1.ConditionTrue, Reason: testReason,
+	})
+
+	if err := a.PatchStatus(t.Context(), cl); err != nil {
+		t.Fatalf("PatchStatus against stale snapshot: %v", err)
+	}
+
+	got := &apiv1.ClusterMilestone{}
+	if err := cl.Get(t.Context(), key, got); err != nil {
+		t.Fatalf("get after patch: %v", err)
+	}
+	if !apimeta.IsStatusConditionTrue(got.Status.Conditions, apiv1.ConditionReady) {
+		t.Errorf("Ready not True; conditions=%+v", got.Status.Conditions)
+	}
+	if got.Labels[labelTier] != namePlatform {
+		t.Errorf("competing label clobbered: labels=%v", got.Labels)
+	}
+}
+
+// TestMilestoneAdapter_PatchStatus_ClearsRemovedNotReadyResources pins the
+// replacement semantics end to end: fields the reconcile cleared must
+// disappear from the stored object. A diffing patch would leave the stale
+// array in place.
+func TestMilestoneAdapter_PatchStatus_ClearsRemovedNotReadyResources(t *testing.T) {
+	seed := &apiv1.Milestone{
+		ObjectMeta: metav1.ObjectMeta{Namespace: nsFluxSystem, Name: nameWave1, Generation: 1},
+		Status: apiv1.MilestoneStatus{MilestoneStatusBase: apiv1.MilestoneStatusBase{
+			NotReadyResources: []apiv1.ResourceStatus{
+				{Group: groupKustomize, Version: "v1", Kind: kindKustomization, Namespace: nsFluxSystem, Name: "a", Status: "InProgress"},
+				{Group: groupKustomize, Version: "v1", Kind: kindKustomization, Namespace: nsFluxSystem, Name: "b", Status: "Failed"},
+			},
+			Truncated: true,
+		}},
+	}
+	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).
+		WithObjects(seed).WithStatusSubresource(seed).Build()
+	key := client.ObjectKeyFromObject(seed)
+
+	live := &apiv1.Milestone{}
+	if err := cl.Get(t.Context(), key, live); err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if len(live.Status.NotReadyResources) != 2 {
+		t.Fatalf("precondition: seeded notReadyResources = %d, want 2", len(live.Status.NotReadyResources))
+	}
+
+	a := controller.NewMilestoneAdapter(live)
+	a.Status().NotReadyResources = nil
+	a.Status().Truncated = false
+	if err := a.PatchStatus(t.Context(), cl); err != nil {
+		t.Fatalf("PatchStatus: %v", err)
+	}
+
+	got := &apiv1.Milestone{}
+	if err := cl.Get(t.Context(), key, got); err != nil {
+		t.Fatalf("get after patch: %v", err)
+	}
+	if len(got.Status.NotReadyResources) != 0 {
+		t.Errorf("notReadyResources = %+v, want empty", got.Status.NotReadyResources)
+	}
+	if got.Status.Truncated {
+		t.Errorf("truncated still true after clearing")
+	}
+}

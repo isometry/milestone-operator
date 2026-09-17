@@ -13,6 +13,8 @@ package controller_test
 import (
 	"errors"
 	"fmt"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -31,6 +33,7 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/restmapper"
 	kstatus "sigs.k8s.io/cli-utils/pkg/kstatus/status"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -671,5 +674,106 @@ func TestEnvtest_SuspendedResource_NotReadyPolicy(t *testing.T) {
 	})
 	if n := len(refresh(t, m).Status.NotReadyResources); n != 0 {
 		t.Errorf("notReadyResources after Ignore = %d, want 0", n)
+	}
+}
+
+// TestEnvtest_StaleOwnerSnapshot_StatusStillPatches pins the load-bearing
+// property of the full-status merge patch against a real apiserver: a
+// reconcile driven from an owner snapshot that predates a competing write
+// must still publish its status. The operator reads owners from an informer
+// cache that lags its own writes, so this is the common case, not the
+// exotic one. Under the previous Status().Update() this 409'd.
+//
+// The stale copy is deliberately taken *after* the finalizer-add pass: the
+// finalizer Update carries its own optimistic lock and would 409 first,
+// masking what this test is about.
+func TestEnvtest_StaleOwnerSnapshot_StatusStillPatches(t *testing.T) {
+	fix := newEnvFixture(t)
+	notifier := &fakeFluxNotifier{}
+	fix.reconciler.FluxNotifier = notifier
+
+	createWidget(t, fix.namespace, "w1", statusTrue)
+
+	m := createMilestone(t, fix.namespace, "stale", []apiv1.DependencyRef{{
+		Name:           widgetPlural,
+		EmptySetPolicy: apiv1.EmptySetUnknown,
+		Target:         apiv1.TargetSpec{Group: groupTestAsCode, Kind: kindWidget},
+	}})
+	key := client.ObjectKeyFromObject(m)
+
+	// Finalizer-add pass: returns early, writes no status.
+	if _, err := fix.reconciler.ReconcileObject(t.Context(), refresh(t, m)); err != nil {
+		t.Fatalf("finalizer pass: %v", err)
+	}
+
+	stale := refresh(t, m)
+	if !slices.Contains(stale.Finalizers, apiv1.Finalizer) {
+		t.Fatalf("precondition: stale snapshot should carry the finalizer; got %v", stale.Finalizers)
+	}
+	if len(stale.Status.Conditions) != 0 {
+		t.Fatalf("precondition: stale snapshot should have no conditions; got %+v", stale.Status.Conditions)
+	}
+	rv1 := stale.ResourceVersion
+
+	reconcileToConvergence(t, fix, key, func(e *apiv1.Milestone) error {
+		if ready(e) != metav1.ConditionTrue {
+			return fmt.Errorf("Ready=%s", ready(e))
+		}
+		return nil
+	})
+	converged := refresh(t, m)
+	if converged.ResourceVersion == rv1 {
+		t.Fatalf("precondition: convergence should have advanced resourceVersion past %q", rv1)
+	}
+
+	// A competing write on the object the stale snapshot no longer reflects.
+	probed := refresh(t, m)
+	if probed.Annotations == nil {
+		probed.Annotations = map[string]string{}
+	}
+	probed.Annotations[probeAnnotation] = "1"
+	if err := envtestClient.Update(t.Context(), probed); err != nil {
+		t.Fatalf("probe update: %v", err)
+	}
+	rvProbe := refresh(t, m).ResourceVersion
+
+	// Advance the reconciler's clock so the status this reconcile publishes
+	// is not byte-identical to the stored one. Without this the apiserver
+	// no-ops the patch (lastEvaluatedTime has second granularity and
+	// convergence happened within the same second), and resourceVersion
+	// would not move whether or not the write actually reached etcd.
+	fix.reconciler.Now = func() time.Time { return time.Now().Add(time.Hour) }
+
+	notifiesBefore := len(notifier.calls)
+
+	res, err := fix.reconciler.ReconcileObject(t.Context(), stale)
+	if err != nil {
+		t.Fatalf("reconcile from stale snapshot: %v", err)
+	}
+	if res != (ctrl.Result{}) {
+		t.Errorf("result = %+v, want zero value", res)
+	}
+
+	final := refresh(t, m)
+	if ready(final) != metav1.ConditionTrue {
+		t.Errorf("Ready = %s, want True", ready(final))
+	}
+	if final.Status.Summary != converged.Status.Summary {
+		t.Errorf("Summary = %+v, want %+v", final.Status.Summary, converged.Status.Summary)
+	}
+	if !reflect.DeepEqual(final.Status.DependsOn, converged.Status.DependsOn) {
+		t.Errorf("DependsOn = %+v, want %+v", final.Status.DependsOn, converged.Status.DependsOn)
+	}
+	if final.Annotations[probeAnnotation] != "1" {
+		t.Errorf("competing annotation clobbered: annotations=%v", final.Annotations)
+	}
+	if final.ResourceVersion == rvProbe {
+		t.Errorf("status write did not land: resourceVersion still %q", rvProbe)
+	}
+	// Documented side effect of dropping the optimistic lock: the stale
+	// prior reads Ready as Unknown, so the transition to True fires the
+	// Flux poke a second time for one real transition.
+	if got := len(notifier.calls) - notifiesBefore; got != 1 {
+		t.Errorf("flux notifier delta = %d, want 1", got)
 	}
 }

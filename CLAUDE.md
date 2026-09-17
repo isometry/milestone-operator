@@ -24,7 +24,8 @@ behind an `OwnerAdapter` interface, with two thin per-CRD wrappers wiring
 controller-runtime. Per reconcile: resolve targets via the cached discovery
 resolver → diff subscriptions against the shared watcher registry →
 list-and-compute kstatus per dependency → reduce per-target then
-owner-level → patch status (skip when unchanged).
+owner-level → patch status (skip when unchanged; full-status merge
+patch, no optimistic lock; conflicts are classified, not errors).
 
 The watcher layer is the load-bearing piece: **one dynamic informer per
 unique GVK** (`internal/watcher/registry.go`), refcounted across
