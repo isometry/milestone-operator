@@ -27,6 +27,10 @@ const (
 	PatchChanged   = "changed"
 	PatchUnchanged = "unchanged"
 	PatchError     = "error"
+	// PatchConflict is the quiet outcome: a competing write landed between
+	// our read and our write. It is not an error — the competing write
+	// re-enqueues us — so it is counted apart from PatchError.
+	PatchConflict = "conflict"
 )
 
 // Subscribe result labels used in milestone_subscribe_total.

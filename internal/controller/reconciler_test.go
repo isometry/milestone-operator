@@ -27,14 +27,17 @@ import (
 	"github.com/isometry/milestone-operator/internal/watcher"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 )
 
@@ -186,9 +189,21 @@ func currentResource(name string) *unstructured.Unstructured {
 
 var kustomizationGVK = schema.GroupVersionKind{Group: groupKustomize, Version: "v1", Kind: kindKustomization}
 
-func newFixture(t *testing.T, ech *apiv1.Milestone, fa *fakeAdapter, freg *fakeRegistry) *controller.Reconciler[*apiv1.Milestone] {
+// newFixture wires a Reconciler over a fake client seeded with ech. An
+// optional interceptor set lets a test inject client-level failures (e.g. a
+// 409 on the finalizer Update) without a second fixture constructor. At
+// most one is accepted: the fake builder assigns rather than merges, so a
+// second set would silently discard the first.
+func newFixture(t *testing.T, ech *apiv1.Milestone, fa *fakeAdapter, freg *fakeRegistry, funcs ...interceptor.Funcs) *controller.Reconciler[*apiv1.Milestone] {
 	t.Helper()
-	cl := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(ech).WithStatusSubresource(ech).Build()
+	if len(funcs) > 1 {
+		t.Fatalf("newFixture accepts at most one interceptor.Funcs; got %d", len(funcs))
+	}
+	b := fake.NewClientBuilder().WithScheme(newScheme(t)).WithObjects(ech).WithStatusSubresource(ech)
+	if len(funcs) == 1 {
+		b = b.WithInterceptorFuncs(funcs[0])
+	}
+	cl := b.Build()
 	return &controller.Reconciler[*apiv1.Milestone]{
 		Client:     cl,
 		Registry:   freg,
@@ -1355,5 +1370,174 @@ func TestReconcile_SuspendedResource_IgnorePolicy(t *testing.T) {
 	// Suspended is counted for observability even when the policy ignores it.
 	if ech.Status.Summary.Suspended != 1 {
 		t.Errorf("summary.suspended = %d, want 1", ech.Status.Summary.Suspended)
+	}
+}
+
+// newConflictErr builds the 409 the apiserver returns when an optimistic
+// lock loses a race against a competing write.
+func newConflictErr(name string) error {
+	return apierrors.NewConflict(
+		schema.GroupResource{Group: apiv1.GroupVersion.Group, Resource: resourceMilestones},
+		name,
+		errors.New("the object has been modified; please apply your changes to the latest version and try again"),
+	)
+}
+
+// TestReconcile_StatusConflict_ReturnsNilAndCountsConflict: a 409 on the
+// status write is a quiet outcome, not a reconcile error. The competing
+// write that caused it re-enqueues us, so returning an error would only
+// buy a rate-limited retry, an error log, and a mislabelled metric.
+func TestReconcile_StatusConflict_ReturnsNilAndCountsConflict(t *testing.T) {
+	ech := newMilestone("e1")
+	ech.Finalizers = []string{apiv1.Finalizer}
+	freg := newFakeRegistry()
+	freg.listResponses[kustomizationGVK] = []*unstructured.Unstructured{currentResource("a")}
+	fa := &fakeAdapter{
+		obj: ech,
+		deps: []controller.NormalizedDependency{{
+			Name: depKustomizations, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
+			Selector: mustSelector(t), EmptySetPolicy: apiv1.EmptySetUnknown,
+		}},
+		patchErr: newConflictErr("e1"),
+	}
+	r := newFixture(t, ech, fa, freg)
+
+	conflicts := ctrmetrics.StatusPatchTotal.WithLabelValues(kindMilestone, ctrmetrics.PatchConflict)
+	patchErrs := ctrmetrics.StatusPatchTotal.WithLabelValues(kindMilestone, ctrmetrics.PatchError)
+	changed := ctrmetrics.StatusPatchTotal.WithLabelValues(kindMilestone, ctrmetrics.PatchChanged)
+	beforeConflict := testutil.ToFloat64(conflicts)
+	beforeErr := testutil.ToFloat64(patchErrs)
+	beforeChanged := testutil.ToFloat64(changed)
+
+	res, err := r.ReconcileObject(t.Context(), ech)
+	if err != nil {
+		t.Fatalf("status conflict must not surface as a reconcile error: %v", err)
+	}
+	if res != (ctrl.Result{}) {
+		t.Errorf("result = %+v, want zero value", res)
+	}
+	if got := testutil.ToFloat64(conflicts) - beforeConflict; got != 1 {
+		t.Errorf("StatusPatchTotal{conflict} delta = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(patchErrs) - beforeErr; got != 0 {
+		t.Errorf("StatusPatchTotal{error} delta = %v, want 0", got)
+	}
+	if got := testutil.ToFloat64(changed) - beforeChanged; got != 0 {
+		t.Errorf("StatusPatchTotal{changed} delta = %v, want 0", got)
+	}
+}
+
+// TestReconcile_StatusConflict_KeepsStalledRequeue: classifying the conflict
+// quietly must not short-circuit the rest of the pipeline. A stalled owner
+// still needs its safety-net requeue, so the conflict has to fall through
+// to the Stalled check rather than return early.
+func TestReconcile_StatusConflict_KeepsStalledRequeue(t *testing.T) {
+	ech := newMilestone("e1")
+	ech.Finalizers = []string{apiv1.Finalizer}
+	fa := &fakeAdapter{
+		obj: ech,
+		errs: []controller.DependencyError{{
+			Name: depLate, Group: groupMissing, Version: "v1", Kind: kindLate,
+			Reason: apiv1.ReasonGVKNotEstablished,
+			Err:    errors.New("not established"),
+		}},
+		patchErr: newConflictErr("e1"),
+	}
+	r := newFixture(t, ech, fa, newFakeRegistry())
+
+	res, err := r.ReconcileObject(t.Context(), ech)
+	if err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if res.RequeueAfter != controller.StalledRequeue {
+		t.Errorf("RequeueAfter = %v, want %v", res.RequeueAfter, controller.StalledRequeue)
+	}
+}
+
+// TestReconcile_FluxNotify_NotFiredOnStatusConflict: the sibling of
+// TestReconcile_FluxNotify_NotFiredWhenPatchFails for the quiet outcome. A
+// conflict means our status did not reach etcd, so poking Flux would
+// advertise a state nobody can read.
+func TestReconcile_FluxNotify_NotFiredOnStatusConflict(t *testing.T) {
+	ech := newMilestone("e1")
+	ech.Finalizers = []string{apiv1.Finalizer}
+	freg := newFakeRegistry()
+	freg.listResponses[kustomizationGVK] = []*unstructured.Unstructured{currentResource("a")}
+	fa := &fakeAdapter{
+		obj: ech,
+		deps: []controller.NormalizedDependency{{
+			Name: depKustomizations, GVK: kustomizationGVK, Scope: apimeta.RESTScopeNameNamespace,
+			Selector: mustSelector(t), EmptySetPolicy: apiv1.EmptySetUnknown,
+		}},
+		patchErr: newConflictErr("e1"),
+	}
+	r := newFixture(t, ech, fa, freg)
+	notifier := &fakeFluxNotifier{}
+	r.FluxNotifier = notifier
+
+	if _, err := r.ReconcileObject(t.Context(), ech); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	if len(notifier.calls) != 0 {
+		t.Errorf("notifier fired on status conflict: %d calls, want 0", len(notifier.calls))
+	}
+}
+
+// conflictOnFirstUpdate returns interceptors that 409 the first Update and
+// pass every later one through, modelling a competing write that lands
+// between our Get and our Update.
+func conflictOnFirstUpdate(name string) interceptor.Funcs {
+	var calls int
+	return interceptor.Funcs{
+		Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+			calls++
+			if calls == 1 {
+				return newConflictErr(name)
+			}
+			return c.Update(ctx, obj, opts...)
+		},
+	}
+}
+
+// TestReconcile_FinalizerAddConflict_ReturnsNil: the finalizer Update keeps
+// its optimistic lock (a merge patch on metadata.finalizers would replace
+// another controller's entries), so a 409 there is expected and must be
+// quiet — the competing write re-enqueues us.
+func TestReconcile_FinalizerAddConflict_ReturnsNil(t *testing.T) {
+	ech := newMilestone("e1")
+	fa := &fakeAdapter{obj: ech}
+	r := newFixture(t, ech, fa, newFakeRegistry(), conflictOnFirstUpdate("e1"))
+
+	res, err := r.ReconcileObject(t.Context(), ech)
+	if err != nil {
+		t.Fatalf("finalizer add conflict must not surface as a reconcile error: %v", err)
+	}
+	if res != (ctrl.Result{}) {
+		t.Errorf("result = %+v, want zero value", res)
+	}
+}
+
+// TestReconcile_FinalizerRemoveConflict_ReturnsNil: same for the removal
+// path. UnsubscribeAll has already run, but it is idempotent and the retry
+// re-runs it before the finalizer finally comes off.
+func TestReconcile_FinalizerRemoveConflict_ReturnsNil(t *testing.T) {
+	ech := newMilestone("e1")
+	ech.Finalizers = []string{apiv1.Finalizer}
+	now := metav1.Now()
+	ech.DeletionTimestamp = &now
+	freg := newFakeRegistry()
+	owner := watcher.OwnerKey{Kind: kindMilestone, Namespace: nsFluxSystem, Name: "e1"}
+	freg.subscribed[owner] = map[schema.GroupVersionKind]watcher.Subscriber{
+		kustomizationGVK: {Owner: owner},
+	}
+	fa := &fakeAdapter{obj: ech}
+	r := newFixture(t, ech, fa, freg, conflictOnFirstUpdate("e1"))
+
+	res, err := r.ReconcileObject(t.Context(), ech)
+	if err != nil {
+		t.Fatalf("finalizer remove conflict must not surface as a reconcile error: %v", err)
+	}
+	if res != (ctrl.Result{}) {
+		t.Errorf("result = %+v, want zero value", res)
 	}
 }

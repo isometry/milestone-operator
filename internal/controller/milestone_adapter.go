@@ -95,8 +95,16 @@ func (a *MilestoneAdapter) Status() *apiv1.MilestoneStatusBase {
 }
 
 // PatchStatus persists the in-memory status using the status subresource.
+// A full-status merge patch rather than an Update: the object was read from
+// a cache that lags our own writes, so an optimistic lock would 409 on
+// every transition without protecting anything — nothing else writes this
+// status.
 func (a *MilestoneAdapter) PatchStatus(ctx context.Context, c client.Client) error {
-	return c.Status().Update(ctx, a.Milestone)
+	patch, err := statusMergePatch(&a.Milestone.Status.MilestoneStatusBase)
+	if err != nil {
+		return err
+	}
+	return c.Status().Patch(ctx, a.Milestone, patch)
 }
 
 func labelSelectorOrEverything(ls *metav1.LabelSelector) (labels.Selector, error) {

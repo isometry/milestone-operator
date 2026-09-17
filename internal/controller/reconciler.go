@@ -116,6 +116,10 @@ func (r *Reconciler[T]) ReconcileObject(ctx context.Context, obj T) (ctrl.Result
 			if apierrors.IsNotFound(err) {
 				return ctrl.Result{}, nil
 			}
+			if apierrors.IsConflict(err) {
+				log.V(1).Info("finalizer add conflict; competing write will re-enqueue")
+				return ctrl.Result{}, nil
+			}
 			return ctrl.Result{}, fmt.Errorf("add finalizer: %w", err)
 		}
 		// The Update emits a Watch event on the owner; controller-runtime
@@ -168,12 +172,21 @@ func (r *Reconciler[T]) ReconcileObject(ctx context.Context, obj T) (ctrl.Result
 	if !statusEqualIgnoringTimestamp(prior, *adapter.Status()) {
 		adapter.Status().LastEvaluatedTime = metav1.NewTime(r.now())
 		if err := r.patchStatus(ctx, adapter); err != nil {
-			metrics.StatusPatchTotal.WithLabelValues(r.Controller, metrics.PatchError).Inc()
-			return ctrl.Result{}, err
+			if !apierrors.IsConflict(err) {
+				metrics.StatusPatchTotal.WithLabelValues(r.Controller, metrics.PatchError).Inc()
+				return ctrl.Result{}, err
+			}
+			// A conflict proves a competing write whose watch event had not
+			// yet reached the informer store at our Get. Its enqueue lands
+			// while this key is in flight, so the workqueue re-adds it after
+			// Done. Relies on the owner For() watch carrying no predicate.
+			metrics.StatusPatchTotal.WithLabelValues(r.Controller, metrics.PatchConflict).Inc()
+			log.V(1).Info("status patch conflict; competing write will re-enqueue")
+		} else {
+			metrics.StatusPatchTotal.WithLabelValues(r.Controller, metrics.PatchChanged).Inc()
+			log.V(1).Info("status patched", "ready", readyConditionStatus(adapter.Status()))
+			r.notifyFluxOnTransition(ctx, obj, priorReady, adapter.Status())
 		}
-		metrics.StatusPatchTotal.WithLabelValues(r.Controller, metrics.PatchChanged).Inc()
-		log.V(1).Info("status patched", "ready", readyConditionStatus(adapter.Status()))
-		r.notifyFluxOnTransition(ctx, obj, priorReady, adapter.Status())
 	} else {
 		// Preserve prior LastEvaluatedTime when nothing substantive changed.
 		adapter.Status().LastEvaluatedTime = prior.LastEvaluatedTime
@@ -210,6 +223,12 @@ func (r *Reconciler[T]) finalize(ctx context.Context, obj T, ownerKey watcher.Ow
 	r.Registry.UnsubscribeAll(ownerKey)
 	controllerutil.RemoveFinalizer(obj, apiv1.Finalizer)
 	if err := r.Client.Update(ctx, obj); err != nil {
+		if apierrors.IsConflict(err) {
+			// UnsubscribeAll above already ran; it is idempotent, and the
+			// retry re-runs it before the finalizer is finally removed.
+			logf.FromContext(ctx).WithValues("controller", r.Controller, "owner", ownerKey).V(1).Info("finalizer remove conflict; competing write will re-enqueue")
+			return ctrl.Result{}, nil
+		}
 		return ctrl.Result{}, fmt.Errorf("remove finalizer: %w", err)
 	}
 	return ctrl.Result{}, nil

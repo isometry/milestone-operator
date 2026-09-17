@@ -11,9 +11,12 @@ You may obtain a copy of the License at
 package controller
 
 import (
+	"reflect"
+
 	apiv1 "github.com/isometry/milestone-operator/api/v1"
 	"github.com/isometry/milestone-operator/internal/status"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 // Narrow white-box exports for unit tests in controller_test that need to
@@ -50,3 +53,17 @@ func TruncateWithEllipsis(s string, maxBytes int) string {
 // MaxStalledErrChars exposes the truncation constant so tests can assert
 // against the contract rather than hardcoding the number.
 const MaxStalledErrChars = maxStalledErrChars
+
+// StatusMergePatch exposes statusMergePatch for test access.
+func StatusMergePatch(sb *apiv1.MilestoneStatusBase) (client.Patch, error) {
+	return statusMergePatch(sb)
+}
+
+// StalledRequeue exposes the stalled requeue interval so tests assert
+// against the contract rather than a hardcoded duration.
+const StalledRequeue = stalledRequeue
+
+// JSONKeysOf exposes jsonKeysOf for test access, so the inline-embed
+// flattening can be exercised against fixture types the real status
+// doesn't (yet) contain.
+func JSONKeysOf(t reflect.Type) []string { return jsonKeysOf(t) }

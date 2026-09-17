@@ -16,6 +16,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"maps"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -33,6 +35,7 @@ import (
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/restmapper"
 	kstatus "sigs.k8s.io/cli-utils/pkg/kstatus/status"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -404,5 +407,102 @@ func TestEnvtest_FreshClusterMilestone_KstatusInProgress(t *testing.T) {
 	}
 	if s := computeKstatus(t, getUnstructuredOwner(t, kindClusterMilestone, client.ObjectKey{Name: name})); s != kstatus.InProgressStatus {
 		t.Fatalf("kstatus on fresh ClusterMilestone = %s, want InProgress", s)
+	}
+}
+
+// TestEnvtest_ClusterMilestone_StaleOwnerSnapshot_StatusStillPatches is the
+// cluster-scoped sibling of TestEnvtest_StaleOwnerSnapshot_StatusStillPatches:
+// a reconcile driven from an owner snapshot that predates a competing write
+// must still publish its status instead of 409ing.
+func TestEnvtest_ClusterMilestone_StaleOwnerSnapshot_StatusStillPatches(t *testing.T) {
+	fix := newClusterEnvFixture(t)
+	notifier := &fakeFluxNotifier{}
+	fix.reconciler.FluxNotifier = notifier
+
+	ns := nsName(t, "a")
+	createLabelledNamespace(t, ns, map[string]string{labelTier: namePlatform})
+	createWidgetInNS(t, ns, "w1")
+
+	cmName := nsName(t, "owner")
+	createClusterMilestone(t, fix, cmName, []apiv1.ClusterDependencyRef{{
+		Name:           widgetPlural,
+		EmptySetPolicy: apiv1.EmptySetUnknown,
+		Target: apiv1.ClusterTargetSpec{
+			TargetSpec: apiv1.TargetSpec{
+				Group:    groupTestAsCode,
+				Kind:     kindWidget,
+				Selector: scopedSelector(t),
+			},
+			NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{labelTier: namePlatform}},
+		},
+	}})
+
+	// Finalizer-add pass: returns early, writes no status.
+	if _, err := fix.reconciler.ReconcileObject(context.Background(), refreshClusterMilestone(t, cmName)); err != nil {
+		t.Fatalf("finalizer pass: %v", err)
+	}
+
+	stale := refreshClusterMilestone(t, cmName)
+	if !slices.Contains(stale.Finalizers, apiv1.Finalizer) {
+		t.Fatalf("precondition: stale snapshot should carry the finalizer; got %v", stale.Finalizers)
+	}
+	if len(stale.Status.Conditions) != 0 {
+		t.Fatalf("precondition: stale snapshot should have no conditions; got %+v", stale.Status.Conditions)
+	}
+	rv1 := stale.ResourceVersion
+
+	reconcileClusterToConvergence(t, fix, cmName, func(cm *apiv1.ClusterMilestone) error {
+		if clusterReady(cm) != metav1.ConditionTrue {
+			return fmt.Errorf("Ready=%s", clusterReady(cm))
+		}
+		return nil
+	})
+	converged := refreshClusterMilestone(t, cmName)
+	if converged.ResourceVersion == rv1 {
+		t.Fatalf("precondition: convergence should have advanced resourceVersion past %q", rv1)
+	}
+
+	probed := refreshClusterMilestone(t, cmName)
+	if probed.Annotations == nil {
+		probed.Annotations = map[string]string{}
+	}
+	probed.Annotations[probeAnnotation] = "1"
+	if err := envtestClient.Update(context.Background(), probed); err != nil {
+		t.Fatalf("probe update: %v", err)
+	}
+	rvProbe := refreshClusterMilestone(t, cmName).ResourceVersion
+
+	// See the Milestone sibling: without a clock hop the published status is
+	// byte-identical and the apiserver no-ops the patch.
+	fix.reconciler.Now = func() time.Time { return time.Now().Add(time.Hour) }
+
+	notifiesBefore := len(notifier.calls)
+
+	res, err := fix.reconciler.ReconcileObject(context.Background(), stale)
+	if err != nil {
+		t.Fatalf("reconcile from stale snapshot: %v", err)
+	}
+	if res != (ctrl.Result{}) {
+		t.Errorf("result = %+v, want zero value", res)
+	}
+
+	final := refreshClusterMilestone(t, cmName)
+	if clusterReady(final) != metav1.ConditionTrue {
+		t.Errorf("Ready = %s, want True", clusterReady(final))
+	}
+	if final.Status.Summary != converged.Status.Summary {
+		t.Errorf("Summary = %+v, want %+v", final.Status.Summary, converged.Status.Summary)
+	}
+	if !reflect.DeepEqual(final.Status.DependsOn, converged.Status.DependsOn) {
+		t.Errorf("DependsOn = %+v, want %+v", final.Status.DependsOn, converged.Status.DependsOn)
+	}
+	if final.Annotations[probeAnnotation] != "1" {
+		t.Errorf("competing annotation clobbered: annotations=%v", final.Annotations)
+	}
+	if final.ResourceVersion == rvProbe {
+		t.Errorf("status write did not land: resourceVersion still %q", rvProbe)
+	}
+	if got := len(notifier.calls) - notifiesBefore; got != 1 {
+		t.Errorf("flux notifier delta = %d, want 1", got)
 	}
 }

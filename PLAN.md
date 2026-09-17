@@ -349,8 +349,26 @@ controller-runtime. The pipeline is:
 6. Idempotency: `statusEqualIgnoringTimestamp` (deep-equal modulo
    `LastEvaluatedTime` and per-condition `LastTransitionTime` +
    `ObservedGeneration`) gates the patch. No churn on identical reconciles.
-7. Patch via `Status().Update()` (full replacement). If `Stalled=True`,
-   requeue after 30s as a safety net (the CRD watcher also wakes us).
+7. Patch via a full-status JSON merge patch with explicit nulls, not
+   `Status().Update()`, and without an optimistic lock (no
+   `resourceVersion` in the request). The informer cache lags our own
+   writes, so a read against a stale cached object races the in-flight
+   write and fails with 409; status is a pure function of observed
+   member state, so a lock buys nothing we can't recompute, and every
+   write we make re-enqueues us — a stale-snapshot artefact self-corrects
+   within one cache-latency window. A diff patch (`client.MergeFrom`) is
+   not an option: the CRD requires all eight `status.summary` counters
+   and enforces `total == sum(buckets)` via CEL, so a diff against a
+   fresh `{observedGeneration: -1}` object would carry only the non-zero
+   counters and be rejected. Accepted costs: a stale prior can fire the
+   Flux poke twice for one real transition, a condition's
+   `lastTransitionTime` can drift by one cache-latency window, and
+   `observedGeneration` can be written against a stale generation for
+   one cycle (kstatus reads that as InProgress). This depends on both
+   owner `For()` watches carrying no generation predicate, so a
+   competing write's enqueue always reaches our workqueue while our key
+   is in flight. If `Stalled=True`, requeue after 30s as a safety net
+   (the CRD watcher also wakes us).
 
 ## Flux integration
 
@@ -463,7 +481,9 @@ All metrics namespaced `milestone_*`. Cardinality bounds in parentheses.
   (histogram; controllers ∈ {Milestone, ClusterMilestone};
   stages ∈ {discovery, subscriptions, list, compute, reduce, patch}).
 - `milestone_status_patch_total{controller,result}` (counter,
-  result ∈ {changed, unchanged, error}).
+  result ∈ {changed, unchanged, conflict, error}). A sustained
+  `conflict` rate after this change means a second `.status` writer
+  exists and justifies revisiting server-side apply.
 - `milestone_target_resolve_errors_total{controller,reason}` (counter,
   reason ∈ {GVKNotEstablished, WatchSetupFailed, DiscoveryFailed,
   NamespaceScopeMismatch}). No `dependency` label — discovery / scope

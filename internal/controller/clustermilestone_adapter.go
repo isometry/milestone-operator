@@ -151,6 +151,12 @@ func (a *ClusterMilestoneAdapter) Status() *apiv1.MilestoneStatusBase {
 }
 
 // PatchStatus persists the in-memory status using the status subresource.
+// See MilestoneAdapter.PatchStatus for why this is a full-status merge
+// patch rather than an Update.
 func (a *ClusterMilestoneAdapter) PatchStatus(ctx context.Context, c client.Client) error {
-	return c.Status().Update(ctx, a.ClusterMilestone)
+	patch, err := statusMergePatch(&a.ClusterMilestone.Status.MilestoneStatusBase)
+	if err != nil {
+		return err
+	}
+	return c.Status().Patch(ctx, a.ClusterMilestone, patch)
 }
