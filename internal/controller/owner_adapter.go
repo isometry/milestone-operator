@@ -15,40 +15,20 @@ import (
 
 	apiv1 "github.com/isometry/milestone-operator/api/v1"
 	"github.com/isometry/milestone-operator/internal/discovery"
+	"github.com/isometry/milestone-operator/internal/membership"
 	"github.com/isometry/milestone-operator/internal/watcher"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-// NormalizedDependency is the discovery- and selector-resolved view of a
-// single spec.dependsOn[] entry, ready to feed the registry and the lister.
-type NormalizedDependency struct {
-	Name             string
-	GVK              schema.GroupVersionKind
-	Scope            apimeta.RESTScopeName
-	Selector         labels.Selector
-	NamespaceMatcher func(namespace string) bool
-	EmptySetPolicy   apiv1.EmptySetPolicy
-	SuspendPolicy    apiv1.SuspendPolicy
-}
-
-// DependencyError is a structural failure tied to a single dependency. The
-// reconciler surfaces these as Stalled with the carried Reason; reconcile
-// continues for the remaining dependencies.
-type DependencyError struct {
-	Name    string
-	Group   string
-	Version string
-	Kind    string
-	Reason  string
-	Err     error
-}
-
-func (e DependencyError) Error() string { return e.Err.Error() }
-func (e DependencyError) Unwrap() error { return e.Err }
+// NormalizedDependency and DependencyError keep the controller's vocabulary
+// while membership owns the definitions shared with milestonectl.
+type (
+	NormalizedDependency = membership.Dependency
+	DependencyError      = membership.Error
+)
 
 // OwnerAdapter abstracts the differences between Milestone and
 // ClusterMilestone so the reconcile pipeline can serve both with one
