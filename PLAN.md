@@ -238,8 +238,8 @@ dependency-level / owner-level reasons describe dependency rollups.
 exist (CRD not installed); `DiscoveryUnavailable` means the discovery API
 itself failed (network error, aggregated-API 503). The resolver classifies
 via the `ErrGVKNotEstablished` / `ErrDiscoveryUnavailable` sentinels and the
-shared adapter helper (`internal/controller/dependency_normalize.go`) maps
-them — the single home for that mapping.
+shared normalisation package (`internal/membership/normalize.go`) maps
+them — the single home for that mapping, used by the reconciler and the CLI.
 
 Owner-level `Conditions[].Reason` follows the documented vocabulary
 (`AllDependenciesReady`, `DependenciesNotReady`, `DependenciesInProgress`,
@@ -327,8 +327,13 @@ controller-runtime. The pipeline is:
 
 1. Finalizer check / addition (skip when deleting → run unsubscribe).
 2. `adapter.Dependencies(ctx, resolver)` → `[]NormalizedDependency` +
-   `[]DependencyError`. Discovery / scope / selector errors surface as
-   `DependencyError`s with structural reasons.
+   `[]DependencyError` (aliases of `membership.Dependency` / `membership.Error`).
+   The adapters are thin wrappers over `membership.NormalizeMilestone` /
+   `NormalizeClusterMilestone`; discovery / scope / selector errors surface
+   as `DependencyError`s with structural reasons. Failed-dependency rollups
+   (`Ready=Unknown` entries fed to `ReduceOwner`) come from
+   `membership.Rollups`, and per-object admission from
+   `membership.Dependency.Admits`.
 3. `reconcileSubscriptions(ownerKey, deps)`: group desired by GVK, diff
    against currently-subscribed GVKs, subscribe/unsubscribe accordingly.
    Subscribe failures fan out as `DependencyError`s with
@@ -521,6 +526,101 @@ All metrics namespaced `milestone_*`. Cardinality bounds in parentheses.
   Cardinality: `⟨total owners⟩ × ⟨dependencies-per-owner⟩`.
 - `milestone_last_evaluated_timestamp_seconds{owner_kind,namespace,name}`
   (gauge).
+
+## CLI (milestonectl)
+
+**Intent.** The recorded `status` is lossy by design: `status.dependsOn[]`
+carries counts only, `status.notReadyResources` is capped at 50 and not
+attributed to a dependency, and healthy members are never recorded. That
+leaves no answer to "what is actually in `wave-0`, and how healthy is each
+piece?" or "which milestones gate on this HelmRelease?". `milestonectl`
+(`cmd/milestonectl`, `internal/cli`) answers both. It follows the FluxCD CLI
+(`get` / `tree` / `trace` / `version`, `-A`, `--status-selector`, `-w`,
+`-o json|yaml`) and doubles as `kubectl milestone` when installed as
+`kubectl-milestone`; `main.go` dispatches on `argv[0]` for the display name
+and rewrites `kubectl_complete-milestone` to `__complete` for kubectl's
+plugin completion.
+
+**Command surface.**
+
+```
+milestonectl get milestones|clustermilestones|all [NAME] [-n NS | -A] [--status-selector ready=False] [--status-selector stalled=...] [-w] [-o table|wide|json|yaml]
+milestonectl tree milestone|clustermilestone NAME [-n NS] [--not-ready] [-o tree|json|yaml]
+milestonectl trace TYPE/NAME | TYPE NAME [-n NS] [-o table|json|yaml]
+milestonectl version [--client] [-o table|json|yaml]
+milestonectl completion bash|zsh|fish|powershell
+```
+
+- **`get`** prints recorded status only, like `flux get`; nothing is
+  evaluated. READY carries `(stale)` while
+  `status.observedGeneration < metadata.generation`. `-w` reprints a row per
+  changed object.
+- **`tree`** evaluates membership live and renders owner → dependency →
+  member, with the same leaf glyph rules as the operator's not-ready
+  projection (a suspended resource under `suspendPolicy: NotReady` shows as
+  blocking, not ready). Structural failures (`GVKNotEstablished`,
+  `NamespaceScopeMismatch`, ...) appear on their dependency and do not
+  abort the tree. A `⚠ live differs from recorded` note appears only when
+  `observedGeneration == generation`, and only for dependency `ready` /
+  `reason` differences; counts are never compared, to avoid false alarms
+  from the informer-versus-list race. `--not-ready` prunes healthy leaves.
+- **`trace`** is the reverse: resolve `TYPE` through the shortcut-expanding
+  RESTMapper (`ks`, `hr`, fully-qualified names), fetch the object, list
+  Milestones in its namespace plus every ClusterMilestone, normalise each
+  through `internal/membership` (namespace selectors resolve through a
+  `NamespaceLister` over the Namespaces API) and report
+  every `(owner, dependency)` whose `Admits` matches, with the owner's
+  recorded `Ready` and the object's live kstatus. No match is exit 0 with
+  "not a member of any milestone"; an owner whose dependencies cannot be
+  normalised is reported on stderr and skipped.
+- **`version`** prints the client version (ldflags, falling back to
+  `debug.ReadBuildInfo`) and, best-effort, the image of each Deployment
+  labelled `app.kubernetes.io/name=milestone-operator`. A forbidden or empty
+  lookup degrades to a note on the `operator:` line, never a failure.
+
+**Live evaluation shares `internal/membership` with the reconciler.**
+Kind resolution, the ordered scope / namespace / selector checks
+(first failure wins), namespace matching (`NamespaceLister`), per-object
+admission (`Dependency.Admits`), and failed-dependency rollups
+(`Rollups`, `FailedRollup`) live in one package, imported by the
+controller adapters and by the CLI. That package is the single source of
+truth for those rules; neither consumer reimplements them, so the CLI
+cannot drift from what the operator records. It imports only `api/v1`,
+`internal/discovery` and apimachinery (no controller-runtime), so the CLI
+carries no manager dependency. `membership.Evaluator` (`evaluate.go`) adds
+the client-go half: map GVK to GVR with the resolver's version (one
+RESTMapper reset and retry on `NoKindMatch`), list (server-side label
+selector; per-namespace lists for a `namespaces` filter, one cluster-wide
+list plus `Admits` otherwise), then reuse `status.Compute`,
+`status.ReduceDependency` and `ReduceOwner` / `SummarizeOwner` unchanged to
+produce a `Report` (JSON-tagged; it is the `-o json|yaml` output of `tree`).
+List errors are classified: HTTP 403 is a CLI-side `Forbidden` marker
+rendered as `cannot check: forbidden (your credentials)`, keeping the
+user's RBAC gap distinct from an operator fault; anything else is
+`ListFailed`.
+
+**Dependencies and clients.** `k8s.io/cli-runtime` supplies the standard
+kubeconfig/impersonation flags (`genericclioptions.ConfigFlags`), the
+shortcut-expanding RESTMapper for `trace`, and printers; it is version-aligned
+with client-go and brings in cobra/pflag. Our own CRDs are read through the
+dynamic client and `runtime.DefaultUnstructuredConverter` into the `api/v1`
+types, so the CLI needs no controller-runtime client. Discovery for the
+resolver uses a **non-cached** `discovery.NewDiscoveryClientForConfig`, as
+the operator does: the disk-cached client from `ToDiscoveryClient()` has a 6h
+TTL and would misreport CRDs as missing or established. The RESTMapper is
+used only for GVR plurals and shortcut expansion.
+
+**Metrics exemption.** The CLI emits no metrics. The "metrics are
+first-class" rule applies to the operator's long-running pipeline; a
+short-lived, user-invoked client has nothing to scrape. The package-level
+counters in `internal/discovery` are never registered in the CLI process and
+are harmless.
+
+**Other conventions.** Colour only on a TTY, honouring `NO_COLOR` /
+`--no-color`. Shell completion offers milestone names, namespaces and output
+formats. Build: `make build-cli` produces `bin/milestonectl` with version
+ldflags plus the `kubectl-milestone` and `kubectl_complete-milestone`
+symlinks; `make build` depends on it. The container image is unchanged.
 
 ## v1 compatibility discipline
 

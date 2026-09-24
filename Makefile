@@ -157,8 +157,19 @@ lint-config: golangci-lint ## Verify golangci-lint linter configuration
 ##@ Build
 
 .PHONY: build
-build: manifests generate fmt vet ## Build manager binary.
+build: manifests generate fmt vet build-cli ## Build manager binary and CLI.
 	go build -o bin/manager cmd/main.go
+
+CLI_COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null)
+CLI_VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo v$(VERSION))
+CLI_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+CLI_LDFLAGS = -X main.version=$(CLI_VERSION) -X main.commit=$(CLI_COMMIT) -X main.date=$(CLI_DATE)
+
+.PHONY: build-cli
+build-cli: ## Build milestonectl, plus its kubectl plugin and plugin-completion symlinks.
+	go build -ldflags "$(CLI_LDFLAGS)" -o bin/milestonectl ./cmd/milestonectl
+	ln -sf milestonectl bin/kubectl-milestone
+	ln -sf milestonectl bin/kubectl_complete-milestone
 
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.

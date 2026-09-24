@@ -50,6 +50,19 @@ func (d Dependency) Admits(namespace string, objLabels labels.Set) bool {
 	return true
 }
 
+// Matches returns the dependencies in deps that admit an object of kind gk in
+// namespace carrying lbls. Versions are ignored: an object is the same member
+// whichever served version it was read at.
+func Matches(deps []Dependency, gk schema.GroupKind, namespace string, lbls labels.Set) []Dependency {
+	var out []Dependency
+	for _, d := range deps {
+		if d.GVK.GroupKind() == gk && d.Admits(namespace, lbls) {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
 // Error is a structural failure tied to a single dependency. Reason is a
 // DependencyStatus.Reason value; Name is empty only for owner-wide failures.
 type Error struct {

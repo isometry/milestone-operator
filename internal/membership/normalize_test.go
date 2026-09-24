@@ -116,7 +116,7 @@ func (f *fakeNamespaces) list(_ context.Context, sel labels.Selector) ([]string,
 func tierNamespaces() *fakeNamespaces {
 	return &fakeNamespaces{byName: map[string]labels.Set{
 		nsTeamA: {labelTier: tierPlatform},
-		nsTeamB: {labelTier: "data"},
+		nsTeamB: {labelTier: tierData},
 	}}
 }
 
@@ -199,11 +199,11 @@ func TestNormalizeMilestone_Success(t *testing.T) {
 		apiv1.DependencyRef{Name: "alpha", SuspendPolicy: apiv1.SuspendNotReady, Target: apiv1.TargetSpec{
 			Group: groupKustomize, Kind: kindKust, Selector: platformSel,
 		}},
-		apiv1.DependencyRef{Name: "broken", Target: roleTarget},
+		apiv1.DependencyRef{Name: nameBroken, Target: roleTarget},
 		apiv1.DependencyRef{Name: "mid", Target: kustTarget},
 	)
 	deps, errs := membership.NormalizeMilestone(t.Context(), newResolver(), m)
-	if len(errs) != 1 || errs[0].Name != "broken" {
+	if len(errs) != 1 || errs[0].Name != nameBroken {
 		t.Fatalf("errs = %+v, want only broken", errs)
 	}
 	want := []string{"zeta", "alpha", "mid"}
@@ -354,7 +354,7 @@ func TestNormalizeClusterMilestone_NamespaceMatchers(t *testing.T) {
 func TestNormalizeClusterMilestone_ClusterScopedKindScope(t *testing.T) {
 	deps, errs := membership.NormalizeClusterMilestone(t.Context(), newResolver(), nil,
 		clusterMilestone(apiv1.ClusterDependencyRef{
-			Name: "roles", Target: apiv1.ClusterTargetSpec{TargetSpec: roleTarget},
+			Name: depRoles, Target: apiv1.ClusterTargetSpec{TargetSpec: roleTarget},
 		}))
 	if len(errs) != 0 || len(deps) != 1 {
 		t.Fatalf("deps=%+v errs=%+v", deps, errs)

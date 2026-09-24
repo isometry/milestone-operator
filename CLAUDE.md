@@ -65,6 +65,16 @@ per-dependency rollups. Failure metrics with no dependency name available
 (GVK resolution, list errors) use the `target_*` family; rollup gauges
 labelled by name use `dependency_*`.
 
+Dependency normalisation lives in `internal/membership`, shared by the
+reconciler (via the thin `Dependencies()` adapter wrappers) and by the
+`milestonectl` CLI's live evaluation. It owns kind resolution, the
+scope/namespace/selector rules, `Dependency.Admits`, and the failed-dependency
+rollups (`Rollups`, `FailedRollup`). Never reimplement those rules elsewhere:
+change them once in `internal/membership` and both consumers follow. The
+package imports only `api/v1`, `internal/discovery` and apimachinery — keep
+controller-runtime out of it. The CLI is a read-only client and deliberately
+emits no metrics; the metrics-first-class rule applies to the operator.
+
 `DependencyStatus.Reason` is a closed CRD enum. The full set is:
 `AllResourcesReady`, `ResourcesNotReady`, `ResourcesSuspended`,
 `ResourcesInProgress`, `ResourcesUnknown`, `EmptySet`, `GVKNotEstablished`,
@@ -82,7 +92,8 @@ but not enum-closed (it's `metav1.Condition.Reason`).
 ```sh
 make help                        # list every target
 make generate manifests          # regenerate deepcopy + CRDs after api/v1 changes
-make build                       # full build (generate + fmt + vet + go build)
+make build                       # full build (generate + fmt + vet + build-cli + go build)
+make build-cli                   # bin/milestonectl + kubectl-milestone / kubectl_complete-milestone symlinks
 make lint                        # golangci-lint
 make test                        # full unit + envtest run (downloads envtest binaries)
 make run                         # run the manager against the current kubeconfig
@@ -206,6 +217,9 @@ into a single commit when it's a logical unit, to reduce yubikey touches.
 | Discovery + TTL cache                | `internal/discovery/`                        |
 | Watcher registry + dynamic informers | `internal/watcher/`                          |
 | Reconcile pipeline + adapters        | `internal/controller/`                       |
+| Dependency normalisation + live eval | `internal/membership/`                       |
+| CLI (`milestonectl`) entrypoint      | `cmd/milestonectl/`                          |
+| CLI kinds, printers, help text       | `internal/cli/`                              |
 | Prometheus inventory + collector     | `internal/metrics/`                          |
 | Manager bootstrap                    | `cmd/main.go`                                |
 | Generated CRDs / RBAC                | `config/crd/bases/`, `config/rbac/`          |

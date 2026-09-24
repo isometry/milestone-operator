@@ -154,6 +154,104 @@ To enable TLS with cert-manager-managed certificates:
 4. Re-deploy. The manager will then listen on `:8443` and the
    `ServiceMonitor` will scrape HTTPS with mTLS.
 
+## CLI (milestonectl)
+
+`milestonectl` inspects Milestones and ClusterMilestones from the command
+line, in the style of the Flux CLI. The recorded `status` is deliberately
+lossy (per-dependency counts, at most 50 not-ready resources, no healthy
+members), so the CLI can also answer "what is actually in `wave-0`?" and
+"which milestones gate on this HelmRelease?" by evaluating membership live.
+
+Build and install:
+
+```sh
+make build-cli          # bin/milestonectl + kubectl plugin symlinks
+install -m 0755 bin/milestonectl /usr/local/bin/kubectl-milestone
+# kubectl >= 1.26 plugin tab-completion looks for this name on PATH:
+ln -s kubectl-milestone /usr/local/bin/kubectl_complete-milestone
+```
+
+The same binary runs as `milestonectl ...` or `kubectl milestone ...` and
+accepts the usual kubeconfig flags (`--context`, `-n`, `--as`, ...).
+`milestonectl completion bash|zsh|fish|powershell` emits shell completions.
+
+| Command                         | Shows                                                              |
+|---------------------------------|--------------------------------------------------------------------|
+| `get milestones\|clustermilestones\|all` | The status the operator last **recorded** (`-A`, `--status-selector`, `-w`, `-o table\|wide\|json\|yaml`) |
+| `tree milestone\|clustermilestone NAME`   | Every member of every dependency, **evaluated live** (`--not-ready`, `-o tree\|json\|yaml`) |
+| `trace TYPE/NAME`               | Every milestone dependency that includes the object, and its live state |
+| `version`                       | Client version and the operator image(s) found in the cluster (`--client` skips the lookup) |
+
+```sh
+# Every Milestone and ClusterMilestone, cluster-wide
+milestonectl get all -A
+
+# Only what is not ready, updating as it changes
+milestonectl get mile -A --status-selector ready=False --watch
+
+# What is in wave-1, and what is holding it back?
+milestonectl tree milestone wave-1 -n flux-system
+milestonectl tree cmile platform --not-ready
+
+# Which milestones gate on this object?
+milestonectl trace ks/broken -n flux-system
+milestonectl trace deploy/web -n apps
+
+milestonectl version
+```
+
+`tree` output (colour is used only on a terminal; `--no-color` and
+`NO_COLOR` disable it):
+
+```
+Milestone/flux-system/wave-1  Ready=False  DependenciesNotReady  (evaluated 42s ago, stale: generation 3 not yet observed)
+└── ✗ kustomizations  Kustomization.kustomize.toolkit.fluxcd.io/v1  wave=1  1/2  ResourcesNotReady
+    ├── ✔ flux-system/apps     Current
+    └── ✗ flux-system/broken   Failed  BuildFailed: build failed
+```
+
+Glyphs: `✔` ready, `✗` not ready, `⏸` suspended, `◌` in progress, `?`
+unknown. A dependency the operator could not evaluate (`GVKNotEstablished`,
+`NamespaceScopeMismatch`, ...) is shown inline with its reason rather than
+aborting the tree.
+
+`trace` prints the object's live kstatus followed by one row per matching
+`(owner, dependency)`:
+
+```
+✗ Kustomization.kustomize.toolkit.fluxcd.io/flux-system/broken  Failed  BuildFailed: build failed
+
+OWNER                          DEPENDENCY                OWNER READY     OWNER REASON           BLOCKING
+Milestone/flux-system/wave-1   kustomizations            False (stale)   DependenciesNotReady   yes
+ClusterMilestone/platform      platform-kustomizations   True            AllDependenciesReady   yes
+```
+
+`get` never evaluates anything: it prints what is in `status`, and marks
+READY with `(stale)` while `observedGeneration` lags `metadata.generation`.
+`tree` and `trace` list the target resources with your credentials and run
+the operator's own normalisation and kstatus reduction (the shared
+`internal/membership` package), so they reflect what the operator would
+record right now. When the operator has observed the current generation but
+a dependency's live `ready`/`reason` differs from the recorded one, `tree`
+adds a `⚠ live differs from recorded` line; while the generation is stale
+the difference is expected and only the `(stale)` note is shown. Resource
+counts are not compared, to avoid false alarms from informer lag.
+
+RBAC required by the CLI user (the operator's service account is not used):
+
+- `get`/`list`/`watch` on `milestones` and `clustermilestones`
+  (`milestone.as-code.io`)
+- `list` on each target kind referenced by the dependencies you `tree`
+  (and `get` on the object you `trace`)
+- `list` on `namespaces`, for `ClusterMilestone` `namespaceSelector`
+  dependencies (`tree` and `trace`) and for `--namespace` completion
+- `list` on `deployments` across namespaces for `version` (optional; a
+  failure is reported on the `operator:` line and does not fail the command)
+
+A 403 on a target list is reported as `cannot check: forbidden (your
+credentials)` on that dependency, distinct from the operator's own
+`ListFailed`, so a gap in your RBAC is not mistaken for an operator fault.
+
 ## Supply chain
 
 Tagged releases publish a keyless-signed (Sigstore) container image and OCI

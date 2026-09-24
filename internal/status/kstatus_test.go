@@ -13,6 +13,7 @@ package status_test
 import (
 	"testing"
 
+	apiv1 "github.com/isometry/milestone-operator/api/v1"
 	"github.com/isometry/milestone-operator/internal/status"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -58,6 +59,32 @@ func TestResource_IsCurrent(t *testing.T) {
 	}
 	if status.Compute(newDeploymentReady(3, 1)).IsCurrent() {
 		t.Errorf("in-progress deployment: IsCurrent() = true, want false")
+	}
+}
+
+func TestResource_Blocks(t *testing.T) {
+	cases := []struct {
+		name      string
+		status    string
+		suspended bool
+		policy    apiv1.SuspendPolicy
+		want      bool
+	}{
+		{"current", statCurrent, false, apiv1.SuspendNotReady, false},
+		{"current suspended, ignore", statCurrent, true, apiv1.SuspendIgnore, false},
+		{"current suspended, empty policy", statCurrent, true, "", false},
+		{"current suspended, notready", statCurrent, true, apiv1.SuspendNotReady, true},
+		{"in progress", statInProgress, false, apiv1.SuspendIgnore, true},
+		{"failed suspended, ignore", "Failed", true, apiv1.SuspendIgnore, true},
+		{"unknown", "Unknown", false, apiv1.SuspendIgnore, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := status.Resource{Status: tc.status, Suspended: tc.suspended}
+			if got := r.Blocks(tc.policy); got != tc.want {
+				t.Errorf("Blocks(%q) = %v, want %v", tc.policy, got, tc.want)
+			}
+		})
 	}
 }
 

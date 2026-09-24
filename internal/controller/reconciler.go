@@ -479,15 +479,14 @@ func notReadyResourcesOf(resources []status.Resource, policy apiv1.SuspendPolicy
 	// patches when prior state was nil.
 	var out []apiv1.ResourceStatus
 	for _, m := range resources {
-		blockedBySuspension := policy == apiv1.SuspendNotReady && m.Suspended
-		if m.IsCurrent() && !blockedBySuspension {
+		if !m.Blocks(policy) {
 			continue
 		}
 		reason, message := m.Reason, m.Message
-		// Only when suspension is the sole cause: a suspended resource that
+		// A blocking Current resource is blocked by suspension alone. One that
 		// is also Failed or InProgress keeps its kstatus text so the real
 		// failure is never masked.
-		if blockedBySuspension && m.IsCurrent() {
+		if m.IsCurrent() {
 			reason, message = apiv1.ReasonSuspended, "spec.suspend is true"
 		}
 		out = append(out, apiv1.ResourceStatus{

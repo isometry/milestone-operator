@@ -39,7 +39,7 @@ func TestDependency_Admits(t *testing.T) {
 		{"matcher rejects foreign namespace", membership.Dependency{NamespaceMatcher: onlyA}, nsTeamB, nil, false},
 		{"matcher admits own namespace", membership.Dependency{NamespaceMatcher: onlyA}, nsTeamA, nil, true},
 		{"selector rejects label mismatch", membership.Dependency{Selector: platform}, nsTeamA,
-			labels.Set{labelTier: "data"}, false},
+			labels.Set{labelTier: tierData}, false},
 		{"selector rejects missing labels", membership.Dependency{Selector: platform}, nsTeamA, nil, false},
 		{"both must pass", membership.Dependency{NamespaceMatcher: onlyA, Selector: platform}, nsTeamB,
 			platformLabels, false},
@@ -138,7 +138,7 @@ func TestRollups_FailureBlocksReadyOwner(t *testing.T) {
 		t.Fatalf("precondition: owner Ready = %q, want True", ready)
 	}
 	got := membership.Rollups(perDep, []membership.Error{{
-		Name: "roles", Group: "rbac.authorization.k8s.io", Version: "v1", Kind: "ClusterRole",
+		Name: depRoles, Group: "rbac.authorization.k8s.io", Version: "v1", Kind: "ClusterRole",
 		Reason: apiv1.ReasonNamespaceScopeMismatch, Err: errors.New("cluster-scoped"),
 	}})
 	if ready, _, _ := status.ReduceOwner(got); ready != metav1.ConditionUnknown {
@@ -153,5 +153,43 @@ func TestRollups_NoErrors(t *testing.T) {
 	}
 	if got := membership.Rollups(nil, nil); len(got) != 0 {
 		t.Errorf("Rollups(nil, nil) = %+v, want empty", got)
+	}
+}
+
+func TestMatches(t *testing.T) {
+	kustGK := schema.GroupKind{Group: groupKustomize, Kind: kindKust}
+	platform := labels.SelectorFromSet(labels.Set{labelTier: tierPlatform})
+	onlyA := func(ns string) bool { return ns == nsTeamA }
+	deps := []membership.Dependency{
+		{Name: depV1Platform, GVK: kustGK.WithVersion("v1"), Selector: platform},
+		{Name: "v1beta2-team-a", GVK: kustGK.WithVersion("v1beta2"), Selector: labels.Everything(), NamespaceMatcher: onlyA},
+		{Name: "other-kind", GVK: schema.GroupVersionKind{Group: groupRBAC, Version: "v1", Kind: kindRole}},
+		{Name: "other-group", GVK: schema.GroupVersionKind{Group: "other.example.com", Version: "v1", Kind: kindKust}},
+	}
+	names := func(ds []membership.Dependency) []string {
+		out := make([]string, 0, len(ds))
+		for _, d := range ds {
+			out = append(out, d.Name)
+		}
+		return out
+	}
+	cases := []struct {
+		name string
+		ns   string
+		lbls labels.Set
+		want []string
+	}{
+		// The object's served version is irrelevant: the operator watches one
+		// version, but the object belongs regardless of which one it was read at.
+		{"both versions", nsTeamA, labels.Set{labelTier: tierPlatform}, []string{depV1Platform, "v1beta2-team-a"}},
+		{"namespace filter", nsTeamB, labels.Set{labelTier: tierPlatform}, []string{depV1Platform}},
+		{"selector filter", nsTeamB, nil, []string{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := names(membership.Matches(deps, kustGK, tc.ns, tc.lbls)); !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("Matches = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }
