@@ -93,6 +93,7 @@ func TestRegister_AllMetricFamiliesPresent(t *testing.T) {
 	metrics.OwnersWoken.WithLabelValues("crd_established").Inc()
 	metrics.FluxNotifyTotal.WithLabelValues(kindMilestone, kindKustomization, metrics.FluxNotifySuccess).Inc()
 	metrics.StateCollectorErrors.WithLabelValues(kindMilestone).Inc()
+	metrics.BuildInfo.WithLabelValues("v1.2.3", "abc1234").Set(1)
 
 	families, err := reg.Gather()
 	if err != nil {
@@ -114,6 +115,7 @@ func TestRegister_AllMetricFamiliesPresent(t *testing.T) {
 		"milestone_owners_woken_total",
 		"milestone_flux_notify_total",
 		"milestone_state_collector_errors_total",
+		"milestone_build_info",
 	}
 	have := make(map[string]bool, len(families))
 	for _, mf := range families {
@@ -123,6 +125,24 @@ func TestRegister_AllMetricFamiliesPresent(t *testing.T) {
 		if !have[n] {
 			t.Errorf("registry missing metric family %q (have: %s)", n, joinKeys(have))
 		}
+	}
+}
+
+func TestBuildInfo_ExposedWithLabels(t *testing.T) {
+	reg := prometheus.NewRegistry()
+	if err := metrics.Register(reg); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	metrics.BuildInfo.Reset()
+	t.Cleanup(metrics.BuildInfo.Reset)
+	metrics.BuildInfo.WithLabelValues("v1.2.3", "abc1234").Set(1)
+
+	want := `# HELP milestone_build_info Build information of the running operator; constant 1.
+# TYPE milestone_build_info gauge
+milestone_build_info{revision="abc1234",version="v1.2.3"} 1
+`
+	if err := testutil.GatherAndCompare(reg, strings.NewReader(want), "milestone_build_info"); err != nil {
+		t.Error(err)
 	}
 }
 

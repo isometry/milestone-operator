@@ -19,6 +19,7 @@ import (
 	"testing"
 
 	"github.com/isometry/milestone-operator/internal/cli"
+	"github.com/isometry/milestone-operator/internal/version"
 	appsv1 "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -113,9 +114,9 @@ func TestRun_ErrorsAreConcise(t *testing.T) {
 
 func withBuildInfo(t *testing.T, v, c, d string) {
 	t.Helper()
-	oldV, oldC, oldD := version, commit, date
-	version, commit, date = v, c, d
-	t.Cleanup(func() { version, commit, date = oldV, oldC, oldD })
+	oldV, oldC, oldD := version.Version, version.Commit, version.Date
+	version.Version, version.Commit, version.Date = v, c, d
+	t.Cleanup(func() { version.Version, version.Commit, version.Date = oldV, oldC, oldD })
 }
 
 func TestVersion(t *testing.T) {

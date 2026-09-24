@@ -509,6 +509,12 @@ All metrics namespaced `milestone_*`. Cardinality bounds in parentheses.
   {Kustomization, HelmRelease}; result ∈ {success, suspended, not_found,
   no_match, forbidden, error}). Bound: ≤24 series.
 
+### Build
+
+- `milestone_build_info{version,revision}` (gauge, constant 1, set once at
+  startup from `internal/version`). Cardinality: 1. No `goversion` label —
+  controller-runtime already exports `go_info`.
+
 ### Object-state (lister-backed, scrape-time)
 
 - `milestone_status_condition{owner_kind,namespace,name,type,status}`
@@ -573,9 +579,9 @@ milestonectl completion bash|zsh|fish|powershell
   recorded `Ready` and the object's live kstatus. No match is exit 0 with
   "not a member of any milestone"; an owner whose dependencies cannot be
   normalised is reported on stderr and skipped.
-- **`version`** prints the client version (ldflags, falling back to
-  `debug.ReadBuildInfo`) and, best-effort, the image of each Deployment
-  labelled `app.kubernetes.io/name=milestone-operator`. A forbidden or empty
+- **`version`** prints the client version (`internal/version`: ldflags,
+  falling back to `debug.ReadBuildInfo`) and, best-effort, the image of each
+  Deployment labelled `app.kubernetes.io/name=milestone-operator`. A forbidden or empty
   lookup degrades to a note on the `operator:` line, never a failure.
 
 **Live evaluation shares `internal/membership` with the reconciler.**
@@ -618,9 +624,9 @@ are harmless.
 
 **Other conventions.** Colour only on a TTY, honouring `NO_COLOR` /
 `--no-color`. Shell completion offers milestone names, namespaces and output
-formats. Build: `make build-cli` produces `bin/milestonectl` with version
-ldflags plus the `kubectl-milestone` and `kubectl_complete-milestone`
-symlinks; `make build` depends on it. The container image is unchanged.
+formats. Build: `make build-cli` produces `bin/milestonectl` with the shared
+`internal/version` ldflags (`LDFLAGS_VERSION`, also used by `build-manager`)
+plus the `kubectl-milestone` and `kubectl_complete-milestone` symlinks; `make build` depends on it. The container image is unchanged.
 
 ## v1 compatibility discipline
 

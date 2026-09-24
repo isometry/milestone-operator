@@ -53,7 +53,7 @@ carries the GVK + label selector (plus `namespaces` / `namespaceSelector`
 on ClusterMilestone). `name` is the listmap key — kebab-case, RFC-1123
 label.
 
-Metrics are first-class. `internal/metrics/metrics.go` defines a 15-family
+Metrics are first-class. `internal/metrics/metrics.go` defines a 16-family
 inventory; `internal/metrics/collector.go` is a lister-backed collector
 emitting per-object gauges at scrape time. All registered against the
 controller-runtime registry — never a separate `/metrics` server.

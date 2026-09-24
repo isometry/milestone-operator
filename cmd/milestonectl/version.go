@@ -13,8 +13,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"runtime"
-	"runtime/debug"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -22,6 +20,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/isometry/milestone-operator/internal/cli"
+	"github.com/isometry/milestone-operator/internal/version"
 )
 
 // operatorSelector matches the operator Deployment in both the kustomize
@@ -29,18 +28,10 @@ import (
 const operatorSelector = "app.kubernetes.io/name=milestone-operator"
 
 type versionInfo struct {
-	Client    buildInfo      `json:"client"`
+	Client    version.Info   `json:"client"`
 	Operators []operatorInfo `json:"operators,omitempty"`
 	// OperatorError explains why no operator is reported.
 	OperatorError string `json:"operatorError,omitempty"`
-}
-
-type buildInfo struct {
-	Version   string `json:"version"`
-	Commit    string `json:"commit,omitempty"`
-	Date      string `json:"date,omitempty"`
-	GoVersion string `json:"goVersion"`
-	Platform  string `json:"platform"`
 }
 
 type operatorInfo struct {
@@ -58,7 +49,7 @@ func newVersionCommand(a *app) *cobra.Command {
 		Long:  cli.VersionLong,
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			info := versionInfo{Client: clientVersion()}
+			info := versionInfo{Client: version.Get()}
 			if !clientOnly {
 				info.Operators, info.OperatorError = operatorVersions(cmd.Context(), a)
 			}
@@ -75,17 +66,7 @@ func newVersionCommand(a *app) *cobra.Command {
 }
 
 func printVersion(a *app, info versionInfo, clientOnly bool) error {
-	c := info.Client
-	line := "client: " + c.Version
-	var extra []string
-	if c.Commit != "" {
-		extra = append(extra, "commit "+c.Commit)
-	}
-	if c.Date != "" {
-		extra = append(extra, "built "+c.Date)
-	}
-	extra = append(extra, c.GoVersion, c.Platform)
-	line += " (" + strings.Join(extra, ", ") + ")"
+	line := "client: " + info.Client.String()
 	if _, err := fmt.Fprintln(a.out, line); err != nil || clientOnly {
 		return err
 	}
@@ -100,36 +81,6 @@ func printVersion(a *app, info versionInfo, clientOnly bool) error {
 		}
 	}
 	return nil
-}
-
-// clientVersion prefers the linker-injected values and falls back to what
-// the Go toolchain recorded, so "go install" builds still identify
-// themselves.
-func clientVersion() buildInfo {
-	b := buildInfo{
-		Version:   version,
-		Commit:    commit,
-		Date:      date,
-		GoVersion: runtime.Version(),
-		Platform:  runtime.GOOS + "/" + runtime.GOARCH,
-	}
-	if bi, ok := debug.ReadBuildInfo(); ok {
-		if b.Version == "" && bi.Main.Version != "(devel)" {
-			b.Version = bi.Main.Version
-		}
-		for _, s := range bi.Settings {
-			switch {
-			case s.Key == "vcs.revision" && b.Commit == "":
-				b.Commit = s.Value
-			case s.Key == "vcs.time" && b.Date == "":
-				b.Date = s.Value
-			}
-		}
-	}
-	if b.Version == "" {
-		b.Version = "dev"
-	}
-	return b
 }
 
 // operatorVersions never fails the command: the operator may live where the

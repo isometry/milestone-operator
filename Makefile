@@ -159,18 +159,24 @@ lint-config: golangci-lint ## Verify golangci-lint linter configuration
 .PHONY: build
 build: manifests generate fmt vet build-manager build-cli ## Build manager binary and CLI.
 
+VERSION_PKG := github.com/isometry/milestone-operator/internal/version
+GIT_VERSION ?= $(shell git describe --tags --match 'v*' --always --dirty 2>/dev/null || echo v0.0.0-dev)
+GIT_COMMIT ?= $(shell git rev-parse HEAD 2>/dev/null)
+# Commit date rather than wall clock, so identical sources build identically.
+GIT_DATE ?= $(shell TZ=UTC git log -1 --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%SZ 2>/dev/null)
+# Flatten so the git calls run once, not per expansion; overrides still win.
+GIT_VERSION := $(GIT_VERSION)
+GIT_COMMIT := $(GIT_COMMIT)
+GIT_DATE := $(GIT_DATE)
+LDFLAGS_VERSION = -X $(VERSION_PKG).Version=$(GIT_VERSION) -X $(VERSION_PKG).Commit=$(GIT_COMMIT) -X $(VERSION_PKG).Date=$(GIT_DATE)
+
 .PHONY: build-manager
 build-manager: ## Build the operator manager binary.
-	go build -o bin/manager ./cmd/manager
-
-CLI_COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null)
-CLI_VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo v$(VERSION))
-CLI_DATE ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
-CLI_LDFLAGS = -X main.version=$(CLI_VERSION) -X main.commit=$(CLI_COMMIT) -X main.date=$(CLI_DATE)
+	go build -ldflags "$(LDFLAGS_VERSION)" -o bin/manager ./cmd/manager
 
 .PHONY: build-cli
 build-cli: ## Build milestonectl, plus its kubectl plugin and plugin-completion symlinks.
-	go build -ldflags "$(CLI_LDFLAGS)" -o bin/milestonectl ./cmd/milestonectl
+	go build -ldflags "$(LDFLAGS_VERSION)" -o bin/milestonectl ./cmd/milestonectl
 	ln -sf milestonectl bin/kubectl-milestone
 	ln -sf milestonectl bin/kubectl_complete-milestone
 

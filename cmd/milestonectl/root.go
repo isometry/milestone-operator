@@ -29,6 +29,7 @@ import (
 	"github.com/isometry/milestone-operator/internal/cli"
 	"github.com/isometry/milestone-operator/internal/discovery"
 	"github.com/isometry/milestone-operator/internal/membership"
+	"github.com/isometry/milestone-operator/internal/version"
 )
 
 // resolverTTL only needs to outlive one command; it exists because the
@@ -193,7 +194,7 @@ func (c *configClients) restConfig() (*rest.Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	c.config = rest.AddUserAgent(cfg, "milestonectl/"+clientVersion().Version)
+	c.config = rest.AddUserAgent(cfg, "milestonectl/"+version.Get().Version)
 	return c.config, nil
 }
 

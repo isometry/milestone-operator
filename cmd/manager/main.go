@@ -14,6 +14,7 @@ import (
 	"context"
 	"crypto/tls"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -43,6 +44,7 @@ import (
 	resolverpkg "github.com/isometry/milestone-operator/internal/discovery"
 	"github.com/isometry/milestone-operator/internal/fluxnotify"
 	"github.com/isometry/milestone-operator/internal/metrics"
+	"github.com/isometry/milestone-operator/internal/version"
 	"github.com/isometry/milestone-operator/internal/watcher"
 	// +kubebuilder:scaffold:imports
 )
@@ -94,11 +96,22 @@ func main() {
 	var enableFluxNotify bool
 	flag.BoolVar(&enableFluxNotify, "flux-notify", true,
 		"Poke FluxCD parent (Kustomization/HelmRelease) on Milestone Ready transitions.")
+	var showVersion bool
+	flag.BoolVar(&showVersion, "version", false, "Print version information and exit.")
 	opts := zap.Options{Development: false}
 	opts.BindFlags(flag.CommandLine)
 	flag.Parse()
 
+	if showVersion {
+		fmt.Println(version.Get().String())
+		return
+	}
+
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+
+	build := version.Get()
+	setupLog.Info("starting milestone-operator",
+		"version", build.Version, "commit", build.Commit, "goVersion", build.GoVersion)
 
 	disableHTTP2 := func(c *tls.Config) {
 		setupLog.Info("disabling http/2")
@@ -275,6 +288,7 @@ func main() {
 		setupLog.Error(err, "register metrics")
 		os.Exit(1)
 	}
+	metrics.BuildInfo.WithLabelValues(build.Version, build.Commit).Set(1)
 	stateCollector := metrics.NewStateCollector(ctx, &managerStateLister{client: mgr.GetClient()})
 	if err := ctrlmetrics.Registry.Register(stateCollector); err != nil {
 		setupLog.Error(err, "register state collector")

@@ -42,6 +42,7 @@ const (
 	labelTargetKind  = "target_kind"
 	labelDependency  = "dependency"
 	labelParentKind  = "parent_kind"
+	labelRevision    = "revision"
 )
 
 // Result values for FluxNotifyTotal.
@@ -191,6 +192,15 @@ var (
 		Name:      "state_collector_errors_total",
 		Help:      "Failures listing Milestone/ClusterMilestone objects at metric scrape time.",
 	}, []string{labelKind})
+
+	// BuildInfo is the conventional constant-1 info gauge carrying the running
+	// build's identity as labels; set once at startup. No goversion label:
+	// controller-runtime already exports go_info.
+	BuildInfo = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: ns,
+		Name:      "build_info",
+		Help:      "Build information of the running operator; constant 1.",
+	}, []string{labelVersion, labelRevision})
 )
 
 // All returns every collector defined by this package.
@@ -211,6 +221,7 @@ func All() []prometheus.Collector {
 		OwnersWoken,
 		FluxNotifyTotal,
 		StateCollectorErrors,
+		BuildInfo,
 	}
 }
 

@@ -26,13 +26,6 @@ import (
 	"github.com/isometry/milestone-operator/internal/cli"
 )
 
-// Set with -ldflags "-X main.version=... -X main.commit=... -X main.date=...".
-var (
-	version string
-	commit  string
-	date    string
-)
-
 const (
 	defaultName = "milestonectl"
 	pluginUse   = "kubectl-milestone"

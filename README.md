@@ -132,6 +132,9 @@ manager's `/metrics` endpoint exposes both the standard
 `controller_runtime_*` families and the operator-specific `milestone_*`
 families documented in [`PLAN.md`](./PLAN.md#metric-inventory).
 
+The running build is identified by `milestone_build_info{version,revision}`
+(constant 1), logged at startup, and printed by `manager --version`.
+
 A starter `ServiceMonitor` and `PrometheusRule` ship in
 [`config/prometheus/`](./config/prometheus/); a sample Grafana dashboard
 JSON is in [`config/grafana/`](./config/grafana/).
