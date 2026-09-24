@@ -341,6 +341,18 @@ KUBEBUILDER_ASSETS="$(./bin/setup-envtest use --bin-dir ./bin -p path)" \
   go test ./internal/controller/... -run TestEnvtest
 ```
 
+### Run e2e tests
+
+```sh
+make test-e2e
+```
+
+This creates a dedicated Kind cluster (`milestone-operator-test-e2e`) with
+its own kubeconfig at `bin/e2e.kubeconfig`, leaving `~/.kube/config` and its
+current context untouched, and refuses to run against anything but that
+cluster on loopback. The cluster is deleted on success and kept on failure
+for inspection (`make cleanup-test-e2e` removes it).
+
 ### Build and deploy
 
 ```sh

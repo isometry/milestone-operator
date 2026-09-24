@@ -72,7 +72,22 @@ test: manifests generate fmt vet setup-envtest ## Run tests.
 
 # The e2e suite assumes Kind is pre-installed; it builds the manager image with
 # ko (make ko-build-local) and loads it into the Kind cluster.
+#
+# Every e2e step addresses the kind cluster through E2E_KUBECONFIG and nothing
+# else: kind honours $$KUBECONFIG for create, export and delete, so the ambient
+# ~/.kube/config (and whatever real cluster its current context names) is never
+# read or written. e2e-guard, and the suite's own BeforeSuite, refuse any
+# kubeconfig whose current context is not kind-$(KIND_CLUSTER) on loopback.
+# KUBERNETES_MASTER is unset because client-go falls back to it for the server.
+# `make install`/`deploy`/`undeploy` deliberately keep using the ambient context.
 KIND_CLUSTER ?= milestone-operator-test-e2e
+E2E_KUBECONFIG ?= $(LOCALBIN)/e2e.kubeconfig
+E2E_ENV = env -u KUBERNETES_MASTER KUBECONFIG="$(E2E_KUBECONFIG)"
+# Shared by cleanup-test-e2e and test-e2e. Inlined rather than `$(MAKE)
+# cleanup-test-e2e`, because make executes any line naming $(MAKE) even under -n.
+E2E_CLEANUP = [ -n "$(KIND_CLUSTER)" ] || { echo "refusing to delete: KIND_CLUSTER is empty"; exit 1; }; \
+	$(E2E_ENV) $(KIND) delete cluster --name '$(KIND_CLUSTER)'; \
+	rm -f "$(E2E_KUBECONFIG)"
 
 .PHONY: setup-test-e2e
 setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
@@ -80,22 +95,56 @@ setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
 		echo "Kind is not installed. Please install Kind manually."; \
 		exit 1; \
 	}
-	@case "$$($(KIND) get clusters)" in \
-		*"$(KIND_CLUSTER)"*) \
-			echo "Kind cluster '$(KIND_CLUSTER)' already exists. Skipping creation." ;; \
-		*) \
-			echo "Creating Kind cluster '$(KIND_CLUSTER)'..."; \
-			$(KIND) create cluster --name $(KIND_CLUSTER) ;; \
+	@mkdir -p "$(dir $(E2E_KUBECONFIG))"
+	@if $(E2E_ENV) $(KIND) get clusters | grep -qxF '$(KIND_CLUSTER)'; then \
+		echo "Kind cluster '$(KIND_CLUSTER)' already exists. Skipping creation."; \
+		$(E2E_ENV) $(KIND) export kubeconfig --name '$(KIND_CLUSTER)'; \
+	else \
+		echo "Creating Kind cluster '$(KIND_CLUSTER)'..."; \
+		$(E2E_ENV) $(KIND) create cluster --name '$(KIND_CLUSTER)'; \
+	fi
+
+# Reads E2E_KUBECONFIG only (kubectl config subcommands never contact a server).
+.PHONY: e2e-guard
+e2e-guard: ## Refuse to run e2e against anything but the kind cluster on loopback.
+	@case "$(E2E_KUBECONFIG)" in \
+		""|*:*) echo "refusing to run e2e: E2E_KUBECONFIG must name exactly one file (got '$(E2E_KUBECONFIG)')"; exit 1 ;; \
+	esac; \
+	[ -f "$(E2E_KUBECONFIG)" ] || { echo "refusing to run e2e: $(E2E_KUBECONFIG) does not exist (run make setup-test-e2e)"; exit 1; }; \
+	ctx="$$($(E2E_ENV) $(KUBECTL) config current-context 2>/dev/null || true)"; \
+	server="$$($(E2E_ENV) $(KUBECTL) config view --minify -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null || true)"; \
+	case "$$ctx|$$server" in \
+		"kind-$(KIND_CLUSTER)|https://127.0.0.1:"*|"kind-$(KIND_CLUSTER)|https://localhost:"*|"kind-$(KIND_CLUSTER)|https://[::1]:"*) ;; \
+		*) echo "refusing to run e2e against context '$$ctx' at '$$server'" \
+		        "(expected kind-$(KIND_CLUSTER) on loopback via $(E2E_KUBECONFIG))"; \
+		   exit 1 ;; \
 	esac
 
+# `make deploy` (run by the suite) rewrites config/manager/kustomization.yaml's
+# image in place, so it is reset whatever the outcome, and the go test status is
+# what make exits with. The cluster is deleted only on success; on failure it is
+# kept for inspection.
 .PHONY: test-e2e
-test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
-	KIND_CLUSTER=$(KIND_CLUSTER) CGO_ENABLED=1 go test -race -timeout=20m ./test/e2e/ -v -ginkgo.v
-	$(MAKE) cleanup-test-e2e
+test-e2e: setup-test-e2e e2e-guard manifests generate fmt vet kustomize ko ## Run the e2e tests against a dedicated Kind cluster (never the ambient kubeconfig).
+	@status=0; \
+	$(E2E_ENV) KIND="$(KIND)" KIND_CLUSTER="$(KIND_CLUSTER)" CGO_ENABLED=1 \
+	  go test -race -timeout=20m ./test/e2e/ -v -ginkgo.v || status=$$?; \
+	( cd config/manager && "$(KUSTOMIZE)" edit set image controller=controller:latest ) || { \
+		echo "failed to restore config/manager/kustomization.yaml image to controller:latest"; \
+		[ $$status -ne 0 ] || status=1; \
+	}; \
+	if [ $$status -eq 0 ]; then \
+		$(E2E_CLEANUP); \
+	else \
+		echo "e2e failed (exit $$status); kind cluster '$(KIND_CLUSTER)' kept for debugging:"; \
+		echo "  KUBECONFIG=$(E2E_KUBECONFIG) $(KUBECTL) get pods -A"; \
+		echo "  make cleanup-test-e2e   # delete the cluster and $(E2E_KUBECONFIG)"; \
+	fi; \
+	exit $$status
 
 .PHONY: cleanup-test-e2e
-cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
-	@$(KIND) delete cluster --name $(KIND_CLUSTER)
+cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests and its dedicated kubeconfig
+	@$(E2E_CLEANUP)
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter

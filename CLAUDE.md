@@ -123,9 +123,16 @@ KUBEBUILDER_ASSETS=$(./bin/setup-envtest use --bin-dir ./bin -p path) \
   go test ./internal/controller -run TestEnvtest_LateCRD_StalledThenConverges -v
 ```
 
-`test/e2e/` expects a real cluster (kind/k3d) and is **not** part of the
-default unit/envtest run. Exclude it explicitly with
-`go test $(go list ./... | grep -v /test/e2e)` when running broad sweeps.
+`test/e2e/` is **not** part of the default unit/envtest run. Exclude it
+explicitly with `go test $(go list ./... | grep -v /test/e2e)` when running
+broad sweeps. Run it only via `make test-e2e`: it creates a dedicated kind
+cluster (`KIND_CLUSTER`, default `milestone-operator-test-e2e`) whose
+kubeconfig lives solely in `bin/e2e.kubeconfig` (`E2E_KUBECONFIG`), never
+`~/.kube/config`. `make e2e-guard` and the suite's `BeforeSuite`
+(`utils.PinKubeconfig`) refuse any kubeconfig whose current context is not
+`kind-$KIND_CLUSTER` on a loopback https server, and `utils.Run` hands every
+child process only that kubeconfig. On failure the cluster is kept; remove it
+with `make cleanup-test-e2e`. Never point e2e at the ambient context.
 
 ### TDD is the working mode
 
