@@ -157,8 +157,11 @@ lint-config: golangci-lint ## Verify golangci-lint linter configuration
 ##@ Build
 
 .PHONY: build
-build: manifests generate fmt vet build-cli ## Build manager binary and CLI.
-	go build -o bin/manager cmd/main.go
+build: manifests generate fmt vet build-manager build-cli ## Build manager binary and CLI.
+
+.PHONY: build-manager
+build-manager: ## Build the operator manager binary.
+	go build -o bin/manager ./cmd/manager
 
 CLI_COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null)
 CLI_VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo v$(VERSION))
@@ -173,7 +176,7 @@ build-cli: ## Build milestonectl, plus its kubectl plugin and plugin-completion 
 
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
-	go run ./cmd/main.go --leader-elect=false
+	go run ./cmd/manager --leader-elect=false
 
 # If you wish to build the manager image targeting other platforms you can use the --platform flag.
 # (i.e. docker build --platform linux/arm64). However, you must enable docker buildKit for it.

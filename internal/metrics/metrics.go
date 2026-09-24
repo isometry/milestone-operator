@@ -10,7 +10,7 @@ You may obtain a copy of the License at
 
 // Package metrics declares the Prometheus metrics emitted by the
 // milestone-operator. Metrics are registered against the controller-runtime
-// metrics registry from cmd/main.go via Register; tests register against a
+// metrics registry from cmd/manager/main.go via Register; tests register against a
 // fresh prometheus.Registry to avoid global pollution.
 package metrics
 

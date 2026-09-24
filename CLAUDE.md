@@ -92,7 +92,8 @@ but not enum-closed (it's `metav1.Condition.Reason`).
 ```sh
 make help                        # list every target
 make generate manifests          # regenerate deepcopy + CRDs after api/v1 changes
-make build                       # full build (generate + fmt + vet + build-cli + go build)
+make build                       # full build (generate + fmt + vet + build-manager + build-cli)
+make build-manager               # bin/manager only
 make build-cli                   # bin/milestonectl + kubectl-milestone / kubectl_complete-milestone symlinks
 make lint                        # golangci-lint
 make test                        # full unit + envtest run (downloads envtest binaries)
@@ -221,6 +222,6 @@ into a single commit when it's a logical unit, to reduce yubikey touches.
 | CLI (`milestonectl`) entrypoint      | `cmd/milestonectl/`                          |
 | CLI kinds, printers, help text       | `internal/cli/`                              |
 | Prometheus inventory + collector     | `internal/metrics/`                          |
-| Manager bootstrap                    | `cmd/main.go`                                |
+| Manager bootstrap                    | `cmd/manager/main.go`                        |
 | Generated CRDs / RBAC                | `config/crd/bases/`, `config/rbac/`          |
 | Envtest scenarios                    | `internal/controller/envtest_test.go`        |
