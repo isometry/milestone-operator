@@ -661,14 +661,18 @@ shapes) are not stable and may change without notice.
 ## Supply chain
 
 Releases must be verifiable end-to-end (SLSA). The `v*.*.*` publish
-workflow keyless-signs both the container image and the OCI Helm chart with
-Sigstore (GitHub OIDC — no long-lived keys) and attaches SLSA build
-provenance to each; the image additionally gets an SBOM attestation. Two
-referrers are produced per artifact because they serve different consumers:
-the cosign **signature** is what Flux `.spec.verify` and a Kyverno
-signature gate check, while the **provenance/SBOM attestations** are what
-`gh attestation verify` / `cosign verify-attestation` / Kyverno
-`verifyImages.attestations` consume.
+workflow keyless-signs the container image, the OCI Helm chart and the
+`milestonectl` checksum manifest with Sigstore (GitHub OIDC — no long-lived
+keys), and attaches SLSA build provenance to the image, the chart, the
+`milestonectl` archives, binaries and Homebrew bottles, and the
+`install.yaml` bundle; the image additionally gets a signed Syft SBOM
+attestation. The image is built with ko, so nothing is embedded in its
+index: signature and attestations are all stored beside it (OCI referrers
+or cosign digest tags). Signature and attestations are kept separate because
+they serve different consumers: the cosign **signature** is what Flux
+`.spec.verify` and a Kyverno signature gate check, while the
+**provenance/SBOM attestations** are what `gh attestation verify` and
+Kyverno `verifyImages.attestations` consume.
 
 The trust anchor is the workflow identity, not a key: OIDC issuer
 `https://token.actions.githubusercontent.com` + the `publish.yaml` SAN on a
@@ -676,3 +680,32 @@ version tag. Consumer verification commands and ready-to-apply Flux/Kyverno
 enforcement policies live in [`docs/verification.md`](./docs/verification.md)
 and [`deploy/policies/`](./deploy/policies/). The operator chart does not
 install those policies — runtime enforcement is opt-in per cluster.
+
+### Release & distribution
+
+- **Tags.** Git tags are v-prefixed (`v1.2.3`) and trigger
+  `.github/workflows/publish.yaml`; the filename is part of the signing
+  identity, so it must not be renamed. Image and chart tags are bare semver
+  (`1.2.3`). Binaries (`manager --version`, `milestonectl version`) report
+  the v-prefixed tag, stamped into `internal/version`.
+- **goreleaser** (`.goreleaser.yaml`, output in `build/`) builds the
+  `milestonectl` archives, checksum manifest and per-archive SBOMs, builds
+  and pushes the manager image through its ko integration (`kos:`; the
+  standalone `.ko.yaml` serves local `make ko-build*`), cosign-signs the
+  checksums and the image digest, and creates the GitHub Release. The
+  workflow then attests the image (provenance + Syft SBOM), renders and
+  uploads `install.yaml`, and attests the release files.
+- **gobottle** (`.gobottle.yaml`) bottles the binaries goreleaser built
+  (`--source local`), pushes them to `ghcr.io/isometry/tap/milestonectl`
+  and commits the generated formula to `isometry/homebrew-tap`.
+- **Helm chart** is packaged and pushed by a separate job with
+  `--version`/`--app-version` set to the bare semver, then signed and
+  attested.
+- **Prereleases** (`vX.Y.Z-rc.N`) publish the image, chart, archives and
+  `install.yaml`, but are never bottled and never move the `latest` image
+  tag.
+- **Repository prerequisites.** The `HOMEBREW_TAP_GITHUB_TOKEN` secret (a
+  token with contents write on `isometry/homebrew-tap`) is required by the
+  bottle job. After the first release, the
+  `ghcr.io/isometry/tap/milestonectl` package must be made public so brew
+  can pour bottles anonymously.

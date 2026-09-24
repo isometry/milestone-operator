@@ -28,3 +28,8 @@ go.work
 # local agent/tooling state
 /.serena/
 /.claude/
+
+# goreleaser / gobottle / build-installer outputs
+/build/
+/bottles/
+/dist/

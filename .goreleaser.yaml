@@ -1,0 +1,108 @@
+version: 2
+project_name: milestone-operator
+dist: build
+
+# Version is the v-prefixed git tag ({{ .Tag }}) everywhere a binary is
+# stamped, so `manager --version` and `milestonectl version` agree with
+# `git describe` and with gobottle's source builds. Only image tags and OCI
+# labels use the bare semver ({{ .Version }}).
+builds:
+  - id: milestonectl
+    main: ./cmd/milestonectl
+    binary: milestonectl
+    env: [CGO_ENABLED=0]
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags:
+      - -s -w
+      - -X github.com/isometry/milestone-operator/internal/version.Version={{ .Tag }}
+      - -X github.com/isometry/milestone-operator/internal/version.Commit={{ .FullCommit }}
+      - -X github.com/isometry/milestone-operator/internal/version.Date={{ .CommitDate }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+  # A stub so `kos[].build` — which defaults to the kos id — resolves; ko
+  # compiles the image itself, and `skip: true` keeps this entry out of the
+  # archives.
+  - id: manager
+    main: ./cmd/manager
+    env: [CGO_ENABLED=0]
+    goos: [linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    ldflags: [-s -w]
+    skip: true
+
+archives:
+  - id: milestonectl
+    ids: [milestonectl]
+    name_template: "milestonectl_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    files: [LICENSE]
+
+checksum:
+  name_template: "milestonectl_{{ .Version }}_SHA256SUMS"
+
+sboms:
+  - id: archives
+    artifacts: archive
+
+signs:
+  - cmd: cosign
+    signature: "${artifact}.sigstore.json"
+    args: [sign-blob, "--bundle=${signature}", "${artifact}", "--yes"]
+    artifacts: checksum
+
+kos:
+  - id: manager
+    main: ./cmd/manager
+    repositories: [ghcr.io/isometry/milestone-operator]
+    base_image: gcr.io/distroless/static:nonroot
+    platforms: [linux/amd64, linux/arm64]
+    tags:
+      - "{{ .Version }}"
+      - "{{ if not .Prerelease }}latest{{ end }}"
+    bare: true
+    preserve_import_paths: false
+    # The release workflow attaches a signed Syft SBOM attestation instead;
+    # ko's own SBOM would be an unsigned sha256-<digest>.sbom tag beside it.
+    sbom: none
+    creation_time: "{{ .CommitTimestamp }}"
+    ko_data_creation_time: "{{ .CommitTimestamp }}"
+    labels:
+      org.opencontainers.image.source: https://github.com/isometry/milestone-operator
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+    flags: [-trimpath]
+    ldflags:
+      - -s -w
+      - -X github.com/isometry/milestone-operator/internal/version.Version={{ .Tag }}
+      - -X github.com/isometry/milestone-operator/internal/version.Commit={{ .FullCommit }}
+      - -X github.com/isometry/milestone-operator/internal/version.Date={{ .CommitDate }}
+    env: [CGO_ENABLED=0]
+
+# Sign the pushed digest, not a tag: the version and latest tags name the
+# same index, and a tag can move between push and sign.
+docker_signs:
+  - cmd: cosign
+    artifacts: manifests
+    args: [sign, "${artifact}@${digest}", "--yes"]
+    output: true
+
+release:
+  github:
+    owner: isometry
+    name: milestone-operator
+  prerelease: auto
+  header: |
+    ## Artifacts
+    - Manager image: `ghcr.io/isometry/milestone-operator:{{ .Version }}`
+    - Helm chart: `oci://ghcr.io/isometry/charts/milestone-operator` version `{{ .Version }}`
+    - Kustomize bundle: `kubectl apply -f https://github.com/isometry/milestone-operator/releases/download/{{ .Tag }}/install.yaml`
+    - milestonectl: {{ if not .Prerelease }}`brew trust isometry/tap && brew install isometry/tap/milestonectl`, or {{ end }}the archives below
+    See docs/verification.md for signature and provenance verification.
+
+changelog:
+  use: github-native

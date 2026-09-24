@@ -227,3 +227,4 @@ into a single commit when it's a logical unit, to reduce yubikey touches.
 | Manager bootstrap                    | `cmd/manager/main.go`                        |
 | Generated CRDs / RBAC                | `config/crd/bases/`, `config/rbac/`          |
 | Envtest scenarios                    | `internal/controller/envtest_test.go`        |
+| Release pipeline (see PLAN.md "Release & distribution") | `.goreleaser.yaml`, `.gobottle.yaml`, `.ko.yaml`, `.github/workflows/publish.yaml` |

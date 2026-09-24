@@ -165,7 +165,45 @@ lossy (per-dependency counts, at most 50 not-ready resources, no healthy
 members), so the CLI can also answer "what is actually in `wave-0`?" and
 "which milestones gate on this HelmRelease?" by evaluating membership live.
 
-Build and install:
+### Install
+
+**With Homebrew:**
+
+```sh
+brew trust isometry/tap && brew install isometry/tap/milestonectl
+```
+
+The poured bottle installs `milestonectl` and its shell completions, but
+**not** the `kubectl-milestone` plugin link or its
+`kubectl_complete-milestone` completion helper — only
+`brew install --build-from-source` creates those. Add them yourself if you
+want the kubectl plugin form:
+
+```sh
+ln -s milestonectl "$(brew --prefix)/bin/kubectl-milestone"
+# kubectl >= 1.26 plugin tab-completion looks for this name on PATH:
+ln -s milestonectl "$(brew --prefix)/bin/kubectl_complete-milestone"
+```
+
+Prereleases (`vX.Y.Z-rc.N`) are not bottled; use an archive or
+`go install` for those.
+
+**From a GitHub Release archive:**
+
+Download `milestonectl_<version>_<os>_<arch>.tar.gz` (or `.zip` on Windows)
+from the [releases page](https://github.com/isometry/milestone-operator/releases),
+extract it, and add the `kubectl-milestone` / `kubectl_complete-milestone`
+symlinks yourself if you want the kubectl plugin form. See
+[`docs/verification.md`](./docs/verification.md) to verify the archive
+before running it.
+
+**With `go install`:**
+
+```sh
+go install github.com/isometry/milestone-operator/cmd/milestonectl@v<version>
+```
+
+**From a checkout of this repo:**
 
 ```sh
 make build-cli          # bin/milestonectl + kubectl plugin symlinks
@@ -173,6 +211,8 @@ install -m 0755 bin/milestonectl /usr/local/bin/kubectl-milestone
 # kubectl >= 1.26 plugin tab-completion looks for this name on PATH:
 ln -s kubectl-milestone /usr/local/bin/kubectl_complete-milestone
 ```
+
+### Usage
 
 The same binary runs as `milestonectl ...` or `kubectl milestone ...` and
 accepts the usual kubeconfig flags (`--context`, `-n`, `--as`, ...).
@@ -257,16 +297,25 @@ credentials)` on that dependency, distinct from the operator's own
 
 ## Supply chain
 
-Tagged releases publish a keyless-signed (Sigstore) container image and OCI
-Helm chart, each with SLSA build provenance; the image also carries an SBOM
-attestation. The image index additionally embeds unsigned BuildKit
-SBOM/provenance attestations that survive plain index copies (`skopeo`,
-`crane`); the signed artifacts are OCI referrers and need referrers-aware
-mirroring. [`docs/verification.md`](./docs/verification.md) documents how
-to verify them — `gh attestation verify`, `cosign`, and `helm --verify` —
-plus the artifact layout and mirroring guidance, and
-[`deploy/policies/`](./deploy/policies/) ships ready-to-apply Flux and
-Kyverno policies to enforce verification at runtime.
+Tagged releases publish a keyless-signed (Sigstore) container image (built
+with [ko](https://ko.build)) and OCI Helm chart, each with SLSA build
+provenance; the image also carries a signed SBOM attestation. The
+`milestonectl` release archives come with a cosign-signed checksum manifest
+and GitHub build-provenance attestations, as do the Homebrew bottles and the
+`install.yaml` bundle. The image's signed attestations are OCI referrers, so
+mirroring them needs referrers-aware tooling.
+[`docs/verification.md`](./docs/verification.md) documents how to verify
+every artifact — `gh attestation verify` and `cosign` — plus the artifact
+layout and mirroring guidance, and [`deploy/policies/`](./deploy/policies/)
+ships ready-to-apply Flux and Kyverno policies to enforce verification at
+runtime.
+
+To install a release without Helm, apply its Kustomize bundle, which pins
+the release's image:
+
+```sh
+kubectl apply -f https://github.com/isometry/milestone-operator/releases/download/v<version>/install.yaml
+```
 
 ## Getting started
 
