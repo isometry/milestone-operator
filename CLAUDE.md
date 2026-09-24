@@ -99,7 +99,9 @@ make lint                        # golangci-lint
 make test                        # full unit + envtest run (downloads envtest binaries)
 make run                         # run the manager against the current kubeconfig
 make install / make uninstall    # apply/remove CRDs to the current cluster
-make deploy IMG=<reg>/img:tag    # build, push, and apply manifests
+make ko-build IMG=<reg>/img:tag  # build + push the multi-arch manager image with ko
+make ko-build-local IMG=img:tag  # build the manager image into the local docker daemon (Kind)
+make deploy IMG=<reg>/img:tag    # apply manifests pinned to IMG (does not build or push)
 ```
 
 ### Running tests directly

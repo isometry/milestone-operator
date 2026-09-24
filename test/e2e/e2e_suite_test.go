@@ -33,7 +33,7 @@ var projectImage = "example.com/milestone-operator:0.0.1"
 
 // TestE2E runs the end-to-end (e2e) test suite for the project. These tests execute in an isolated,
 // temporary environment to validate project changes with the purposed to be used in CI jobs.
-// The default setup requires Kind and builds/loads the Manager Docker image locally.
+// The default setup requires Kind; it builds the manager image with ko and loads it into Kind.
 func TestE2E(t *testing.T) {
 	RegisterFailHandler(Fail)
 	_, _ = fmt.Fprintf(GinkgoWriter, "Starting milestone-operator integration test suite\n")
@@ -41,8 +41,8 @@ func TestE2E(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
-	By("building the manager(Operator) image")
-	cmd := exec.Command("make", "docker-build", fmt.Sprintf("IMG=%s", projectImage))
+	By("building the manager(Operator) image with ko")
+	cmd := exec.Command("make", "ko-build-local", fmt.Sprintf("IMG=%s", projectImage))
 	_, err := utils.Run(cmd)
 	ExpectWithOffset(1, err).NotTo(HaveOccurred(), "Failed to build the manager(Operator) image")
 

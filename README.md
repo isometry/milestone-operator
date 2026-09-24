@@ -273,8 +273,9 @@ Kyverno policies to enforce verification at runtime.
 ### Prerequisites
 
 - Go 1.26+
-- Docker 17.03+
 - kubectl v1.11.3+
+- Docker, only for the Kind e2e suite and local image loads (`make` fetches
+  [ko](https://ko.build) itself, and `make ko-build` pushes without a daemon)
 - A Kubernetes cluster (Kubernetes v1.27+ recommended)
 
 ### Run unit tests
@@ -294,11 +295,15 @@ KUBEBUILDER_ASSETS="$(./bin/setup-envtest use --bin-dir ./bin -p path)" \
 ### Build and deploy
 
 ```sh
-make docker-build docker-push IMG=<registry>/milestone-operator:tag
+make ko-build IMG=<registry>/milestone-operator:tag   # multi-arch build + push with ko
 make install                      # installs CRDs
 make deploy IMG=<registry>/milestone-operator:tag
 kubectl apply -k config/samples/  # sample Milestone and ClusterMilestone
 ```
+
+For a local Kind cluster, `make ko-build-local IMG=milestone-operator:dev`
+builds into the local Docker daemon instead; load it with
+`kind load docker-image milestone-operator:dev`.
 
 ### Watching custom resource kinds
 
