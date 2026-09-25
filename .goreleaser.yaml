@@ -20,6 +20,15 @@ builds:
       - -X github.com/isometry/milestone-operator/internal/version.Commit={{ .FullCommit }}
       - -X github.com/isometry/milestone-operator/internal/version.Date={{ .CommitDate }}
     mod_timestamp: "{{ .CommitTimestamp }}"
+    # The kubectl plugin names are relative symlinks beside the binary, added
+    # to the archives below. They are not build artifacts, so gobottle's
+    # `--source local` discovery and the attest glob never see them. The
+    # Windows branch is `true` because an empty hook command reaches the
+    # shell runner with no argv.
+    hooks:
+      post:
+        - cmd: '{{ if eq .Os "windows" }}true{{ else }}ln -sf {{ .Name }} {{ dir .Path }}/kubectl-milestone{{ end }}'
+        - cmd: '{{ if eq .Os "windows" }}true{{ else }}ln -sf {{ .Name }} {{ dir .Path }}/kubectl_complete-milestone{{ end }}'
 
   # A stub so `kos[].build` — which defaults to the kos id — resolves; ko
   # compiles the image itself, and `skip: true` keeps this entry out of the
@@ -40,7 +49,10 @@ archives:
     format_overrides:
       - goos: windows
         formats: [zip]
-    files: [LICENSE]
+    files:
+      - LICENSE
+      - src: '{{ dir .ArtifactPath }}/kubectl*-milestone'
+        strip_parent: true
 
 checksum:
   name_template: "milestonectl_{{ .Version }}_SHA256SUMS"

@@ -689,7 +689,11 @@ install those policies — runtime enforcement is opt-in per cluster.
   (`1.2.3`). Binaries (`manager --version`, `milestonectl version`) report
   the v-prefixed tag, stamped into `internal/version`.
 - **goreleaser** (`.goreleaser.yaml`, output in `build/`) builds the
-  `milestonectl` archives, checksum manifest and per-archive SBOMs, builds
+  `milestonectl` archives (linux/darwin tar.gz include relative
+  `kubectl-milestone` and `kubectl_complete-milestone` symlinks, created by
+  a post-build hook so they are never `Binary` artifacts; Windows zips hold
+  only `milestonectl.exe` and `LICENSE`), checksum manifest and per-archive
+  SBOMs, builds
   and pushes the manager image through its ko integration (`kos:`; the
   standalone `.ko.yaml` serves local `make ko-build*`), cosign-signs the
   checksums and the image digest, and creates the GitHub Release. The

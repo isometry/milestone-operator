@@ -192,8 +192,11 @@ Prereleases (`vX.Y.Z-rc.N`) are not bottled; use an archive or
 
 Download `milestonectl_<version>_<os>_<arch>.tar.gz` (or `.zip` on Windows)
 from the [releases page](https://github.com/isometry/milestone-operator/releases),
-extract it, and add the `kubectl-milestone` / `kubectl_complete-milestone`
-symlinks yourself if you want the kubectl plugin form. See
+extract it. The Linux and macOS archives contain `kubectl-milestone` and
+`kubectl_complete-milestone` symlinks next to `milestonectl`, so extracting
+onto your `PATH` gives you the kubectl plugin form too. The Windows zip has
+only `milestonectl.exe`; copy it for the plugin form
+(`copy milestonectl.exe kubectl-milestone.exe`). See
 [`docs/verification.md`](./docs/verification.md) to verify the archive
 before running it.
 
@@ -203,6 +206,9 @@ before running it.
 go install github.com/isometry/milestone-operator/cmd/milestonectl@v<version>
 ```
 
+`go install` builds only the one binary, so add the plugin links yourself
+if you want the kubectl plugin form (as in the Homebrew section above).
+
 **From a checkout of this repo:**
 
 ```sh
@@ -211,6 +217,10 @@ install -m 0755 bin/milestonectl /usr/local/bin/kubectl-milestone
 # kubectl >= 1.26 plugin tab-completion looks for this name on PATH:
 ln -s kubectl-milestone /usr/local/bin/kubectl_complete-milestone
 ```
+
+**As a kubectl plugin:** with `kubectl-milestone` on your `PATH`,
+`kubectl plugin list` shows it and `kubectl milestone --help` works, with no
+cluster needed.
 
 ### Usage
 
