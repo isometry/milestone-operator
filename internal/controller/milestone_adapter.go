@@ -12,15 +12,11 @@ package controller
 
 import (
 	"context"
-	"errors"
-	"fmt"
 
 	apiv1 "github.com/isometry/milestone-operator/api/v1"
 	"github.com/isometry/milestone-operator/internal/discovery"
+	"github.com/isometry/milestone-operator/internal/membership"
 	"github.com/isometry/milestone-operator/internal/watcher"
-	apimeta "k8s.io/apimachinery/pkg/api/meta"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -43,50 +39,9 @@ func (a *MilestoneAdapter) OwnerKey() watcher.OwnerKey {
 	}
 }
 
-// Dependencies normalises spec.dependsOn; per-entry discovery failures are
-// returned as DependencyError, not as a fatal error, so the reconciler can
-// proceed with the resolvable subset. Entries are returned in spec order.
+// Dependencies normalises spec.dependsOn via membership.NormalizeMilestone.
 func (a *MilestoneAdapter) Dependencies(ctx context.Context, dr discovery.Resolver) ([]NormalizedDependency, []DependencyError) {
-	if dr == nil {
-		return nil, []DependencyError{{Reason: apiv1.ReasonDiscoveryFailed, Err: errors.New("nil discovery resolver")}}
-	}
-	ns := a.Milestone.Namespace
-	matcher := func(target string) bool { return target == ns }
-
-	deps := a.Milestone.Spec.DependsOn
-	out := make([]NormalizedDependency, 0, len(deps))
-	var errs []DependencyError
-	for i := range deps {
-		d := &deps[i]
-		gvk, scope, derr := resolveDependencyTarget(ctx, dr, d.Name, d.Target)
-		if derr != nil {
-			errs = append(errs, *derr)
-			continue
-		}
-		// Milestones are namespaced and only ever observe resources in
-		// their own namespace. Targeting a cluster-scoped kind would
-		// silently produce an empty set after the namespace matcher.
-		if scope != apimeta.RESTScopeNameNamespace {
-			errs = append(errs, dependencyError(d.Name, gvk, apiv1.ReasonNamespaceScopeMismatch,
-				fmt.Errorf("kind %q is cluster-scoped; Milestone can only target namespaced resources (use ClusterMilestone)", gvk.Kind)))
-			continue
-		}
-		sel, derr := parseDependencySelector(d.Name, gvk, d.Target.Selector)
-		if derr != nil {
-			errs = append(errs, *derr)
-			continue
-		}
-		out = append(out, NormalizedDependency{
-			Name:             d.Name,
-			GVK:              gvk,
-			Scope:            scope,
-			Selector:         sel,
-			NamespaceMatcher: matcher,
-			EmptySetPolicy:   d.EmptySetPolicy,
-			SuspendPolicy:    d.SuspendPolicy,
-		})
-	}
-	return out, errs
+	return membership.NormalizeMilestone(ctx, dr, a.Milestone)
 }
 
 // Status returns the embedded MilestoneStatusBase.
@@ -105,11 +60,4 @@ func (a *MilestoneAdapter) PatchStatus(ctx context.Context, c client.Client) err
 		return err
 	}
 	return c.Status().Patch(ctx, a.Milestone, patch)
-}
-
-func labelSelectorOrEverything(ls *metav1.LabelSelector) (labels.Selector, error) {
-	if ls == nil {
-		return labels.Everything(), nil
-	}
-	return metav1.LabelSelectorAsSelector(ls)
 }

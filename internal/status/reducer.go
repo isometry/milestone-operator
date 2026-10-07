@@ -26,11 +26,15 @@ import (
 // a suspended object still carries whatever kstatus its (frozen) conditions
 // imply.
 type Resource struct {
-	Group, Version, Kind string
-	Namespace, Name      string
-	Status, Reason       string
-	Message              string
-	Suspended            bool
+	Group     string `json:"group,omitempty"`
+	Version   string `json:"version"`
+	Kind      string `json:"kind"`
+	Namespace string `json:"namespace,omitempty"`
+	Name      string `json:"name"`
+	Status    string `json:"status"`
+	Reason    string `json:"reason,omitempty"`
+	Message   string `json:"message,omitempty"`
+	Suspended bool   `json:"suspended,omitempty"`
 }
 
 // ReduceDependency reduces resources of one dependency into a

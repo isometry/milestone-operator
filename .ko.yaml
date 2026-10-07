@@ -1,0 +1,23 @@
+---
+defaultBaseImage: gcr.io/distroless/static:nonroot
+defaultPlatforms:
+  - linux/amd64
+  - linux/arm64
+
+builds:
+  - id: manager
+    main: ./cmd/manager
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    # Version comes from the Makefile's GIT_VERSION (git describe, --dirty,
+    # v-prefixed) because .Git.Tag is only the nearest tag (describe
+    # --abbrev=0), so untagged commits would claim the last release. A bare
+    # `ko build` without GIT_VERSION falls back to .Git.Tag ("v0.0.0" when no
+    # tag is reachable, e.g. shallow CI checkouts).
+    ldflags:
+      - -s -w
+      - -X github.com/isometry/milestone-operator/internal/version.Version={{with index .Env "GIT_VERSION"}}{{.}}{{else}}{{$.Git.Tag}}{{end}}
+      - -X github.com/isometry/milestone-operator/internal/version.Commit={{.Git.FullCommit}}
+      - -X github.com/isometry/milestone-operator/internal/version.Date={{.Git.CommitDate}}

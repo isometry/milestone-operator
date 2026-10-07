@@ -12,15 +12,13 @@ package controller
 
 import (
 	"context"
-	"errors"
-	"fmt"
 
 	apiv1 "github.com/isometry/milestone-operator/api/v1"
 	"github.com/isometry/milestone-operator/internal/discovery"
+	"github.com/isometry/milestone-operator/internal/membership"
 	"github.com/isometry/milestone-operator/internal/watcher"
 	corev1 "k8s.io/api/core/v1"
-	apimeta "k8s.io/apimachinery/pkg/api/meta"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -47,102 +45,22 @@ func (a *ClusterMilestoneAdapter) OwnerKey() watcher.OwnerKey {
 	return watcher.OwnerKey{Kind: "ClusterMilestone", Name: a.ClusterMilestone.Name}
 }
 
-// Dependencies normalises spec.dependsOn. Per-entry failures (discovery or
-// scope/selector mismatches) become DependencyErrors that the reconciler
-// maps to Stalled reasons; the resolvable subset still flows through the
-// pipeline. Entries are returned in spec order.
+// Dependencies normalises spec.dependsOn via
+// membership.NormalizeClusterMilestone, listing Namespaces through a.Client.
 func (a *ClusterMilestoneAdapter) Dependencies(ctx context.Context, dr discovery.Resolver) ([]NormalizedDependency, []DependencyError) {
-	if dr == nil {
-		return nil, []DependencyError{{Reason: apiv1.ReasonDiscoveryFailed, Err: errors.New("nil discovery resolver")}}
-	}
-
-	deps := a.ClusterMilestone.Spec.DependsOn
-	out := make([]NormalizedDependency, 0, len(deps))
-	var errs []DependencyError
-	// Namespace matchers are memoized per Dependencies call: several
-	// dependencies commonly share one namespaceSelector, and each selector
-	// costs a Namespace list.
-	matcherCache := make(map[string]func(string) bool)
-
-	for i := range deps {
-		d := &deps[i]
-		gvk, scope, derr := resolveDependencyTarget(ctx, dr, d.Name, d.Target.TargetSpec)
-		if derr != nil {
-			errs = append(errs, *derr)
-			continue
-		}
-
-		hasNamespaceFilter := len(d.Target.Namespaces) > 0 || d.Target.NamespaceSelector != nil
-
-		// Cluster-scoped resources cannot carry namespace filters.
-		if scope == apimeta.RESTScopeNameRoot && hasNamespaceFilter {
-			errs = append(errs, dependencyError(d.Name, gvk, apiv1.ReasonNamespaceScopeMismatch,
-				fmt.Errorf("kind %q is cluster-scoped; namespaces and namespaceSelector are forbidden", gvk.Kind)))
-			continue
-		}
-
-		// XOR is enforced by CRD CEL but we re-check defensively.
-		if len(d.Target.Namespaces) > 0 && d.Target.NamespaceSelector != nil {
-			errs = append(errs, dependencyError(d.Name, gvk, apiv1.ReasonNamespaceScopeMismatch,
-				errors.New("namespaces and namespaceSelector are mutually exclusive")))
-			continue
-		}
-
-		matcher, merr := a.buildNamespaceMatcher(ctx, d.Target.Namespaces, d.Target.NamespaceSelector, matcherCache)
-		if merr != nil {
-			errs = append(errs, dependencyError(d.Name, gvk, apiv1.ReasonDiscoveryFailed, merr))
-			continue
-		}
-
-		sel, derr := parseDependencySelector(d.Name, gvk, d.Target.Selector)
-		if derr != nil {
-			errs = append(errs, *derr)
-			continue
-		}
-
-		out = append(out, NormalizedDependency{
-			Name:             d.Name,
-			GVK:              gvk,
-			Scope:            scope,
-			Selector:         sel,
-			NamespaceMatcher: matcher,
-			EmptySetPolicy:   d.EmptySetPolicy,
-			SuspendPolicy:    d.SuspendPolicy,
-		})
-	}
-	return out, errs
+	return membership.NormalizeClusterMilestone(ctx, dr, a.listNamespaces, a.ClusterMilestone)
 }
 
-func (a *ClusterMilestoneAdapter) buildNamespaceMatcher(ctx context.Context, names []string, selector *metav1.LabelSelector, cache map[string]func(string) bool) (func(string) bool, error) {
-	if len(names) > 0 {
-		set := make(map[string]struct{}, len(names))
-		for _, n := range names {
-			set[n] = struct{}{}
-		}
-		return func(ns string) bool { _, ok := set[ns]; return ok }, nil
+func (a *ClusterMilestoneAdapter) listNamespaces(ctx context.Context, sel labels.Selector) ([]string, error) {
+	nsList := &corev1.NamespaceList{}
+	if err := a.Client.List(ctx, nsList, &client.ListOptions{LabelSelector: sel}); err != nil {
+		return nil, err
 	}
-	if selector != nil {
-		sel, err := metav1.LabelSelectorAsSelector(selector)
-		if err != nil {
-			return nil, fmt.Errorf("invalid namespaceSelector: %w", err)
-		}
-		key := sel.String()
-		if m, ok := cache[key]; ok {
-			return m, nil
-		}
-		nsList := &corev1.NamespaceList{}
-		if err := a.Client.List(ctx, nsList, &client.ListOptions{LabelSelector: sel}); err != nil {
-			return nil, fmt.Errorf("list namespaces: %w", err)
-		}
-		set := make(map[string]struct{}, len(nsList.Items))
-		for _, ns := range nsList.Items {
-			set[ns.Name] = struct{}{}
-		}
-		m := func(ns string) bool { _, ok := set[ns]; return ok }
-		cache[key] = m
-		return m, nil
+	names := make([]string, 0, len(nsList.Items))
+	for _, ns := range nsList.Items {
+		names = append(names, ns.Name)
 	}
-	return nil, nil
+	return names, nil
 }
 
 // Status returns the embedded MilestoneStatusBase.

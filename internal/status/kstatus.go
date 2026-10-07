@@ -11,6 +11,7 @@ You may obtain a copy of the License at
 package status
 
 import (
+	apiv1 "github.com/isometry/milestone-operator/api/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	kstatus "sigs.k8s.io/cli-utils/pkg/kstatus/status"
 )
@@ -19,6 +20,14 @@ import (
 // (steady-state ready).
 func (r Resource) IsCurrent() bool {
 	return r.Status == kstatus.CurrentStatus.String()
+}
+
+// Blocks reports whether r holds its dependency back under policy: anything
+// not Current, plus a suspended resource when suspendPolicy is NotReady. This
+// is the single definition of "not ready" shared by status.notReadyResources
+// and milestonectl.
+func (r Resource) Blocks(policy apiv1.SuspendPolicy) bool {
+	return !r.IsCurrent() || (policy == apiv1.SuspendNotReady && r.Suspended)
 }
 
 // Compute computes the kstatus of an unstructured resource and lifts it into

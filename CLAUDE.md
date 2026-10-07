@@ -53,7 +53,7 @@ carries the GVK + label selector (plus `namespaces` / `namespaceSelector`
 on ClusterMilestone). `name` is the listmap key — kebab-case, RFC-1123
 label.
 
-Metrics are first-class. `internal/metrics/metrics.go` defines a 15-family
+Metrics are first-class. `internal/metrics/metrics.go` defines a 16-family
 inventory; `internal/metrics/collector.go` is a lister-backed collector
 emitting per-object gauges at scrape time. All registered against the
 controller-runtime registry — never a separate `/metrics` server.
@@ -64,6 +64,16 @@ resources; owner-level reasons (`ReasonAllDependenciesReady` etc.) describe
 per-dependency rollups. Failure metrics with no dependency name available
 (GVK resolution, list errors) use the `target_*` family; rollup gauges
 labelled by name use `dependency_*`.
+
+Dependency normalisation lives in `internal/membership`, shared by the
+reconciler (via the thin `Dependencies()` adapter wrappers) and by the
+`milestonectl` CLI's live evaluation. It owns kind resolution, the
+scope/namespace/selector rules, `Dependency.Admits`, and the failed-dependency
+rollups (`Rollups`, `FailedRollup`). Never reimplement those rules elsewhere:
+change them once in `internal/membership` and both consumers follow. The
+package imports only `api/v1`, `internal/discovery` and apimachinery — keep
+controller-runtime out of it. The CLI is a read-only client and deliberately
+emits no metrics; the metrics-first-class rule applies to the operator.
 
 `DependencyStatus.Reason` is a closed CRD enum. The full set is:
 `AllResourcesReady`, `ResourcesNotReady`, `ResourcesSuspended`,
@@ -82,12 +92,16 @@ but not enum-closed (it's `metav1.Condition.Reason`).
 ```sh
 make help                        # list every target
 make generate manifests          # regenerate deepcopy + CRDs after api/v1 changes
-make build                       # full build (generate + fmt + vet + go build)
+make build                       # full build (generate + fmt + vet + build-manager + build-cli)
+make build-manager               # bin/manager only
+make build-cli                   # bin/milestonectl + kubectl-milestone / kubectl_complete-milestone symlinks
 make lint                        # golangci-lint
 make test                        # full unit + envtest run (downloads envtest binaries)
 make run                         # run the manager against the current kubeconfig
 make install / make uninstall    # apply/remove CRDs to the current cluster
-make deploy IMG=<reg>/img:tag    # build, push, and apply manifests
+make ko-build IMG=<reg>/img:tag  # build + push the multi-arch manager image with ko
+make ko-build-local IMG=img:tag  # build the manager image into the local docker daemon (Kind)
+make deploy IMG=<reg>/img:tag    # apply manifests pinned to IMG (does not build or push)
 ```
 
 ### Running tests directly
@@ -109,9 +123,16 @@ KUBEBUILDER_ASSETS=$(./bin/setup-envtest use --bin-dir ./bin -p path) \
   go test ./internal/controller -run TestEnvtest_LateCRD_StalledThenConverges -v
 ```
 
-`test/e2e/` expects a real cluster (kind/k3d) and is **not** part of the
-default unit/envtest run. Exclude it explicitly with
-`go test $(go list ./... | grep -v /test/e2e)` when running broad sweeps.
+`test/e2e/` is **not** part of the default unit/envtest run. Exclude it
+explicitly with `go test $(go list ./... | grep -v /test/e2e)` when running
+broad sweeps. Run it only via `make test-e2e`: it creates a dedicated kind
+cluster (`KIND_CLUSTER`, default `milestone-operator-test-e2e`) whose
+kubeconfig lives solely in `bin/e2e.kubeconfig` (`E2E_KUBECONFIG`), never
+`~/.kube/config`. `make e2e-guard` and the suite's `BeforeSuite`
+(`utils.PinKubeconfig`) refuse any kubeconfig whose current context is not
+`kind-$KIND_CLUSTER` on a loopback https server, and `utils.Run` hands every
+child process only that kubeconfig. On failure the cluster is kept; remove it
+with `make cleanup-test-e2e`. Never point e2e at the ambient context.
 
 ### TDD is the working mode
 
@@ -206,7 +227,11 @@ into a single commit when it's a logical unit, to reduce yubikey touches.
 | Discovery + TTL cache                | `internal/discovery/`                        |
 | Watcher registry + dynamic informers | `internal/watcher/`                          |
 | Reconcile pipeline + adapters        | `internal/controller/`                       |
+| Dependency normalisation + live eval | `internal/membership/`                       |
+| CLI (`milestonectl`) entrypoint      | `cmd/milestonectl/`                          |
+| CLI kinds, printers, help text       | `internal/cli/`                              |
 | Prometheus inventory + collector     | `internal/metrics/`                          |
-| Manager bootstrap                    | `cmd/main.go`                                |
+| Manager bootstrap                    | `cmd/manager/main.go`                        |
 | Generated CRDs / RBAC                | `config/crd/bases/`, `config/rbac/`          |
 | Envtest scenarios                    | `internal/controller/envtest_test.go`        |
+| Release pipeline (see PLAN.md "Release & distribution") | `.goreleaser.yaml`, `.gobottle.yaml`, `.ko.yaml`, `.github/workflows/publish.yaml` |

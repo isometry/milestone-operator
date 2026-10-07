@@ -21,6 +21,7 @@ import (
 
 	apiv1 "github.com/isometry/milestone-operator/api/v1"
 	"github.com/isometry/milestone-operator/internal/discovery"
+	"github.com/isometry/milestone-operator/internal/membership"
 	"github.com/isometry/milestone-operator/internal/metrics"
 	"github.com/isometry/milestone-operator/internal/status"
 	"github.com/isometry/milestone-operator/internal/watcher"
@@ -28,7 +29,6 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -317,12 +317,12 @@ func (r *Reconciler[T]) evaluateDependencies(deps []NormalizedDependency, failed
 	var listErrs []DependencyError
 	for _, d := range deps {
 		if reason, skip := failedReasons[d.Name]; skip {
-			rollups[d.Name] = failedRollup(d.Name, d.GVK, reason)
+			rollups[d.Name] = membership.FailedRollup(d.Name, d.GVK, reason)
 			continue
 		}
 		resources, err := r.listAndCompute(d)
 		if err != nil {
-			rollups[d.Name] = failedRollup(d.Name, d.GVK, apiv1.ReasonListFailed)
+			rollups[d.Name] = membership.FailedRollup(d.Name, d.GVK, apiv1.ReasonListFailed)
 			listErrs = append(listErrs, DependencyError{
 				Name:    d.Name,
 				Group:   d.GVK.Group,
@@ -353,7 +353,7 @@ func (r *Reconciler[T]) listAndCompute(d NormalizedDependency) ([]status.Resourc
 		}
 		out := make([]*unstructured.Unstructured, 0, len(o))
 		for _, u := range o {
-			if !dependencyAdmits(d, u.GetNamespace(), u.GetLabels()) {
+			if !d.Admits(u.GetNamespace(), u.GetLabels()) {
 				continue
 			}
 			out = append(out, u)
@@ -369,19 +369,6 @@ func (r *Reconciler[T]) listAndCompute(d NormalizedDependency) ([]status.Resourc
 		resources = append(resources, status.Compute(u))
 	}
 	return resources, nil
-}
-
-// failedRollup forces Ready=Unknown so emptySetPolicy can't promote a missing
-// informer / failed list to Ready=True.
-func failedRollup(name string, gvk schema.GroupVersionKind, reason string) apiv1.DependencyStatus {
-	return apiv1.DependencyStatus{
-		Name:    name,
-		Group:   gvk.Group,
-		Version: gvk.Version,
-		Kind:    gvk.Kind,
-		Ready:   metav1.ConditionUnknown,
-		Reason:  reason,
-	}
 }
 
 func failedDependencyReasons(errs []DependencyError) map[string]string {
@@ -403,24 +390,10 @@ func failedDependencyReasons(errs []DependencyError) map[string]string {
 }
 
 func (r *Reconciler[T]) applyStatus(sb *apiv1.MilestoneStatusBase, generation int64, rollups map[string]apiv1.DependencyStatus, notReady []apiv1.ResourceStatus, errs []DependencyError) {
-	// Synthesize a placeholder rollup for any named error that the pipeline
-	// didn't already produce a rollup for (discovery / scope / selector
-	// failures bypass evaluateDependencies, so without this their dependency
-	// would silently vanish from status.dependsOn). Subscribe and list
-	// failures already create their own failed rollup downstream.
-	for _, e := range errs {
-		if e.Name == "" {
-			continue
-		}
-		if _, ok := rollups[e.Name]; ok {
-			continue
-		}
-		rollups[e.Name] = failedRollup(e.Name, schema.GroupVersionKind{
-			Group:   e.Group,
-			Version: e.Version,
-			Kind:    e.Kind,
-		}, e.Reason)
-	}
+	// Discovery / scope / selector failures bypass evaluateDependencies, so
+	// without stand-in rollups their dependency would silently vanish from
+	// status.dependsOn. Subscribe and list failures already carry their own.
+	rollups = membership.Rollups(rollups, errs)
 
 	sb.ObservedGeneration = generation
 	sb.DependsOn = sortedDependencyStatuses(rollups)
@@ -500,31 +473,20 @@ func (r *Reconciler[T]) stalledErrorCap() int {
 
 // --- helpers (pure) ---
 
-func dependencyAdmits(d NormalizedDependency, namespace string, lbls map[string]string) bool {
-	if d.NamespaceMatcher != nil && !d.NamespaceMatcher(namespace) {
-		return false
-	}
-	if d.Selector != nil && !d.Selector.Matches(labels.Set(lbls)) {
-		return false
-	}
-	return true
-}
-
 func notReadyResourcesOf(resources []status.Resource, policy apiv1.SuspendPolicy) []apiv1.ResourceStatus {
 	// Stay nil until we actually append: a non-nil empty slice would
 	// round-trip through status DeepCopy as != nil and trigger spurious
 	// patches when prior state was nil.
 	var out []apiv1.ResourceStatus
 	for _, m := range resources {
-		blockedBySuspension := policy == apiv1.SuspendNotReady && m.Suspended
-		if m.IsCurrent() && !blockedBySuspension {
+		if !m.Blocks(policy) {
 			continue
 		}
 		reason, message := m.Reason, m.Message
-		// Only when suspension is the sole cause: a suspended resource that
+		// A blocking Current resource is blocked by suspension alone. One that
 		// is also Failed or InProgress keeps its kstatus text so the real
 		// failure is never masked.
-		if blockedBySuspension && m.IsCurrent() {
+		if m.IsCurrent() {
 			reason, message = apiv1.ReasonSuspended, "spec.suspend is true"
 		}
 		out = append(out, apiv1.ResourceStatus{

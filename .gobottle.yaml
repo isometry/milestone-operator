@@ -1,0 +1,27 @@
+formula:
+  name: milestonectl
+  description: Inspect Milestone and ClusterMilestone readiness gates
+  homepage: https://github.com/isometry/milestone-operator
+  license: Apache-2.0
+  install:
+    completions: true
+  test:
+    command: [version, --client]
+
+binaries:
+  - name: milestonectl
+    links: [kubectl-milestone, kubectl_complete-milestone]
+
+source:
+  type: local
+  dist_path: build
+  build:
+    packages: ["./cmd/milestonectl"]
+    ldflags: >-
+      -s -w
+      -X github.com/isometry/milestone-operator/internal/version.Version={{.Tag}}
+      -X github.com/isometry/milestone-operator/internal/version.Commit={{.Commit}}
+      -X github.com/isometry/milestone-operator/internal/version.Date={{.Date}}
+
+tap:
+  owner: isometry

@@ -5,7 +5,6 @@
 *.so
 *.dylib
 bin/*
-Dockerfile.cross
 
 # Test binary, built with `go test -c`
 *.test
@@ -29,3 +28,8 @@ go.work
 # local agent/tooling state
 /.serena/
 /.claude/
+
+# goreleaser / gobottle / build-installer outputs
+/build/
+/bottles/
+/dist/

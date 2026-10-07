@@ -132,6 +132,9 @@ manager's `/metrics` endpoint exposes both the standard
 `controller_runtime_*` families and the operator-specific `milestone_*`
 families documented in [`PLAN.md`](./PLAN.md#metric-inventory).
 
+The running build is identified by `milestone_build_info{version,revision}`
+(constant 1), logged at startup, and printed by `manager --version`.
+
 A starter `ServiceMonitor` and `PrometheusRule` ship in
 [`config/prometheus/`](./config/prometheus/); a sample Grafana dashboard
 JSON is in [`config/grafana/`](./config/grafana/).
@@ -154,26 +157,181 @@ To enable TLS with cert-manager-managed certificates:
 4. Re-deploy. The manager will then listen on `:8443` and the
    `ServiceMonitor` will scrape HTTPS with mTLS.
 
+## CLI (milestonectl)
+
+`milestonectl` inspects Milestones and ClusterMilestones from the command
+line, in the style of the Flux CLI. The recorded `status` is deliberately
+lossy (per-dependency counts, at most 50 not-ready resources, no healthy
+members), so the CLI can also answer "what is actually in `wave-0`?" and
+"which milestones gate on this HelmRelease?" by evaluating membership live.
+
+### Install
+
+**With Homebrew:**
+
+```sh
+brew trust isometry/tap && brew install isometry/tap/milestonectl
+```
+
+The bottle installs `milestonectl`, the `kubectl-milestone` plugin link, the
+`kubectl_complete-milestone` completion helper and shell completions.
+
+Prereleases (`vX.Y.Z-rc.N`) are not bottled; use an archive or
+`go install` for those.
+
+**From a GitHub Release archive:**
+
+Download `milestonectl_<version>_<os>_<arch>.tar.gz` (or `.zip` on Windows)
+from the [releases page](https://github.com/isometry/milestone-operator/releases),
+extract it. The Linux and macOS archives contain `kubectl-milestone` and
+`kubectl_complete-milestone` symlinks next to `milestonectl`, so extracting
+onto your `PATH` gives you the kubectl plugin form too. The Windows zip has
+only `milestonectl.exe`; copy it for the plugin form
+(`copy milestonectl.exe kubectl-milestone.exe`). See
+[`docs/verification.md`](./docs/verification.md) to verify the archive
+before running it.
+
+**With `go install`:**
+
+```sh
+go install github.com/isometry/milestone-operator/cmd/milestonectl@v<version>
+```
+
+`go install` builds only the one binary. For the kubectl plugin form, add the
+links yourself:
+
+```sh
+ln -s milestonectl "$(go env GOPATH)/bin/kubectl-milestone"
+# kubectl >= 1.26 plugin tab-completion looks for this name on PATH:
+ln -s milestonectl "$(go env GOPATH)/bin/kubectl_complete-milestone"
+```
+
+**From a checkout of this repo:**
+
+```sh
+make build-cli          # bin/milestonectl + kubectl plugin symlinks
+install -m 0755 bin/milestonectl /usr/local/bin/kubectl-milestone
+# kubectl >= 1.26 plugin tab-completion looks for this name on PATH:
+ln -s kubectl-milestone /usr/local/bin/kubectl_complete-milestone
+```
+
+**As a kubectl plugin:** with `kubectl-milestone` on your `PATH`,
+`kubectl plugin list` shows it and `kubectl milestone --help` works, with no
+cluster needed.
+
+### Usage
+
+The same binary runs as `milestonectl ...` or `kubectl milestone ...` and
+accepts the usual kubeconfig flags (`--context`, `-n`, `--as`, ...).
+`milestonectl completion bash|zsh|fish|powershell` emits shell completions.
+
+| Command                         | Shows                                                              |
+|---------------------------------|--------------------------------------------------------------------|
+| `get milestones\|clustermilestones\|all` | The status the operator last **recorded** (`-A`, `--status-selector`, `-w`, `-o table\|wide\|json\|yaml`) |
+| `tree milestone\|clustermilestone NAME`   | Every member of every dependency, **evaluated live** (`--not-ready`, `-o tree\|json\|yaml`) |
+| `trace TYPE/NAME`               | Every milestone dependency that includes the object, and its live state |
+| `version`                       | Client version and the operator image(s) found in the cluster (`--client` skips the lookup) |
+
+```sh
+# Every Milestone and ClusterMilestone, cluster-wide
+milestonectl get all -A
+
+# Only what is not ready, updating as it changes
+milestonectl get mile -A --status-selector ready=False --watch
+
+# What is in wave-1, and what is holding it back?
+milestonectl tree milestone wave-1 -n flux-system
+milestonectl tree cmile platform --not-ready
+
+# Which milestones gate on this object?
+milestonectl trace ks/broken -n flux-system
+milestonectl trace deploy/web -n apps
+
+milestonectl version
+```
+
+`tree` output (colour is used only on a terminal; `--no-color` and
+`NO_COLOR` disable it):
+
+```
+Milestone/flux-system/wave-1  Ready=False  DependenciesNotReady  (evaluated 42s ago, stale: generation 3 not yet observed)
+└── ✗ kustomizations  Kustomization.kustomize.toolkit.fluxcd.io/v1  wave=1  1/2  ResourcesNotReady
+    ├── ✔ flux-system/apps     Current
+    └── ✗ flux-system/broken   Failed  BuildFailed: build failed
+```
+
+Glyphs: `✔` ready, `✗` not ready, `⏸` suspended, `◌` in progress, `?`
+unknown. A dependency the operator could not evaluate (`GVKNotEstablished`,
+`NamespaceScopeMismatch`, ...) is shown inline with its reason rather than
+aborting the tree.
+
+`trace` prints the object's live kstatus followed by one row per matching
+`(owner, dependency)`:
+
+```
+✗ Kustomization.kustomize.toolkit.fluxcd.io/flux-system/broken  Failed  BuildFailed: build failed
+
+OWNER                          DEPENDENCY                OWNER READY     OWNER REASON           BLOCKING
+Milestone/flux-system/wave-1   kustomizations            False (stale)   DependenciesNotReady   yes
+ClusterMilestone/platform      platform-kustomizations   True            AllDependenciesReady   yes
+```
+
+`get` never evaluates anything: it prints what is in `status`, and marks
+READY with `(stale)` while `observedGeneration` lags `metadata.generation`.
+`tree` and `trace` list the target resources with your credentials and run
+the operator's own normalisation and kstatus reduction (the shared
+`internal/membership` package), so they reflect what the operator would
+record right now. When the operator has observed the current generation but
+a dependency's live `ready`/`reason` differs from the recorded one, `tree`
+adds a `⚠ live differs from recorded` line; while the generation is stale
+the difference is expected and only the `(stale)` note is shown. Resource
+counts are not compared, to avoid false alarms from informer lag.
+
+RBAC required by the CLI user (the operator's service account is not used):
+
+- `get`/`list`/`watch` on `milestones` and `clustermilestones`
+  (`milestone.as-code.io`)
+- `list` on each target kind referenced by the dependencies you `tree`
+  (and `get` on the object you `trace`)
+- `list` on `namespaces`, for `ClusterMilestone` `namespaceSelector`
+  dependencies (`tree` and `trace`) and for `--namespace` completion
+- `list` on `deployments` across namespaces for `version` (optional; a
+  failure is reported on the `operator:` line and does not fail the command)
+
+A 403 on a target list is reported as `cannot check: forbidden (your
+credentials)` on that dependency, distinct from the operator's own
+`ListFailed`, so a gap in your RBAC is not mistaken for an operator fault.
+
 ## Supply chain
 
-Tagged releases publish a keyless-signed (Sigstore) container image and OCI
-Helm chart, each with SLSA build provenance; the image also carries an SBOM
-attestation. The image index additionally embeds unsigned BuildKit
-SBOM/provenance attestations that survive plain index copies (`skopeo`,
-`crane`); the signed artifacts are OCI referrers and need referrers-aware
-mirroring. [`docs/verification.md`](./docs/verification.md) documents how
-to verify them — `gh attestation verify`, `cosign`, and `helm --verify` —
-plus the artifact layout and mirroring guidance, and
-[`deploy/policies/`](./deploy/policies/) ships ready-to-apply Flux and
-Kyverno policies to enforce verification at runtime.
+Tagged releases publish a keyless-signed (Sigstore) container image (built
+with [ko](https://ko.build)) and OCI Helm chart, each with SLSA build
+provenance; the image also carries a signed SBOM attestation. The
+`milestonectl` release archives come with a cosign-signed checksum manifest
+and GitHub build-provenance attestations, as do the Homebrew bottles and the
+`install.yaml` bundle. The image's signed attestations are OCI referrers, so
+mirroring them needs referrers-aware tooling.
+[`docs/verification.md`](./docs/verification.md) documents how to verify
+every artifact — `gh attestation verify` and `cosign` — plus the artifact
+layout and mirroring guidance, and [`deploy/policies/`](./deploy/policies/)
+ships ready-to-apply Flux and Kyverno policies to enforce verification at
+runtime.
+
+To install a release without Helm, apply its Kustomize bundle, which pins
+the release's image:
+
+```sh
+kubectl apply -f https://github.com/isometry/milestone-operator/releases/download/v<version>/install.yaml
+```
 
 ## Getting started
 
 ### Prerequisites
 
 - Go 1.26+
-- Docker 17.03+
 - kubectl v1.11.3+
+- Docker, only for the Kind e2e suite and local image loads (`make` fetches
+  [ko](https://ko.build) itself, and `make ko-build` pushes without a daemon)
 - A Kubernetes cluster (Kubernetes v1.27+ recommended)
 
 ### Run unit tests
@@ -190,14 +348,30 @@ KUBEBUILDER_ASSETS="$(./bin/setup-envtest use --bin-dir ./bin -p path)" \
   go test ./internal/controller/... -run TestEnvtest
 ```
 
+### Run e2e tests
+
+```sh
+make test-e2e
+```
+
+This creates a dedicated Kind cluster (`milestone-operator-test-e2e`) with
+its own kubeconfig at `bin/e2e.kubeconfig`, leaving `~/.kube/config` and its
+current context untouched, and refuses to run against anything but that
+cluster on loopback. The cluster is deleted on success and kept on failure
+for inspection (`make cleanup-test-e2e` removes it).
+
 ### Build and deploy
 
 ```sh
-make docker-build docker-push IMG=<registry>/milestone-operator:tag
+make ko-build IMG=<registry>/milestone-operator:tag   # multi-arch build + push with ko
 make install                      # installs CRDs
 make deploy IMG=<registry>/milestone-operator:tag
 kubectl apply -k config/samples/  # sample Milestone and ClusterMilestone
 ```
+
+For a local Kind cluster, `make ko-build-local IMG=milestone-operator:dev`
+builds into the local Docker daemon instead; load it with
+`kind load docker-image milestone-operator:dev`.
 
 ### Watching custom resource kinds
 

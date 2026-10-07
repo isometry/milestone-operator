@@ -1,56 +1,13 @@
-# VERSION defines the project version for the bundle.
-# Update this value when you upgrade the version of your project.
-# To re-generate a bundle for another specific version without changing the standard setup, you can:
-# - use the VERSION as arg of the bundle target (e.g make bundle VERSION=0.0.2)
-# - use environment variables to overwrite this value (e.g export VERSION=0.0.2)
-VERSION ?= 0.0.1
-
-# CHANNELS define the bundle channels used in the bundle.
-# Add a new line here if you would like to change its default config. (E.g CHANNELS = "candidate,fast,stable")
-# To re-generate a bundle for other specific channels without changing the standard setup, you can:
-# - use the CHANNELS as arg of the bundle target (e.g make bundle CHANNELS=candidate,fast,stable)
-# - use environment variables to overwrite this value (e.g export CHANNELS="candidate,fast,stable")
-ifneq ($(origin CHANNELS), undefined)
-BUNDLE_CHANNELS := --channels=$(CHANNELS)
+# VERSION is derived once from the nearest v* tag (git describe, v stripped) and
+# names the image tag; release CI overrides it from the pushed tag.
+ifeq ($(origin VERSION),undefined)
+VERSION := $(shell git describe --tags --match 'v*' --dirty 2>/dev/null | sed 's/^v//')
 endif
-
-# DEFAULT_CHANNEL defines the default channel used in the bundle.
-# Add a new line here if you would like to change its default config. (E.g DEFAULT_CHANNEL = "stable")
-# To re-generate a bundle for any other default channel without changing the default setup, you can:
-# - use the DEFAULT_CHANNEL as arg of the bundle target (e.g make bundle DEFAULT_CHANNEL=stable)
-# - use environment variables to overwrite this value (e.g export DEFAULT_CHANNEL="stable")
-ifneq ($(origin DEFAULT_CHANNEL), undefined)
-BUNDLE_DEFAULT_CHANNEL := --default-channel=$(DEFAULT_CHANNEL)
+ifeq ($(VERSION),)
+VERSION := 0.0.0-dev
 endif
-BUNDLE_METADATA_OPTS ?= $(BUNDLE_CHANNELS) $(BUNDLE_DEFAULT_CHANNEL)
-
-# IMAGE_TAG_BASE defines the docker.io namespace and part of the image name for remote images.
-# This variable is used to construct full image tags for bundle and catalog images.
-#
-# For example, running 'make bundle-build bundle-push catalog-build catalog-push' will build and push both
-# ghcr.io/isometry/milestone-operator-bundle:$VERSION and ghcr.io/isometry/milestone-operator-catalog:$VERSION.
 IMAGE_TAG_BASE ?= ghcr.io/isometry/milestone-operator
-
-# BUNDLE_IMG defines the image:tag used for the bundle.
-# You can use it as an arg. (E.g make bundle-build BUNDLE_IMG=<some-registry>/<project-name-bundle>:<tag>)
-BUNDLE_IMG ?= $(IMAGE_TAG_BASE)-bundle:$(VERSION)
-
-# BUNDLE_GEN_FLAGS are the flags passed to the operator-sdk generate bundle command
-BUNDLE_GEN_FLAGS ?= -q --overwrite --version $(VERSION) $(BUNDLE_METADATA_OPTS)
-
-# USE_IMAGE_DIGESTS defines if images are resolved via tags or digests
-# You can enable this value if you would like to use SHA Based Digests
-# To enable set flag to true
-USE_IMAGE_DIGESTS ?= false
-ifeq ($(USE_IMAGE_DIGESTS), true)
-	BUNDLE_GEN_FLAGS += --use-image-digests
-endif
-
-# Set the Operator SDK version to use. By default, what is installed on the system is used.
-# This is useful for CI or a project to utilize a specific version of the operator-sdk toolkit.
-OPERATOR_SDK_VERSION ?= v1.42.2
-# Image URL to use all building/pushing image targets
-IMG ?= ghcr.io/isometry/milestone-operator:$(VERSION)
+IMG ?= $(IMAGE_TAG_BASE):$(VERSION)
 
 # Get the currently used golang install path (in GOPATH/bin, unless GOBIN is set)
 ifeq (,$(shell go env GOBIN))
@@ -113,11 +70,24 @@ vet: ## Run go vet against code.
 test: manifests generate fmt vet setup-envtest ## Run tests.
 	KUBEBUILDER_ASSETS="$(shell $(ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" CGO_ENABLED=1 go test -race -count=1 $$(go list ./... | grep -v /e2e) -coverprofile cover.out
 
-# TODO(user): To use a different vendor for e2e tests, modify the setup under 'tests/e2e'.
-# The default setup assumes Kind is pre-installed and builds/loads the Manager Docker image locally.
-# CertManager is installed by default; skip with:
-# - CERT_MANAGER_INSTALL_SKIP=true
+# The e2e suite assumes Kind is pre-installed; it builds the manager image with
+# ko (make ko-build-local) and loads it into the Kind cluster.
+#
+# Every e2e step addresses the kind cluster through E2E_KUBECONFIG and nothing
+# else: kind honours $$KUBECONFIG for create, export and delete, so the ambient
+# ~/.kube/config (and whatever real cluster its current context names) is never
+# read or written. e2e-guard, and the suite's own BeforeSuite, refuse any
+# kubeconfig whose current context is not kind-$(KIND_CLUSTER) on loopback.
+# KUBERNETES_MASTER is unset because client-go falls back to it for the server.
+# `make install`/`deploy`/`undeploy` deliberately keep using the ambient context.
 KIND_CLUSTER ?= milestone-operator-test-e2e
+E2E_KUBECONFIG ?= $(LOCALBIN)/e2e.kubeconfig
+E2E_ENV = env -u KUBERNETES_MASTER KUBECONFIG="$(E2E_KUBECONFIG)"
+# Shared by cleanup-test-e2e and test-e2e. Inlined rather than `$(MAKE)
+# cleanup-test-e2e`, because make executes any line naming $(MAKE) even under -n.
+E2E_CLEANUP = [ -n "$(KIND_CLUSTER)" ] || { echo "refusing to delete: KIND_CLUSTER is empty"; exit 1; }; \
+	$(E2E_ENV) $(KIND) delete cluster --name '$(KIND_CLUSTER)'; \
+	rm -f "$(E2E_KUBECONFIG)"
 
 .PHONY: setup-test-e2e
 setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
@@ -125,22 +95,56 @@ setup-test-e2e: ## Set up a Kind cluster for e2e tests if it does not exist
 		echo "Kind is not installed. Please install Kind manually."; \
 		exit 1; \
 	}
-	@case "$$($(KIND) get clusters)" in \
-		*"$(KIND_CLUSTER)"*) \
-			echo "Kind cluster '$(KIND_CLUSTER)' already exists. Skipping creation." ;; \
-		*) \
-			echo "Creating Kind cluster '$(KIND_CLUSTER)'..."; \
-			$(KIND) create cluster --name $(KIND_CLUSTER) ;; \
+	@mkdir -p "$(dir $(E2E_KUBECONFIG))"
+	@if $(E2E_ENV) $(KIND) get clusters | grep -qxF '$(KIND_CLUSTER)'; then \
+		echo "Kind cluster '$(KIND_CLUSTER)' already exists. Skipping creation."; \
+		$(E2E_ENV) $(KIND) export kubeconfig --name '$(KIND_CLUSTER)'; \
+	else \
+		echo "Creating Kind cluster '$(KIND_CLUSTER)'..."; \
+		$(E2E_ENV) $(KIND) create cluster --name '$(KIND_CLUSTER)'; \
+	fi
+
+# Reads E2E_KUBECONFIG only (kubectl config subcommands never contact a server).
+.PHONY: e2e-guard
+e2e-guard: ## Refuse to run e2e against anything but the kind cluster on loopback.
+	@case "$(E2E_KUBECONFIG)" in \
+		""|*:*) echo "refusing to run e2e: E2E_KUBECONFIG must name exactly one file (got '$(E2E_KUBECONFIG)')"; exit 1 ;; \
+	esac; \
+	[ -f "$(E2E_KUBECONFIG)" ] || { echo "refusing to run e2e: $(E2E_KUBECONFIG) does not exist (run make setup-test-e2e)"; exit 1; }; \
+	ctx="$$($(E2E_ENV) $(KUBECTL) config current-context 2>/dev/null || true)"; \
+	server="$$($(E2E_ENV) $(KUBECTL) config view --minify -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null || true)"; \
+	case "$$ctx|$$server" in \
+		"kind-$(KIND_CLUSTER)|https://127.0.0.1:"*|"kind-$(KIND_CLUSTER)|https://localhost:"*|"kind-$(KIND_CLUSTER)|https://[::1]:"*) ;; \
+		*) echo "refusing to run e2e against context '$$ctx' at '$$server'" \
+		        "(expected kind-$(KIND_CLUSTER) on loopback via $(E2E_KUBECONFIG))"; \
+		   exit 1 ;; \
 	esac
 
+# `make deploy` (run by the suite) rewrites config/manager/kustomization.yaml's
+# image in place, so it is reset whatever the outcome, and the go test status is
+# what make exits with. The cluster is deleted only on success; on failure it is
+# kept for inspection.
 .PHONY: test-e2e
-test-e2e: setup-test-e2e manifests generate fmt vet ## Run the e2e tests. Expected an isolated environment using Kind.
-	KIND_CLUSTER=$(KIND_CLUSTER) CGO_ENABLED=1 go test -race -timeout=20m ./test/e2e/ -v -ginkgo.v
-	$(MAKE) cleanup-test-e2e
+test-e2e: setup-test-e2e e2e-guard manifests generate fmt vet kustomize ko ## Run the e2e tests against a dedicated Kind cluster (never the ambient kubeconfig).
+	@status=0; \
+	$(E2E_ENV) KIND="$(KIND)" KIND_CLUSTER="$(KIND_CLUSTER)" CGO_ENABLED=1 \
+	  go test -race -timeout=20m ./test/e2e/ -v -ginkgo.v || status=$$?; \
+	( cd config/manager && "$(KUSTOMIZE)" edit set image controller=controller:latest ) || { \
+		echo "failed to restore config/manager/kustomization.yaml image to controller:latest"; \
+		[ $$status -ne 0 ] || status=1; \
+	}; \
+	if [ $$status -eq 0 ]; then \
+		$(E2E_CLEANUP); \
+	else \
+		echo "e2e failed (exit $$status); kind cluster '$(KIND_CLUSTER)' kept for debugging:"; \
+		echo "  KUBECONFIG=$(E2E_KUBECONFIG) $(KUBECTL) get pods -A"; \
+		echo "  make cleanup-test-e2e   # delete the cluster and $(E2E_KUBECONFIG)"; \
+	fi; \
+	exit $$status
 
 .PHONY: cleanup-test-e2e
-cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests
-	@$(KIND) delete cluster --name $(KIND_CLUSTER)
+cleanup-test-e2e: ## Tear down the Kind cluster used for e2e tests and its dedicated kubeconfig
+	@$(E2E_CLEANUP)
 
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
@@ -157,40 +161,53 @@ lint-config: golangci-lint ## Verify golangci-lint linter configuration
 ##@ Build
 
 .PHONY: build
-build: manifests generate fmt vet ## Build manager binary.
-	go build -o bin/manager cmd/main.go
+build: manifests generate fmt vet build-manager build-cli ## Build manager binary and CLI.
+
+VERSION_PKG := github.com/isometry/milestone-operator/internal/version
+GIT_VERSION ?= $(shell git describe --tags --match 'v*' --dirty 2>/dev/null || echo v0.0.0-dev)
+GIT_COMMIT ?= $(shell git rev-parse HEAD 2>/dev/null)
+# Commit date rather than wall clock, so identical sources build identically.
+GIT_DATE ?= $(shell TZ=UTC git log -1 --format=%cd --date=format-local:%Y-%m-%dT%H:%M:%SZ 2>/dev/null)
+# Flatten so the git calls run once, not per expansion; overrides still win.
+GIT_VERSION := $(GIT_VERSION)
+GIT_COMMIT := $(GIT_COMMIT)
+GIT_DATE := $(GIT_DATE)
+LDFLAGS_VERSION = -X $(VERSION_PKG).Version=$(GIT_VERSION) -X $(VERSION_PKG).Commit=$(GIT_COMMIT) -X $(VERSION_PKG).Date=$(GIT_DATE)
+
+.PHONY: build-manager
+build-manager: ## Build the operator manager binary.
+	go build -ldflags "$(LDFLAGS_VERSION)" -o bin/manager ./cmd/manager
+
+.PHONY: build-cli
+build-cli: ## Build milestonectl, plus its kubectl plugin and plugin-completion symlinks.
+	go build -ldflags "$(LDFLAGS_VERSION)" -o bin/milestonectl ./cmd/milestonectl
+	ln -sf milestonectl bin/kubectl-milestone
+	ln -sf milestonectl bin/kubectl_complete-milestone
 
 .PHONY: run
 run: manifests generate fmt vet ## Run a controller from your host.
-	go run ./cmd/main.go --leader-elect=false
+	go run ./cmd/manager --leader-elect=false
 
-# If you wish to build the manager image targeting other platforms you can use the --platform flag.
-# (i.e. docker build --platform linux/arm64). However, you must enable docker buildKit for it.
-# More info: https://docs.docker.com/develop/develop-images/build_enhancements/
-.PHONY: docker-build
-docker-build: ## Build docker image with the manager.
-	$(CONTAINER_TOOL) build -t ${IMG} .
+# .ko.yaml stamps the version from GIT_VERSION (commit and date come from ko's
+# own git templates), so image builds match `make build-manager`.
+KO_ENV = GIT_VERSION=$(GIT_VERSION)
+# ko wants IMG (repo:tag) split into KO_DOCKER_REPO and --tags. Split on the
+# last colon only, so a registry:port host (localhost:5000/x:tag) survives.
+IMG_TAG = $(lastword $(subst :, ,$(IMG)))
+IMG_REPO = $(patsubst %:$(IMG_TAG),%,$(IMG))
+# Architecture of the docker daemon (not the host): on macOS it is a Linux VM.
+KO_LOCAL_ARCH ?= $(shell $(CONTAINER_TOOL) version --format '{{.Server.Arch}}' 2>/dev/null | sed -e 's/^x86_64$$/amd64/' -e 's/^aarch64$$/arm64/' | grep . || go env GOARCH)
 
-.PHONY: docker-push
-docker-push: ## Push docker image with the manager.
-	$(CONTAINER_TOOL) push ${IMG}
+.PHONY: ko-build
+ko-build: ko ## Build and push the multi-arch manager image with ko (IMG=repo:tag).
+	$(KO_ENV) KO_DOCKER_REPO=$(IMG_REPO) "$(KO)" build --bare --platform=linux/amd64,linux/arm64 \
+	  --tags=$(IMG_TAG) \
+	  --image-label org.opencontainers.image.source=https://github.com/isometry/milestone-operator ./cmd/manager
 
-# PLATFORMS defines the target platforms for the manager image be built to provide support to multiple
-# architectures. (i.e. make docker-buildx IMG=myregistry/mypoperator:0.0.1). To use this option you need to:
-# - be able to use docker buildx. More info: https://docs.docker.com/build/buildx/
-# - have enabled BuildKit. More info: https://docs.docker.com/develop/develop-images/build_enhancements/
-# - be able to push the image to your registry (i.e. if you do not set a valid value via IMG=<myregistry/image:<tag>> then the export will fail)
-# To adequately provide solutions that are compatible with multiple platforms, you should consider using this option.
-PLATFORMS ?= linux/arm64,linux/amd64,linux/s390x,linux/ppc64le
-.PHONY: docker-buildx
-docker-buildx: ## Build and push docker image for the manager for cross-platform support
-	# copy existing Dockerfile and insert --platform=${BUILDPLATFORM} into Dockerfile.cross, and preserve the original Dockerfile
-	sed -e '1 s/\(^FROM\)/FROM --platform=\$$\{BUILDPLATFORM\}/; t' -e ' 1,// s//FROM --platform=\$$\{BUILDPLATFORM\}/' Dockerfile > Dockerfile.cross
-	- $(CONTAINER_TOOL) buildx create --name milestone-operator-builder
-	$(CONTAINER_TOOL) buildx use milestone-operator-builder
-	- $(CONTAINER_TOOL) buildx build --push --platform=$(PLATFORMS) --tag ${IMG} -f Dockerfile.cross .
-	- $(CONTAINER_TOOL) buildx rm milestone-operator-builder
-	rm Dockerfile.cross
+.PHONY: ko-build-local
+ko-build-local: ko ## Build the manager image into the local docker daemon with ko (IMG=repo:tag).
+	$(KO_ENV) KO_DOCKER_REPO=$(IMG_REPO) "$(KO)" build --local --bare --platform=linux/$(KO_LOCAL_ARCH) \
+	  --tags=$(IMG_TAG) ./cmd/manager
 
 .PHONY: build-installer
 build-installer: manifests generate kustomize ## Generate a consolidated YAML with CRDs and deployment.
@@ -248,6 +265,7 @@ KUSTOMIZE ?= $(LOCALBIN)/kustomize
 CONTROLLER_GEN ?= $(LOCALBIN)/controller-gen
 ENVTEST ?= $(LOCALBIN)/setup-envtest
 GOLANGCI_LINT = $(LOCALBIN)/golangci-lint
+KO ?= $(LOCALBIN)/ko
 
 ## Tool Versions
 KUSTOMIZE_VERSION ?= v5.6.0
@@ -257,6 +275,7 @@ ENVTEST_VERSION ?= $(shell go list -m -f "{{ .Version }}" sigs.k8s.io/controller
 #ENVTEST_K8S_VERSION is the version of Kubernetes to use for setting up ENVTEST binaries (i.e. 1.31)
 ENVTEST_K8S_VERSION ?= $(shell go list -m -f "{{ .Version }}" k8s.io/api | awk -F'[v.]' '{printf "1.%d", $$3}')
 GOLANGCI_LINT_VERSION ?= v2.12.2
+KO_VERSION ?= v0.19.1
 
 .PHONY: kustomize
 kustomize: $(KUSTOMIZE) ## Download kustomize locally if necessary.
@@ -286,6 +305,11 @@ golangci-lint: $(GOLANGCI_LINT) ## Download golangci-lint locally if necessary.
 $(GOLANGCI_LINT): $(LOCALBIN)
 	$(call go-install-tool,$(GOLANGCI_LINT),github.com/golangci/golangci-lint/v2/cmd/golangci-lint,$(GOLANGCI_LINT_VERSION))
 
+.PHONY: ko
+ko: $(KO) ## Download ko locally if necessary.
+$(KO): $(LOCALBIN)
+	$(call go-install-tool,$(KO),github.com/google/ko,$(KO_VERSION))
+
 # go-install-tool will 'go install' any package with custom target and name of binary, if it doesn't exist
 # $1 - target path with name of binary
 # $2 - package url which can be installed
@@ -301,76 +325,3 @@ mv $(1) $(1)-$(3) ;\
 } ;\
 ln -sf $(1)-$(3) $(1)
 endef
-
-.PHONY: operator-sdk
-OPERATOR_SDK ?= $(LOCALBIN)/operator-sdk
-operator-sdk: ## Download operator-sdk locally if necessary.
-ifeq (,$(wildcard $(OPERATOR_SDK)))
-ifeq (, $(shell which operator-sdk 2>/dev/null))
-	@{ \
-	set -e ;\
-	mkdir -p $(dir $(OPERATOR_SDK)) ;\
-	OS=$(shell go env GOOS) && ARCH=$(shell go env GOARCH) && \
-	curl -sSLo $(OPERATOR_SDK) https://github.com/operator-framework/operator-sdk/releases/download/$(OPERATOR_SDK_VERSION)/operator-sdk_$${OS}_$${ARCH} ;\
-	chmod +x $(OPERATOR_SDK) ;\
-	}
-else
-OPERATOR_SDK = $(shell which operator-sdk)
-endif
-endif
-
-.PHONY: bundle
-bundle: manifests kustomize operator-sdk ## Generate bundle manifests and metadata, then validate generated files.
-	$(OPERATOR_SDK) generate kustomize manifests -q
-	cd config/manager && $(KUSTOMIZE) edit set image controller=$(IMG)
-	$(KUSTOMIZE) build config/manifests | $(OPERATOR_SDK) generate bundle $(BUNDLE_GEN_FLAGS)
-	$(OPERATOR_SDK) bundle validate ./bundle
-
-.PHONY: bundle-build
-bundle-build: ## Build the bundle image.
-	$(CONTAINER_TOOL) build -f bundle.Dockerfile -t $(BUNDLE_IMG) .
-
-.PHONY: bundle-push
-bundle-push: ## Push the bundle image.
-	$(MAKE) docker-push IMG=$(BUNDLE_IMG)
-
-.PHONY: opm
-OPM = $(LOCALBIN)/opm
-opm: ## Download opm locally if necessary.
-ifeq (,$(wildcard $(OPM)))
-ifeq (,$(shell which opm 2>/dev/null))
-	@{ \
-	set -e ;\
-	mkdir -p $(dir $(OPM)) ;\
-	OS=$(shell go env GOOS) && ARCH=$(shell go env GOARCH) && \
-	curl -sSLo $(OPM) https://github.com/operator-framework/operator-registry/releases/download/v1.55.0/$${OS}-$${ARCH}-opm ;\
-	chmod +x $(OPM) ;\
-	}
-else
-OPM = $(shell which opm)
-endif
-endif
-
-# A comma-separated list of bundle images (e.g. make catalog-build BUNDLE_IMGS=example.com/operator-bundle:0.1.0,example.com/operator-bundle:0.2.0).
-# These images MUST exist in a registry and be pull-able.
-BUNDLE_IMGS ?= $(BUNDLE_IMG)
-
-# The image tag given to the resulting catalog image (e.g. make catalog-build CATALOG_IMG=example.com/operator-catalog:0.2.0).
-CATALOG_IMG ?= $(IMAGE_TAG_BASE)-catalog:$(VERSION)
-
-# Set CATALOG_BASE_IMG to an existing catalog image tag to add $BUNDLE_IMGS to that image.
-ifneq ($(origin CATALOG_BASE_IMG), undefined)
-FROM_INDEX_OPT := --from-index $(CATALOG_BASE_IMG)
-endif
-
-# Build a catalog image by adding bundle images to an empty catalog using the operator package manager tool, 'opm'.
-# This recipe invokes 'opm' in 'semver' bundle add mode. For more information on add modes, see:
-# https://github.com/operator-framework/community-operators/blob/7f1438c/docs/packaging-operator.md#updating-your-existing-operator
-.PHONY: catalog-build
-catalog-build: opm ## Build a catalog image.
-	$(OPM) index add --container-tool $(CONTAINER_TOOL) --mode semver --tag $(CATALOG_IMG) --bundles $(BUNDLE_IMGS) $(FROM_INDEX_OPT)
-
-# Push the catalog image.
-.PHONY: catalog-push
-catalog-push: ## Push a catalog image.
-	$(MAKE) docker-push IMG=$(CATALOG_IMG)

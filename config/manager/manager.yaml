@@ -31,9 +31,8 @@ spec:
         app.kubernetes.io/name: milestone-operator
     spec:
       # TODO(user): Uncomment the following code to configure the nodeAffinity expression
-      # according to the platforms which are supported by your solution.
-      # It is considered best practice to support multiple architectures. You can
-      # build your manager image using the makefile target docker-buildx.
+      # according to the platforms which are supported by your solution. The
+      # published image (make ko-build) covers linux/amd64 and linux/arm64.
       # affinity:
       #   nodeAffinity:
       #     requiredDuringSchedulingIgnoredDuringExecution:
@@ -58,9 +57,7 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       containers:
-      - command:
-        - /manager
-        args:
+      - args:
           - --health-probe-bind-address=:8081
         image: controller:latest
         name: manager

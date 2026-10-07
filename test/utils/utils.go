@@ -19,6 +19,7 @@ package utils
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -37,8 +38,12 @@ func warnError(err error) {
 	_, _ = fmt.Fprintf(GinkgoWriter, "warning: %v\n", err)
 }
 
-// Run executes the provided command within this context
+// Run executes the provided command from the project root, with the kubeconfig
+// pinned by PinKubeconfig as its only cluster configuration.
 func Run(cmd *exec.Cmd) (string, error) {
+	if pinnedKubeconfig == "" {
+		return "", errors.New("refusing to run commands before utils.PinKubeconfig has vetted the e2e kubeconfig")
+	}
 	dir, _ := GetProjectDir()
 	cmd.Dir = dir
 
@@ -46,7 +51,7 @@ func Run(cmd *exec.Cmd) (string, error) {
 		_, _ = fmt.Fprintf(GinkgoWriter, "chdir dir: %q\n", err)
 	}
 
-	cmd.Env = append(os.Environ(), "GO111MODULE=on")
+	cmd.Env = sanitizedEnv(os.Environ(), pinnedKubeconfig)
 	command := strings.Join(cmd.Args, " ")
 	_, _ = fmt.Fprintf(GinkgoWriter, "running: %q\n", command)
 	output, err := cmd.CombinedOutput()
@@ -101,14 +106,15 @@ func IsPrometheusCRDsInstalled() bool {
 	return false
 }
 
-// LoadImageToKindClusterWithName loads a local docker image to the kind cluster
+// LoadImageToKindClusterWithName loads a local docker image into the e2e kind
+// cluster. kind selects the cluster by --name; Run still pins KUBECONFIG so
+// kind never reads or rewrites the ambient kubeconfig.
 func LoadImageToKindClusterWithName(name string) error {
-	cluster := "kind"
-	if v, ok := os.LookupEnv("KIND_CLUSTER"); ok {
-		cluster = v
+	kindBinary := "kind"
+	if v := os.Getenv("KIND"); v != "" {
+		kindBinary = v
 	}
-	kindOptions := []string{"load", "docker-image", name, "--name", cluster}
-	cmd := exec.Command("kind", kindOptions...)
+	cmd := exec.Command(kindBinary, "load", "docker-image", name, "--name", KindClusterName())
 	_, err := Run(cmd)
 	return err
 }

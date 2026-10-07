@@ -19,22 +19,22 @@ import (
 
 // TestAdapter_OwnerKey_MatchesControllerName pins the implicit contract that
 // each adapter's OwnerKey().Kind equals the controller-label literal the
-// wire-site in cmd/main.go uses for metrics and logging. A rename on one side
+// wire-site in cmd/manager/main.go uses for metrics and logging. A rename on one side
 // without the other would silently break Prometheus queries that join on the
 // `controller` label; this test makes the drift a compile/test failure.
 func TestAdapter_OwnerKey_MatchesControllerName(t *testing.T) {
 	t.Run("Milestone", func(t *testing.T) {
 		got := controller.NewMilestoneAdapter(&apiv1.Milestone{}).OwnerKey().Kind
-		// Literal mirrors cmd/main.go's controllerMilestone constant.
+		// Literal mirrors cmd/manager/main.go's controllerMilestone constant.
 		if want := "Milestone"; got != want {
-			t.Fatalf("MilestoneAdapter.OwnerKey().Kind = %q, want %q (must match cmd/main.go's controllerMilestone)", got, want)
+			t.Fatalf("MilestoneAdapter.OwnerKey().Kind = %q, want %q (must match cmd/manager/main.go's controllerMilestone)", got, want)
 		}
 	})
 	t.Run("ClusterMilestone", func(t *testing.T) {
 		got := controller.NewClusterMilestoneAdapterFactory(nil)(&apiv1.ClusterMilestone{}).OwnerKey().Kind
-		// Literal mirrors cmd/main.go's controllerClusterMilestone constant.
+		// Literal mirrors cmd/manager/main.go's controllerClusterMilestone constant.
 		if want := "ClusterMilestone"; got != want {
-			t.Fatalf("ClusterMilestoneAdapter.OwnerKey().Kind = %q, want %q (must match cmd/main.go's controllerClusterMilestone)", got, want)
+			t.Fatalf("ClusterMilestoneAdapter.OwnerKey().Kind = %q, want %q (must match cmd/manager/main.go's controllerClusterMilestone)", got, want)
 		}
 	})
 }
