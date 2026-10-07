@@ -173,6 +173,10 @@ jobs:
 
       - name: Set up gobottle
         uses: isometry/gobottle-setup@c7fe02d3fd382ccf59387747aaec4686c2281475 # v1.0.0
+        with:
+          # Exact pin: gobottle < 0.9.0 silently drops the unknown `links` key
+          # and would publish link-less bottles. Bump deliberately.
+          version: 0.9.0
 
       - name: Publish Homebrew bottles
         run: gobottle release --source local

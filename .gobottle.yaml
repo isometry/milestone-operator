@@ -5,13 +5,12 @@ formula:
   license: Apache-2.0
   install:
     completions: true
-    # Only `brew install --build-from-source` runs these; a poured bottle
-    # never executes `def install`.
-    extra:
-      - bin.install_symlink "milestonectl" => "kubectl-milestone"
-      - bin.install_symlink "milestonectl" => "kubectl_complete-milestone"
   test:
     command: [version, --client]
+
+binaries:
+  - name: milestonectl
+    links: [kubectl-milestone, kubectl_complete-milestone]
 
 source:
   type: local

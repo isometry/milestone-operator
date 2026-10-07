@@ -173,17 +173,8 @@ members), so the CLI can also answer "what is actually in `wave-0`?" and
 brew trust isometry/tap && brew install isometry/tap/milestonectl
 ```
 
-The poured bottle installs `milestonectl` and its shell completions, but
-**not** the `kubectl-milestone` plugin link or its
-`kubectl_complete-milestone` completion helper — only
-`brew install --build-from-source` creates those. Add them yourself if you
-want the kubectl plugin form:
-
-```sh
-ln -s milestonectl "$(brew --prefix)/bin/kubectl-milestone"
-# kubectl >= 1.26 plugin tab-completion looks for this name on PATH:
-ln -s milestonectl "$(brew --prefix)/bin/kubectl_complete-milestone"
-```
+The bottle installs `milestonectl`, the `kubectl-milestone` plugin link, the
+`kubectl_complete-milestone` completion helper and shell completions.
 
 Prereleases (`vX.Y.Z-rc.N`) are not bottled; use an archive or
 `go install` for those.
@@ -206,8 +197,14 @@ before running it.
 go install github.com/isometry/milestone-operator/cmd/milestonectl@v<version>
 ```
 
-`go install` builds only the one binary, so add the plugin links yourself
-if you want the kubectl plugin form (as in the Homebrew section above).
+`go install` builds only the one binary. For the kubectl plugin form, add the
+links yourself:
+
+```sh
+ln -s milestonectl "$(go env GOPATH)/bin/kubectl-milestone"
+# kubectl >= 1.26 plugin tab-completion looks for this name on PATH:
+ln -s milestonectl "$(go env GOPATH)/bin/kubectl_complete-milestone"
+```
 
 **From a checkout of this repo:**
 

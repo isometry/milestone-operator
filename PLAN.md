@@ -702,6 +702,9 @@ install those policies — runtime enforcement is opt-in per cluster.
 - **gobottle** (`.gobottle.yaml`) bottles the binaries goreleaser built
   (`--source local`), pushes them to `ghcr.io/isometry/tap/milestonectl`
   and commits the generated formula to `isometry/homebrew-tap`.
+  `binaries[].links` supplies the `kubectl-milestone` /
+  `kubectl_complete-milestone` symlinks inside the bottle; `publish.yaml`
+  pins gobottle to 0.9.0, the first version with `links`.
 - **Helm chart** is packaged and pushed by a separate job with
   `--version`/`--app-version` set to the bare semver, then signed and
   attested.
